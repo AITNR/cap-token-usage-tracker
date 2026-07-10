@@ -52,8 +52,6 @@ func formatNumber(n int64) string {
 
 // renderDashboardHTML generates the complete dashboard HTML with embedded CSS and JavaScript.
 func renderDashboardHTML(stats StatsResponse) string {
-	var sb strings.Builder
-
 	// Summary card data
 	successRate := float64(0)
 	if stats.Summary.Requests > 0 {
@@ -83,10 +81,6 @@ func renderDashboardHTML(stats StatsResponse) string {
 			if modelDisplay == "" {
 				modelDisplay = "—"
 			}
-			failureBadge := ""
-			if m.FailedRequests > 0 {
-				failureBadge = fmt.Sprintf(`<span class="badge badge-error">%d 次失败</span>`, m.FailedRequests)
-			}
 			rows.WriteString(fmt.Sprintf(`
 				<tr>
 					<td class="col-model">%s</td>
@@ -115,11 +109,65 @@ func renderDashboardHTML(stats StatsResponse) string {
 				formatDuration(m.AvgLatency()),
 				formatDuration(m.AvgTTFT()),
 			))
-			_ = failureBadge // failure badge rendered inline below if needed
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf(`<!DOCTYPE html>
+	// Build summary cards HTML separately to avoid format string complexity
+	cardsHTML := fmt.Sprintf(`
+	<div class="cards">
+		<div class="card card-accent">
+			<div class="label">总 Token 数</div>
+			<div class="value">%s</div>
+			<div class="sub">输入 + 输出 + 缓存</div>
+		</div>
+		<div class="card card-green">
+			<div class="label">总请求数</div>
+			<div class="value">%s</div>
+			<div class="sub">成功率 %.1f%%</div>
+		</div>
+		<div class="card card-purple">
+			<div class="label">输入 Token</div>
+			<div class="value">%s</div>
+		</div>
+		<div class="card card-orange">
+			<div class="label">输出 Token</div>
+			<div class="value">%s</div>
+		</div>
+		<div class="card card-yellow">
+			<div class="label">推理 Token</div>
+			<div class="value">%s</div>
+		</div>
+		<div class="card">
+			<div class="label">缓存 Token</div>
+			<div class="value">%s</div>
+			<div class="sub">读取: %s · 创建: %s</div>
+		</div>
+	</div>`,
+		formatNumber(stats.Summary.TotalTokens),
+		formatNumber(stats.Summary.Requests),
+		successRate,
+		formatNumber(stats.Summary.InputTokens),
+		formatNumber(stats.Summary.OutputTokens),
+		formatNumber(stats.Summary.ReasoningTokens),
+		formatNumber(stats.Summary.CachedTokens),
+		formatNumber(stats.Summary.CacheReadTokens),
+		formatNumber(stats.Summary.CacheCreationTokens),
+	)
+
+	// Build meta bar HTML
+	metaHTML := fmt.Sprintf(`
+	<div class="meta-bar">
+		<span>追踪起始：<strong>%s</strong></span>
+		<span>最近活动：<strong>%s</strong></span>
+		<span>追踪模型数：<strong>%d</strong></span>
+	</div>`,
+		sinceStr,
+		lastUsedStr,
+		len(stats.Models),
+	)
+
+	// Assemble final HTML
+	html := `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 	<meta charset="UTF-8">
@@ -136,24 +184,43 @@ func renderDashboardHTML(stats StatsResponse) string {
 			--text-muted: #8b949e;
 			--text-dim: #6e7681;
 			--accent: #58a6ff;
-			--accent-glow: rgba(88, 166, 255, 0.15);
 			--green: #3fb950;
 			--green-bg: rgba(63, 185, 80, 0.1);
 			--red: #f85149;
 			--red-bg: rgba(248, 81, 73, 0.1);
 			--yellow: #d29922;
-			--yellow-bg: rgba(210, 153, 34, 0.1);
 			--purple: #bc8cff;
 			--purple-bg: rgba(188, 140, 255, 0.1);
 			--orange: #e8873a;
+			--shadow: 0 0 transparent;
+		}
+		[data-theme="light"] {
+			--bg: #ffffff;
+			--bg-card: #f6f8fa;
+			--bg-card-hover: #e8edf2;
+			--border: #d0d7de;
+			--text: #1f2328;
+			--text-muted: #656d76;
+			--text-dim: #8c959f;
+			--accent: #0969da;
+			--green: #1a7f37;
+			--green-bg: rgba(26, 127, 55, 0.1);
+			--red: #cf222e;
+			--red-bg: rgba(207, 34, 46, 0.1);
+			--yellow: #9a6700;
+			--purple: #8250df;
+			--purple-bg: rgba(130, 80, 223, 0.1);
+			--orange: #bc4c00;
+			--shadow: 0 1px 3px rgba(0,0,0,0.08);
 		}
 		* { margin: 0; padding: 0; box-sizing: border-box; }
 		body {
-			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", Helvetica, Arial, sans-serif;
 			background: var(--bg);
 			color: var(--text);
 			min-height: 100vh;
 			padding: 24px;
+			transition: background 0.3s, color 0.3s;
 		}
 		.header {
 			display: flex;
@@ -206,8 +273,8 @@ func renderDashboardHTML(stats StatsResponse) string {
 			animation: pulse 2s ease-in-out infinite;
 		}
 		@keyframes pulse {
-			0%%, 100%% { opacity: 1; }
-			50%% { opacity: 0.4; }
+			0%, 100% { opacity: 1; }
+			50% { opacity: 0.4; }
 		}
 		.btn {
 			padding: 8px 16px;
@@ -227,6 +294,14 @@ func renderDashboardHTML(stats StatsResponse) string {
 		.btn:hover { background: var(--bg-card-hover); border-color: var(--accent); }
 		.btn-danger { border-color: var(--red); color: var(--red); }
 		.btn-danger:hover { background: var(--red-bg); }
+		.btn-icon {
+			width: 36px;
+			height: 36px;
+			padding: 0;
+			justify-content: center;
+			font-size: 18px;
+			border-radius: 8px;
+		}
 
 		.cards {
 			display: grid;
@@ -239,7 +314,8 @@ func renderDashboardHTML(stats StatsResponse) string {
 			border: 1px solid var(--border);
 			border-radius: 12px;
 			padding: 20px;
-			transition: border-color 0.2s;
+			transition: border-color 0.2s, box-shadow 0.2s;
+			box-shadow: var(--shadow);
 		}
 		.card:hover { border-color: var(--text-dim); }
 		.card .label {
@@ -280,6 +356,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 			border: 1px solid var(--border);
 			border-radius: 12px;
 			overflow: hidden;
+			box-shadow: var(--shadow);
 		}
 		.table-header {
 			padding: 16px 20px;
@@ -289,7 +366,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 		}
 		.table-wrap { overflow-x: auto; }
 		table {
-			width: 100%%;
+			width: 100%;
 			border-collapse: collapse;
 			font-size: 13px;
 		}
@@ -344,46 +421,15 @@ func renderDashboardHTML(stats StatsResponse) string {
 		</div>
 		<div class="header-right">
 			<div class="auto-refresh"><span class="dot"></span> 自动刷新 5秒</div>
+			<button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="切换主题">🌙</button>
 			<a class="btn" href="stats">查看 JSON</a>
 			<button class="btn btn-danger" onclick="resetStats()">重置数据</button>
 		</div>
 	</div>
 
-	<div class="cards">
-		<div class="card card-accent">
-			<div class="label">总 Token 数</div>
-			<div class="value">%s</div>
-			<div class="sub">输入 + 输出 + 缓存</div>
-		</div>
-		<div class="card card-green">
-			<div class="label">总请求数</div>
-			<div class="value">%s</div>
-			<div class="sub">成功率 %.1f%%</div>
-		</div>
-		<div class="card card-purple">
-			<div class="label">输入 Token</div>
-			<div class="value">%s</div>
-		</div>
-		<div class="card card-orange">
-			<div class="label">输出 Token</div>
-			<div class="value">%s</div>
-		</div>
-		<div class="card card-yellow">
-			<div class="label">推理 Token</div>
-			<div class="value">%s</div>
-		</div>
-		<div class="card">
-			<div class="label">缓存 Token</div>
-			<div class="value">%s</div>
-			<div class="sub">读取: %s · 创建: %s</div>
-		</div>
-	</div>
+	` + cardsHTML + `
 
-	<div class="meta-bar">
-		<span>追踪起始：<strong>%s</strong></span>
-		<span>最近活动：<strong>%s</strong></span>
-		<span>追踪模型数：<strong>%d</strong></span>
-	</div>
+	` + metaHTML + `
 
 	<div class="table-container">
 		<div class="table-header">按模型明细</div>
@@ -406,7 +452,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 					</tr>
 				</thead>
 				<tbody>
-					%s
+					` + rows.String() + `
 				</tbody>
 			</table>
 		</div>
@@ -417,6 +463,27 @@ func renderDashboardHTML(stats StatsResponse) string {
 	</div>
 
 	<script>
+		(function() {
+			var saved = localStorage.getItem('theme') || 'dark';
+			document.documentElement.setAttribute('data-theme', saved);
+			updateThemeIcon(saved);
+		})();
+
+		function toggleTheme() {
+			var current = document.documentElement.getAttribute('data-theme') || 'dark';
+			var next = current === 'dark' ? 'light' : 'dark';
+			document.documentElement.setAttribute('data-theme', next);
+			localStorage.setItem('theme', next);
+			updateThemeIcon(next);
+		}
+
+		function updateThemeIcon(theme) {
+			var btn = document.getElementById('themeToggle');
+			if (btn) {
+				btn.textContent = theme === 'dark' ? '🌙' : '☀️';
+			}
+		}
+
 		async function resetStats() {
 			if (!confirm('确定要重置所有用量计数器吗？此操作不可撤销。')) return;
 			try {
@@ -433,24 +500,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 		}
 	</script>
 </body>
-</html>`,
-		// Cards
-		formatNumber(stats.Summary.TotalTokens),
-		formatNumber(stats.Summary.Requests),
-		successRate,
-		formatNumber(stats.Summary.InputTokens),
-		formatNumber(stats.Summary.OutputTokens),
-		formatNumber(stats.Summary.ReasoningTokens),
-		formatNumber(stats.Summary.CachedTokens),
-		formatNumber(stats.Summary.CacheReadTokens),
-		formatNumber(stats.Summary.CacheCreationTokens),
-		// Meta bar
-		sinceStr,
-		lastUsedStr,
-		len(stats.Models),
-		// Table rows
-		rows.String(),
-	))
+</html>`
 
-	return sb.String()
+	return html
 }
