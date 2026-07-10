@@ -26,10 +26,6 @@ jobs:
             goos: windows
             goarch: amd64
             output: token-usage-tracker.dll
-          - os: windows-latest
-            goos: windows
-            goarch: arm64
-            output: token-usage-tracker.dll
           - os: macos-latest
             goos: darwin
             goarch: arm64
@@ -53,10 +49,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-
-      - name: Install Windows arm64 cross-compiler
-        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
-        run: choco install llvm -y
 
       - name: Build
         env:
