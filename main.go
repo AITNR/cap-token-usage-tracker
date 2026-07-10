@@ -38,6 +38,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -451,19 +452,32 @@ func handleManagementHandle(request []byte) ([]byte, error) {
 	if err := json.Unmarshal(request, &req); err != nil {
 		return mgmtErrorResponse(400, "invalid request")
 	}
-	switch req.Path {
-	case "/dashboard":
+	// Normalize path: strip plugin prefix for resource routes
+	path := req.Path
+	const pluginPrefix = "/plugins/token-usage-tracker"
+	if strings.HasPrefix(path, pluginPrefix) {
+		path = strings.TrimPrefix(path, pluginPrefix)
+		if path == "" {
+			path = "/"
+		}
+	}
+	// Restore full API path for route matching
+	apiPath := req.Path
+	if !strings.HasPrefix(apiPath, "/plugins/") {
+		apiPath = pluginPrefix + apiPath
+	}
+
+	switch {
+	case path == "/dashboard":
 		return mgmtHTMLResponse(dashboardHTML)
-	case "/plugins/token-usage-tracker/stats":
-		if req.Method == "GET" {
-			return mgmtStatsResponse()
-		}
+	case apiPath == "/plugins/token-usage-tracker/stats" && req.Method == "GET":
+		return mgmtStatsResponse()
+	case apiPath == "/plugins/token-usage-tracker/stats":
 		return mgmtErrorResponse(405, "method not allowed")
-	case "/plugins/token-usage-tracker/reset":
-		if req.Method == "POST" {
-			resetStats()
-			return mgmtJSONResponse(200, map[string]any{"status": "ok"})
-		}
+	case apiPath == "/plugins/token-usage-tracker/reset" && req.Method == "POST":
+		resetStats()
+		return mgmtJSONResponse(200, map[string]any{"status": "ok"})
+	case apiPath == "/plugins/token-usage-tracker/reset":
 		return mgmtErrorResponse(405, "method not allowed")
 	default:
 		return mgmtErrorResponse(404, "not found")
