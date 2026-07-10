@@ -65,15 +65,22 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: go build -buildmode=c-shared -o ${{ matrix.output }} .
 
-      - name: Package
+      - name: Package (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          $name = "token-usage-tracker_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip"
+          Compress-Archive -Path "${{ matrix.output }}" -DestinationPath "dist/$name" -Force
+          $hash = (Get-FileHash -Algorithm SHA256 "dist/$name").Hash.ToLower()
+          "$hash  $name" | Out-File -Append -Encoding utf8 dist/checksums.txt
+
+      - name: Package (Unix)
+        if: matrix.goos != 'windows'
         shell: bash
         run: |
           mkdir -p dist
           zip -j dist/token-usage-tracker_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip ${{ matrix.output }}
-
-      - name: Generate checksums
-        shell: bash
-        run: |
           cd dist
           sha256sum *.zip >> checksums.txt
 
