@@ -43,7 +43,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26'
 
       - name: Install Linux arm64 cross-compiler
         if: matrix.goos == 'linux' && matrix.goarch == 'arm64'
@@ -51,6 +51,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CC=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+      - name: Set up MinGW for Windows
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          $mingwPaths = @(
+            "C:\msys64\mingw64\bin",
+            "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin",
+            "C:\mingw64\bin"
+          )
+          foreach ($p in $mingwPaths) {
+            if (Test-Path "$p\gcc.exe") {
+              Write-Host "Found gcc at $p"
+              echo "$p" >> $env:GITHUB_PATH
+              break
+            }
+          }
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            Write-Host "gcc not found, installing via choco..."
+            choco install mingw -y --no-progress
+            refreshenv
+          }
 
       - name: Build
         env:
