@@ -165,20 +165,20 @@ func managementRegistration() managementRegistrationResponse {
 			{
 				Method:      http.MethodGet,
 				Path:        "/stats",
-				Menu:        "Token Stats",
-				Description: "View aggregated token usage statistics as JSON.",
+				Menu:        "Token 统计",
+				Description: "以 JSON 格式查看聚合的 Token 用量统计。",
 			},
 			{
 				Method:      http.MethodPost,
 				Path:        "/reset",
-				Description: "Reset all token usage counters to zero.",
+				Description: "重置所有 Token 用量计数器为零。",
 			},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{
 				Path:        "/dashboard",
-				Menu:        "Token Usage Tracker",
-				Description: "Real-time dashboard showing token usage across all models and providers.",
+				Menu:        "Token 用量追踪",
+				Description: "实时仪表盘，展示所有模型和提供商的 Token 用量。",
 			},
 		},
 	}

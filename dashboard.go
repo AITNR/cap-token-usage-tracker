@@ -68,7 +68,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 	// Build model rows
 	var rows strings.Builder
 	if len(stats.Models) == 0 {
-		rows.WriteString(`<tr><td colspan="12" class="empty-state">No usage data yet. Start making API requests to see statistics here.</td></tr>`)
+		rows.WriteString(`<tr><td colspan="12" class="empty-state">暂无用量数据。开始发起 API 请求后，统计数据将显示在此处。</td></tr>`)
 	} else {
 		for _, m := range stats.Models {
 			successPct := float64(0)
@@ -85,7 +85,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 			}
 			failureBadge := ""
 			if m.FailedRequests > 0 {
-				failureBadge = fmt.Sprintf(`<span class="badge badge-error">%d failed</span>`, m.FailedRequests)
+				failureBadge = fmt.Sprintf(`<span class="badge badge-error">%d 次失败</span>`, m.FailedRequests)
 			}
 			rows.WriteString(fmt.Sprintf(`
 				<tr>
@@ -120,12 +120,12 @@ func renderDashboardHTML(stats StatsResponse) string {
 	}
 
 	sb.WriteString(fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<meta http-equiv="refresh" content="5">
-	<title>Token Usage Tracker — Dashboard</title>
+	<title>Token 用量追踪 — 仪表盘</title>
 	<style>
 		:root {
 			--bg: #0d1117;
@@ -339,70 +339,70 @@ func renderDashboardHTML(stats StatsResponse) string {
 <body>
 	<div class="header">
 		<div class="header-left">
-			<h1><span class="icon">📊</span> Token Usage Tracker</h1>
-			<p>Real-time token usage statistics across all models and providers</p>
+			<h1><span class="icon">📊</span> Token 用量追踪</h1>
+			<p>所有模型和提供商的实时 Token 用量统计</p>
 		</div>
 		<div class="header-right">
-			<div class="auto-refresh"><span class="dot"></span> Auto-refresh 5s</div>
-			<a class="btn" href="stats">View JSON</a>
-			<button class="btn btn-danger" onclick="resetStats()">Reset Data</button>
+			<div class="auto-refresh"><span class="dot"></span> 自动刷新 5秒</div>
+			<a class="btn" href="stats">查看 JSON</a>
+			<button class="btn btn-danger" onclick="resetStats()">重置数据</button>
 		</div>
 	</div>
 
 	<div class="cards">
 		<div class="card card-accent">
-			<div class="label">Total Tokens</div>
+			<div class="label">总 Token 数</div>
 			<div class="value">%s</div>
-			<div class="sub">Input + Output + Cache</div>
+			<div class="sub">输入 + 输出 + 缓存</div>
 		</div>
 		<div class="card card-green">
-			<div class="label">Total Requests</div>
+			<div class="label">总请求数</div>
 			<div class="value">%s</div>
-			<div class="sub">%.1f%% success rate</div>
+			<div class="sub">成功率 %.1f%%</div>
 		</div>
 		<div class="card card-purple">
-			<div class="label">Input Tokens</div>
+			<div class="label">输入 Token</div>
 			<div class="value">%s</div>
 		</div>
 		<div class="card card-orange">
-			<div class="label">Output Tokens</div>
+			<div class="label">输出 Token</div>
 			<div class="value">%s</div>
 		</div>
 		<div class="card card-yellow">
-			<div class="label">Reasoning Tokens</div>
+			<div class="label">推理 Token</div>
 			<div class="value">%s</div>
 		</div>
 		<div class="card">
-			<div class="label">Cached Tokens</div>
+			<div class="label">缓存 Token</div>
 			<div class="value">%s</div>
-			<div class="sub">Read: %s · Creation: %s</div>
+			<div class="sub">读取: %s · 创建: %s</div>
 		</div>
 	</div>
 
 	<div class="meta-bar">
-		<span>Tracking since: <strong>%s</strong></span>
-		<span>Last activity: <strong>%s</strong></span>
-		<span>Models tracked: <strong>%d</strong></span>
+		<span>追踪起始：<strong>%s</strong></span>
+		<span>最近活动：<strong>%s</strong></span>
+		<span>追踪模型数：<strong>%d</strong></span>
 	</div>
 
 	<div class="table-container">
-		<div class="table-header">Per-Model Breakdown</div>
+		<div class="table-header">按模型明细</div>
 		<div class="table-wrap">
 			<table>
 				<thead>
 					<tr>
-						<th>Model</th>
-						<th>Provider</th>
-						<th>Requests</th>
-						<th>Input</th>
-						<th>Output</th>
-						<th>Reasoning</th>
-						<th>Cached</th>
-						<th>Cache Read</th>
-						<th>Total Tokens</th>
-						<th>Success</th>
-						<th>Avg Latency</th>
-						<th>Avg TTFT</th>
+						<th>模型</th>
+						<th>提供商</th>
+						<th>请求数</th>
+						<th>输入</th>
+						<th>输出</th>
+						<th>推理</th>
+						<th>缓存</th>
+						<th>缓存读取</th>
+						<th>总 Token</th>
+						<th>成功率</th>
+						<th>平均延迟</th>
+						<th>平均首Token</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -413,22 +413,22 @@ func renderDashboardHTML(stats StatsResponse) string {
 	</div>
 
 	<div class="footer">
-		Powered by <strong>Token Usage Tracker</strong> — a CLIProxyAPI plugin
+		由 <strong>Token Usage Tracker</strong> — CLIProxyAPI 插件 提供支持
 	</div>
 
 	<script>
 		async function resetStats() {
-			if (!confirm('Are you sure you want to reset all usage counters? This action cannot be undone.')) return;
+			if (!confirm('确定要重置所有用量计数器吗？此操作不可撤销。')) return;
 			try {
 				const resp = await fetch('reset', { method: 'POST' });
 				if (resp.ok) {
-					alert('All counters have been reset.');
+					alert('所有计数器已重置。');
 					location.reload();
 				} else {
-					alert('Reset failed: ' + resp.status);
+					alert('重置失败：' + resp.status);
 				}
 			} catch (e) {
-				alert('Reset failed: ' + e.message);
+				alert('重置失败：' + e.message);
 			}
 		}
 	</script>
