@@ -425,8 +425,17 @@ func handleUsage(request []byte) ([]byte, error) {
 }
 
 func handleManagementRegister() ([]byte, error) {
+	// The host converts GET routes with a Menu field into resource routes
+	// (legacy menu resource mechanism). This ensures the dashboard is served
+	// at /v0/resource/plugins/token-usage-tracker/dashboard without authentication.
 	resp := map[string]any{
 		"routes": []map[string]any{
+			{
+				"Method":      "GET",
+				"Path":        "/plugins/token-usage-tracker/dashboard",
+				"Menu":        "Token 用量统计",
+				"Description": "查看各模型和 Provider 的 Token 消耗统计面板",
+			},
 			{
 				"Method": "GET",
 				"Path":   "/plugins/token-usage-tracker/stats",
@@ -434,13 +443,6 @@ func handleManagementRegister() ([]byte, error) {
 			{
 				"Method": "POST",
 				"Path":   "/plugins/token-usage-tracker/reset",
-			},
-		},
-		"resources": []map[string]any{
-			{
-				"Path":        "/dashboard",
-				"Menu":        "Token 用量统计",
-				"Description": "查看各模型和 Provider 的 Token 消耗统计面板",
 			},
 		},
 	}
