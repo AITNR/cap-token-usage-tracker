@@ -452,32 +452,40 @@ func handleManagementHandle(request []byte) ([]byte, error) {
 	if err := json.Unmarshal(request, &req); err != nil {
 		return mgmtErrorResponse(400, "invalid request")
 	}
-	// Normalize path: strip plugin prefix for resource routes
+
+	// Normalize path: the host may pass the full URL path in several formats:
+	//   /v0/resource/plugins/<id>/dashboard      (resource route)
+	//   /v0/management/plugins/<id>/stats         (management API route)
+	//   /plugins/<id>/dashboard                   (legacy prefix)
+	//   /dashboard                                (relative path)
+	// We strip known prefixes to obtain a relative path for matching.
+	const (
+		resourceBase   = "/v0/resource/plugins/token-usage-tracker"
+		managementBase = "/v0/management/plugins/token-usage-tracker"
+		legacyBase     = "/plugins/token-usage-tracker"
+	)
 	path := req.Path
-	const pluginPrefix = "/plugins/token-usage-tracker"
-	if strings.HasPrefix(path, pluginPrefix) {
-		path = strings.TrimPrefix(path, pluginPrefix)
-		if path == "" {
-			path = "/"
+	for _, prefix := range []string{resourceBase, managementBase, legacyBase} {
+		if strings.HasPrefix(path, prefix) {
+			path = strings.TrimPrefix(path, prefix)
+			if path == "" {
+				path = "/"
+			}
+			break
 		}
-	}
-	// Restore full API path for route matching
-	apiPath := req.Path
-	if !strings.HasPrefix(apiPath, "/plugins/") {
-		apiPath = pluginPrefix + apiPath
 	}
 
 	switch {
 	case path == "/dashboard":
 		return mgmtHTMLResponse(dashboardHTML)
-	case apiPath == "/plugins/token-usage-tracker/stats" && req.Method == "GET":
+	case path == "/stats" && req.Method == "GET":
 		return mgmtStatsResponse()
-	case apiPath == "/plugins/token-usage-tracker/stats":
+	case path == "/stats":
 		return mgmtErrorResponse(405, "method not allowed")
-	case apiPath == "/plugins/token-usage-tracker/reset" && req.Method == "POST":
+	case path == "/reset" && req.Method == "POST":
 		resetStats()
 		return mgmtJSONResponse(200, map[string]any{"status": "ok"})
-	case apiPath == "/plugins/token-usage-tracker/reset":
+	case path == "/reset":
 		return mgmtErrorResponse(405, "method not allowed")
 	default:
 		return mgmtErrorResponse(404, "not found")
