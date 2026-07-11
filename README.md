@@ -1,100 +1,106 @@
 # CAP Token Usage Tracker
 
-A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that tracks and visualizes LLM token usage across all models and providers in real time.
+[English](#english) | **中文**
 
-## Overview
+一个 [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) 插件，用于实时追踪和可视化所有模型与提供商的 LLM Token 用量。
 
-CAP Token Usage Tracker is a CGO-compiled C shared library (`.dll` / `.so` / `.dylib`) that plugs into the CLIProxyAPI host. It intercepts every API request handled by the proxy, aggregates token-level statistics — input, output, reasoning, cached, cache read/creation — and exposes them through a JSON API and a built-in web dashboard.
+## 简介
 
-### Key Features
+CAP Token Usage Tracker 是一个通过 CGO 编译的 C 共享库（`.dll` / `.so` / `.dylib`），作为插件接入 CLIProxyAPI 宿主。它会拦截代理处理的每一个 API 请求，聚合 Token 级别的统计数据 —— 输入、输出、推理、缓存、缓存读取/创建 —— 并通过 JSON API 和内置 Web 仪表盘进行展示。
 
-- **Real-time tracking** — Captures token usage for every request, grouped by model + provider
-- **Comprehensive metrics** — Input/output/reasoning/cached tokens, cache read & creation, request count, success rate, latency, and TTFT (time to first token)
-- **Built-in dashboard** — A self-contained dark-themed HTML dashboard with auto-refresh (every 5 seconds), no external dependencies
-- **JSON API** — Machine-readable `/stats` endpoint for integration with external tools
-- **Reset API** — POST `/reset` to clear all counters
-- **Thread-safe** — Mutex-protected data store, safe for concurrent proxy traffic
-- **Cross-platform** — Pre-built binaries for Linux (amd64/arm64), Windows (amd64), and macOS (amd64/arm64)
+### 核心功能
 
-## Architecture
+- **实时追踪** — 捕获每次请求的 Token 用量，按模型 + 提供商分组
+- **全面指标** — 输入/输出/推理/缓存 Token、缓存读取与创建、请求数、成功率、延迟和首 Token 时间（TTFT）
+- **内置仪表盘** — 自包含的 HTML 仪表盘，支持亮色/暗色双主题切换，每 5 秒自动刷新，无需外部依赖
+- **JSON API** — 机器可读的 `/stats` 端点，便于与外部工具集成
+- **重置 API** — POST `/reset` 清零所有计数器
+- **线程安全** — 互斥锁保护的数据存储，可安全处理并发代理流量
+- **跨平台** — 预编译支持 Linux (amd64/arm64)、Windows (amd64) 和 macOS (amd64/arm64)
+
+### 部署方式
+
+1. 下载或编译对应平台的共享库文件
+2. 将 `.dll` / `.so` / `.dylib` 文件放入 CLIProxyAPI 的插件目录
+3. 重启 CLIProxyAPI — 插件将自动注册
+
+### 访问地址
+
+| 类型 | 路径 | 说明 |
+|---|---|---|
+| 管理接口 | `/v0/management/plugins/token-usage-tracker/stats` | 查看用量统计 (JSON) |
+| 管理接口 | `/v0/management/plugins/token-usage-tracker/reset` | 重置所有计数器 |
+| 资源页面 | `/v0/resource/plugins/token-usage-tracker/dashboard` | 实时仪表盘 |
+
+### 架构
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    CLIProxyAPI Host                      │
+│                    CLIProxyAPI 宿主                       │
 │                                                          │
 │  ┌──────────────┐    ┌─────────────────────────────────┐│
-│  │  Proxy Core   │───▶│   Token Usage Tracker Plugin    ││
-│  │  (request     │    │                                 ││
-│  │   routing)    │    │  ┌─────────────┐                ││
-│  └──────────────┘    │  │   Tracker    │ (in-memory)    ││
-│                      │  │  (mutex-safe)│                ││
-│  ┌──────────────┐    │  └──────┬──────┘                ││
-│  │ Plugin RPC   │◀───┴─────────┤                       ││
+│  │  代理核心     │───▶│   Token 用量追踪插件              ││
+│  │ (请求路由)    │    │                                 ││
+│  └──────────────┘    │  ┌─────────────┐                ││
+│                      │  │  Tracker    │ (内存存储)       ││
+│  ┌──────────────┐    │  │ (互斥锁安全) │                ││
+│  │ 插件 RPC     │◀───┴─────────┤                       ││
 │  │ (ABI v7)     │               │                       ││
 │  └──────┬───────┘               │                       ││
 │         │              ┌────────┴────────┐              ││
 │         │              │                  │              ││
 │         │     ┌────────▼───┐    ┌─────────▼────────┐    ││
-│         │     │ Management │    │  Resource Route   │    ││
-│         │     │   Routes   │    │    /dashboard      │    ││
-│         │     │ /stats     │    │  (HTML dashboard)  │    ││
-│         │     │ /reset     │    └───────────────────┘    ││
-│         │     └────────────┘                             ││
+│         │     │ 管理路由   │    │   资源路由         │    ││
+│         │     │ /stats     │    │   /dashboard       │    ││
+│         │     │ /reset     │    │  (HTML 仪表盘)    │    ││
+│         │     └────────────┘    └───────────────────┘    ││
 └─────────┼────────────────────────────────────────────────┘
           │
           ▼
-   HTTP response (JSON / HTML)
+   HTTP 响应 (JSON / HTML)
 ```
 
-## Plugin Capabilities
+### 插件能力
 
-| Capability | Description |
+| 能力 | 说明 |
 |---|---|
-| `usage_plugin` | Receives `UsageRecord` for every proxied request |
-| `management_api` | Registers management routes (`/stats`, `/reset`) and a resource route (`/dashboard`) |
+| `usage_plugin` | 接收每个代理请求的 `UsageRecord` |
+| `management_api` | 注册管理路由（`/stats`、`/reset`）和资源路由（`/dashboard`） |
 
-### Registered Routes
+### 追踪指标
 
-| Type | Path | Method | Description |
-|---|---|---|---|
-| Management | `/v0/management/plugins/token-usage-tracker/stats` | GET | Aggregated usage statistics (JSON) |
-| Management | `/v0/management/plugins/token-usage-tracker/reset` | POST | Reset all counters |
-| Resource | `/v0/resource/plugins/token-usage-tracker/dashboard` | GET | Real-time HTML dashboard |
-
-## Tracked Metrics
-
-| Metric | Description |
+| 指标 | 说明 |
 |---|---|
-| `requests` | Total request count |
-| `failed_requests` | Failed request count |
-| `input_tokens` | Total input (prompt) tokens |
-| `output_tokens` | Total output (completion) tokens |
-| `reasoning_tokens` | Reasoning/thinking tokens (e.g. o1/o3) |
-| `cached_tokens` | Cached tokens (deprecated, sum of cache read + creation) |
-| `cache_read_tokens` | Cache read tokens |
-| `cache_creation_tokens` | Cache creation tokens |
-| `total_tokens` | Sum of all token types |
-| `avg_latency` | Average request latency |
-| `avg_ttft` | Average time to first token |
+| `requests` | 总请求数 |
+| `failed_requests` | 失败请求数 |
+| `input_tokens` | 总输入（提示）Token |
+| `output_tokens` | 总输出（补全）Token |
+| `reasoning_tokens` | 推理/思考 Token（如 o1/o3） |
+| `cached_tokens` | 缓存 Token（已弃用，缓存读取 + 创建之和） |
+| `cache_read_tokens` | 缓存读取 Token |
+| `cache_creation_tokens` | 缓存创建 Token |
+| `total_tokens` | 所有 Token 类型之和 |
+| `avg_latency` | 平均请求延迟 |
+| `avg_ttft` | 平均首 Token 时间 |
 
-## Build
+### 构建
 
-### Prerequisites
+**前置要求：**
 
 - **Go 1.26+**
-- **GCC** (required for CGO)
-  - Windows: Install [MinGW-w64](https://github.com/brechtsanders/winlibs_mingw) and add `bin` to PATH
-  - Linux: `sudo apt install gcc` (or `gcc-aarch64-linux-gnu` for ARM64 cross-compile)
-  - macOS: Xcode Command Line Tools (`xcode-select --install`)
+- **GCC**（CGO 必需）
+  - Windows：安装 [MinGW-w64](https://github.com/brechtsanders/winlibs_mingw) 并将 `bin` 添加到 PATH
+  - Linux：`sudo apt install gcc`（ARM64 交叉编译用 `gcc-aarch64-linux-gnu`）
+  - macOS：Xcode 命令行工具（`xcode-select --install`）
 
-### Local Build
+**本地构建：**
 
 ```bash
-# Set CGO and ensure gcc is in PATH
+# 设置 CGO 并确保 gcc 在 PATH 中
 CGO_ENABLED=1 go build -buildmode=c-shared -o token-usage-tracker.dll .
 ```
 
-Windows (PowerShell):
+Windows (PowerShell)：
 
 ```powershell
 $env:PATH = "C:\Program Files\Go\bin;C:\mingw64\mingw64\bin;" + $env:PATH
@@ -102,40 +108,44 @@ $env:CGO_ENABLED = 1
 go build -buildmode=c-shared -o token-usage-tracker.dll .
 ```
 
-### CI/CD
+**CI/CD：** GitHub Actions 工作流（`.github/workflows/build.yml`）在推送时自动构建所有支持平台，并在版本标签（`v*`）时创建发布。
 
-GitHub Actions workflow (`.github/workflows/build.yml`) automatically builds for all supported platforms on push and creates releases on version tags (`v*`).
-
-## Deployment
-
-1. Download or build the shared library for your platform
-2. Place the `.dll` / `.so` / `.dylib` file in the CLIProxyAPI plugins directory
-3. Restart CLIProxyAPI — the plugin auto-registers
-
-## Project Structure
+### 项目结构
 
 ```
 cap-token-usage-tracker/
-├── main.go          # Plugin entry point, ABI bindings, RPC dispatch
-├── tracker.go       # Thread-safe in-memory usage data store
-├── management.go    # Management API handlers (/stats, /reset)
-├── dashboard.go     # HTML dashboard renderer (embedded CSS/JS)
-├── go.mod           # Module definition (depends on CLIProxyAPI v7 SDK)
+├── main.go          # 插件入口、ABI 绑定、RPC 分发
+├── tracker.go       # 线程安全的内存用量数据存储
+├── management.go    # 管理 API 处理器 (/stats, /reset)
+├── dashboard.go     # HTML 仪表盘渲染（内嵌 CSS/JS）
+├── go.mod           # 模块定义（依赖 CLIProxyAPI v7 SDK）
 ├── .github/
 │   └── workflows/
-│       ├── build.yml               # Multi-platform CI build
-│       └── qodana_code_quality.yml  # Code quality checks
-└── qodana.yaml      # Qodana configuration
+│       ├── build.yml               # 多平台 CI 构建
+│       └── qodana_code_quality.yml  # 代码质量检查
+└── qodana.yaml      # Qodana 配置
 ```
 
-## Tech Stack
+### 技术栈
 
-- **Language:** Go 1.26
-- **Host SDK:** [CLIProxyAPI v7](https://github.com/router-for-me/CLIProxyAPI) plugin SDK
-- **Build Mode:** `c-shared` (CGO compiled dynamic library)
-- **CI/CD:** GitHub Actions (5-platform build matrix)
-- **Code Quality:** Qodana
+- **语言：** Go 1.26
+- **宿主 SDK：** [CLIProxyAPI v7](https://github.com/router-for-me/CLIProxyAPI) 插件 SDK
+- **构建模式：** `c-shared`（CGO 编译动态库）
+- **CI/CD：** GitHub Actions（5 平台构建矩阵）
+- **代码质量：** Qodana
 
-## License
+### 许可证
 
-This project is part of the [router-for-me](https://github.com/router-for-me) ecosystem.
+本项目属于 [router-for-me](https://github.com/router-for-me) 生态系统。
+
+---
+
+<a id="english"></a>
+
+## English
+
+A [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) plugin that tracks and visualizes LLM token usage across all models and providers in real time.
+
+CAP Token Usage Tracker is a CGO-compiled C shared library (`.dll` / `.so` / `.dylib`) that plugs into the CLIProxyAPI host. It intercepts every API request, aggregates token-level statistics, and exposes them through a JSON API and a built-in web dashboard.
+
+For full documentation, please refer to the Chinese section above.
