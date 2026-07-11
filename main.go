@@ -39,11 +39,199 @@ import "C"
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
+
+// usageRecordJSON is a host-format-agnostic mirror of pluginapi.UsageRecord.
+// The host may serialize UsageRecord with PascalCase keys (Go default, no JSON tags)
+// or snake_case keys, so we use a raw map to accept both formats.
+type usageRecordJSON struct {
+	Provider        string
+	ExecutorType    string
+	Model           string
+	Alias           string
+	APIKey          string
+	AuthID          string
+	AuthIndex       string
+	AuthType        string
+	Source          string
+	ReasoningEffort string
+	ServiceTier     string
+	RequestedAt     time.Time
+	Latency         time.Duration
+	TTFT            time.Duration
+	Failed          bool
+	FailureCode     int
+	FailureBody     string
+	Detail          struct {
+		InputTokens         int64
+		OutputTokens        int64
+		ReasoningTokens     int64
+		CachedTokens        int64
+		CacheReadTokens     int64
+		CacheCreationTokens int64
+		TotalTokens         int64
+	}
+}
+
+// UnmarshalJSON accepts both PascalCase (Go default) and snake_case JSON keys.
+func (r *usageRecordJSON) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.Provider = firstString(raw, "Provider", "provider")
+	r.ExecutorType = firstString(raw, "ExecutorType", "executor_type")
+	r.Model = firstString(raw, "Model", "model")
+	r.Alias = firstString(raw, "Alias", "alias")
+	r.APIKey = firstString(raw, "APIKey", "ApiKey", "api_key")
+	r.AuthID = firstString(raw, "AuthID", "AuthId", "auth_id")
+	r.AuthIndex = firstString(raw, "AuthIndex", "auth_index")
+	r.AuthType = firstString(raw, "AuthType", "auth_type")
+	r.Source = firstString(raw, "Source", "source")
+	r.ReasoningEffort = firstString(raw, "ReasoningEffort", "reasoning_effort")
+	r.ServiceTier = firstString(raw, "ServiceTier", "service_tier")
+	r.Failed = firstBool(raw, "Failed", "failed")
+
+	// RequestedAt
+	for _, key := range []string{"RequestedAt", "requested_at"} {
+		if v, ok := raw[key]; ok {
+			var t time.Time
+			if err := json.Unmarshal(v, &t); err == nil {
+				r.RequestedAt = t
+				break
+			}
+		}
+	}
+
+	// Duration fields: try both int64 (nanoseconds) and string formats
+	for _, key := range []string{"Latency", "latency", "latency_ns"} {
+		if v, ok := raw[key]; ok {
+			var n int64
+			if err := json.Unmarshal(v, &n); err == nil {
+				r.Latency = time.Duration(n)
+				break
+			}
+		}
+	}
+	for _, key := range []string{"TTFT", "ttft", "ttft_ns"} {
+		if v, ok := raw[key]; ok {
+			var n int64
+			if err := json.Unmarshal(v, &n); err == nil {
+				r.TTFT = time.Duration(n)
+				break
+			}
+		}
+	}
+
+	// Failure sub-object
+	for _, key := range []string{"Failure", "failure"} {
+		if v, ok := raw[key]; ok {
+			var f map[string]json.RawMessage
+			if err := json.Unmarshal(v, &f); err == nil {
+				r.FailureCode = int(firstInt(f, "StatusCode", "status_code"))
+				r.FailureBody = firstString(f, "Body", "body")
+				break
+			}
+		}
+	}
+
+	// Detail sub-object
+	for _, key := range []string{"Detail", "detail"} {
+		if v, ok := raw[key]; ok {
+			var d map[string]json.RawMessage
+			if err := json.Unmarshal(v, &d); err == nil {
+				r.Detail.InputTokens = firstInt(d, "InputTokens", "input_tokens")
+				r.Detail.OutputTokens = firstInt(d, "OutputTokens", "output_tokens")
+				r.Detail.ReasoningTokens = firstInt(d, "ReasoningTokens", "reasoning_tokens")
+				r.Detail.CachedTokens = firstInt(d, "CachedTokens", "cached_tokens")
+				r.Detail.CacheReadTokens = firstInt(d, "CacheReadTokens", "cache_read_tokens")
+				r.Detail.CacheCreationTokens = firstInt(d, "CacheCreationTokens", "cache_creation_tokens")
+				r.Detail.TotalTokens = firstInt(d, "TotalTokens", "total_tokens")
+				break
+			}
+		}
+	}
+
+	return nil
+}
+
+// firstString returns the first matching key's string value from a raw JSON map.
+func firstString(m map[string]json.RawMessage, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			var s string
+			if err := json.Unmarshal(v, &s); err == nil {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// firstInt returns the first matching key's int64 value from a raw JSON map.
+func firstInt(m map[string]json.RawMessage, keys ...string) int64 {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			var n int64
+			if err := json.Unmarshal(v, &n); err == nil {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// firstBool returns the first matching key's bool value from a raw JSON map.
+func firstBool(m map[string]json.RawMessage, keys ...string) bool {
+	for _, k := range keys {
+		if v, ok := m[k]; ok {
+			var b bool
+			if err := json.Unmarshal(v, &b); err == nil {
+				return b
+			}
+		}
+	}
+	return false
+}
+
+// toSDK converts the parsed record to the SDK's UsageRecord type.
+func (r *usageRecordJSON) toSDK() pluginapi.UsageRecord {
+	return pluginapi.UsageRecord{
+		Provider:        r.Provider,
+		ExecutorType:    r.ExecutorType,
+		Model:           r.Model,
+		Alias:           r.Alias,
+		APIKey:          r.APIKey,
+		AuthID:          r.AuthID,
+		AuthIndex:       r.AuthIndex,
+		AuthType:        r.AuthType,
+		Source:          r.Source,
+		ReasoningEffort: r.ReasoningEffort,
+		ServiceTier:     r.ServiceTier,
+		RequestedAt:     r.RequestedAt,
+		Latency:         r.Latency,
+		TTFT:            r.TTFT,
+		Failed:          r.Failed,
+		Failure: pluginapi.UsageFailure{
+			StatusCode: r.FailureCode,
+			Body:       r.FailureBody,
+		},
+		Detail: pluginapi.UsageDetail{
+			InputTokens:         r.Detail.InputTokens,
+			OutputTokens:        r.Detail.OutputTokens,
+			ReasoningTokens:     r.Detail.ReasoningTokens,
+			CachedTokens:        r.Detail.CachedTokens,
+			CacheReadTokens:     r.Detail.CacheReadTokens,
+			CacheCreationTokens: r.Detail.CacheCreationTokens,
+			TotalTokens:         r.Detail.TotalTokens,
+		},
+	}
+}
 
 // tracker is the global usage data store.
 var tracker = NewTracker()
@@ -186,10 +374,11 @@ func managementRegistration() managementRegistrationResponse {
 
 // handleUsage processes a usage.handle call by storing the usage record.
 func handleUsage(request []byte) ([]byte, error) {
-	var record pluginapi.UsageRecord
-	if err := json.Unmarshal(request, &record); err != nil {
+	var raw usageRecordJSON
+	if err := json.Unmarshal(request, &raw); err != nil {
 		return nil, err
 	}
+	record := raw.toSDK()
 	tracker.RecordUsage(record)
 	return okEnvelope(map[string]any{})
 }

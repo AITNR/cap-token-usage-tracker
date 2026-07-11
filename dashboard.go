@@ -117,30 +117,30 @@ func renderDashboardHTML(stats StatsResponse) string {
 	<div class="cards">
 		<div class="card card-accent">
 			<div class="label">总 Token 数</div>
-			<div class="value">%s</div>
+			<div class="value" id="totalTokens">%s</div>
 			<div class="sub">输入 + 输出 + 缓存</div>
 		</div>
 		<div class="card card-green">
 			<div class="label">总请求数</div>
-			<div class="value">%s</div>
-			<div class="sub">成功率 %.1f%%</div>
+			<div class="value" id="totalRequests">%s</div>
+			<div class="sub" id="successRate">成功率 %.1f%%</div>
 		</div>
 		<div class="card card-purple">
 			<div class="label">输入 Token</div>
-			<div class="value">%s</div>
+			<div class="value" id="inputTokens">%s</div>
 		</div>
 		<div class="card card-orange">
 			<div class="label">输出 Token</div>
-			<div class="value">%s</div>
+			<div class="value" id="outputTokens">%s</div>
 		</div>
 		<div class="card card-yellow">
 			<div class="label">推理 Token</div>
-			<div class="value">%s</div>
+			<div class="value" id="reasoningTokens">%s</div>
 		</div>
 		<div class="card">
 			<div class="label">缓存 Token</div>
-			<div class="value">%s</div>
-			<div class="sub">读取: %s · 创建: %s</div>
+			<div class="value" id="cachedTokens">%s</div>
+			<div class="sub" id="cacheSub">读取: %s · 创建: %s</div>
 		</div>
 	</div>`,
 		formatNumber(stats.Summary.TotalTokens),
@@ -157,9 +157,10 @@ func renderDashboardHTML(stats StatsResponse) string {
 	// Build meta bar HTML
 	metaHTML := fmt.Sprintf(`
 	<div class="meta-bar">
-		<span>追踪起始：<strong>%s</strong></span>
-		<span>最近活动：<strong>%s</strong></span>
-		<span>追踪模型数：<strong>%d</strong></span>
+		<span>追踪起始：<strong id="metaSince">%s</strong></span>
+		<span>最近活动：<strong id="metaLastUsed">%s</strong></span>
+		<span>追踪模型数：<strong id="metaModelCount">%d</strong></span>
+		<span id="lastUpdate" style="margin-left:auto;font-style:italic"></span>
 	</div>`,
 		sinceStr,
 		lastUsedStr,
@@ -172,7 +173,6 @@ func renderDashboardHTML(stats StatsResponse) string {
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<meta http-equiv="refresh" content="5">
 	<title>Token 用量追踪 — 仪表盘</title>
 	<style>
 		:root {
@@ -451,7 +451,7 @@ func renderDashboardHTML(stats StatsResponse) string {
 						<th>平均首Token</th>
 					</tr>
 				</thead>
-				<tbody>
+				<tbody id="modelTableBody">
 					` + rows.String() + `
 				</tbody>
 			</table>
@@ -498,6 +498,99 @@ func renderDashboardHTML(stats StatsResponse) string {
 				alert('重置失败：' + e.message);
 			}
 		}
+
+		// --- AJAX auto-refresh without page reload ---
+		function fmtNum(n) {
+			if (!n || n === 0) return '0';
+			return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+		}
+
+		function fmtDur(ns) {
+			if (!ns || ns <= 0) return '\u2014';
+			var s = ns / 1e9;
+			if (s < 0.001) return Math.round(ns / 1000) + '\u00b5s';
+			if (s < 1) return (s * 1000).toFixed(1) + 'ms';
+			return s.toFixed(2) + 's';
+		}
+
+		function fmtDate(iso) {
+			if (!iso || iso === '0001-01-01T00:00:00Z') return '\u2014';
+			var d = new Date(iso);
+			if (isNaN(d.getTime())) return '\u2014';
+			return d.toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
+		}
+
+		function setText(id, val) {
+			var el = document.getElementById(id);
+			if (el) el.textContent = val;
+		}
+
+		async function autoRefresh() {
+			try {
+				var resp = await fetch('stats');
+				if (!resp.ok) return;
+				var envelope = await resp.json();
+				var data = envelope.result ? envelope.result : envelope;
+				if (!data || !data.summary) return;
+
+				var s = data.summary;
+				var rate = s.requests > 0 ? ((s.requests - s.failed_requests) / s.requests * 100) : 0;
+
+				setText('totalTokens', fmtNum(s.total_tokens));
+				setText('totalRequests', fmtNum(s.requests));
+				setText('successRate', '\u6210\u529f\u7387 ' + rate.toFixed(1) + '%');
+				setText('inputTokens', fmtNum(s.input_tokens));
+				setText('outputTokens', fmtNum(s.output_tokens));
+				setText('reasoningTokens', fmtNum(s.reasoning_tokens));
+				setText('cachedTokens', fmtNum(s.cached_tokens));
+				setText('cacheSub', '\u8bfb\u53d6: ' + fmtNum(s.cache_read_tokens) + ' \u00b7 \u521b\u5efa: ' + fmtNum(s.cache_creation_tokens));
+				setText('metaSince', fmtDate(data.since));
+				setText('metaLastUsed', fmtDate(data.last_used));
+				setText('metaModelCount', (data.models ? data.models.length : 0).toString());
+
+				// Update table rows
+				var tbody = document.getElementById('modelTableBody');
+				if (tbody && data.models) {
+					if (data.models.length === 0) {
+						tbody.innerHTML = '<tr><td colspan="12" class="empty-state">\u6682\u65e0\u7528\u91cf\u6570\u636e\u3002\u5f00\u59cb\u53d1\u8d77 API \u8bf7\u6c42\u540e\uff0c\u7edf\u8ba1\u6570\u636e\u5c06\u663e\u793a\u5728\u6b64\u5904\u3002</td></tr>';
+					} else {
+						var html = '';
+						for (var i = 0; i < data.models.length; i++) {
+							var m = data.models[i];
+							var pct = m.requests > 0 ? ((m.requests - m.failed_requests) / m.requests * 100) : 0;
+							var avgLat = m.requests > 0 ? fmtDur(m.total_latency_ns / m.requests) : '\u2014';
+							var avgTtft = m.requests > 0 ? fmtDur(m.total_ttft_ns / m.requests) : '\u2014';
+							html += '<tr>'
+								+ '<td class="col-model">' + (m.model || '\u2014') + '</td>'
+								+ '<td class="col-provider">' + (m.provider || '\u2014') + '</td>'
+								+ '<td class="num">' + fmtNum(m.requests) + '</td>'
+								+ '<td class="num">' + fmtNum(m.input_tokens) + '</td>'
+								+ '<td class="num">' + fmtNum(m.output_tokens) + '</td>'
+								+ '<td class="num">' + fmtNum(m.reasoning_tokens) + '</td>'
+								+ '<td class="num">' + fmtNum(m.cached_tokens) + '</td>'
+								+ '<td class="num">' + fmtNum(m.cache_read_tokens) + '</td>'
+								+ '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
+								+ '<td class="num">' + pct.toFixed(1) + '%</td>'
+								+ '<td class="num">' + avgLat + '</td>'
+								+ '<td class="num">' + avgTtft + '</td>'
+								+ '</tr>';
+						}
+						tbody.innerHTML = html;
+					}
+				}
+
+				// Show last update time
+				var now = new Date();
+				var ts = now.getHours().toString().padStart(2,'0') + ':'
+					+ now.getMinutes().toString().padStart(2,'0') + ':'
+					+ now.getSeconds().toString().padStart(2,'0');
+				setText('lastUpdate', '\u6700\u540e\u66f4\u65b0: ' + ts);
+			} catch(e) {
+				// Silently ignore fetch errors
+			}
+		}
+
+		setInterval(autoRefresh, 5000);
 	</script>
 </body>
 </html>`
