@@ -1,599 +1,99 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-// handleDashboard renders the full HTML dashboard page.
-func handleDashboard(req pluginapi.ManagementRequest) pluginapi.ManagementResponse {
-	stats := tracker.GetStats()
-	html := renderDashboardHTML(stats)
+func dashboardResponse() pluginapi.ManagementResponse {
 	return pluginapi.ManagementResponse{
 		StatusCode: http.StatusOK,
-		Headers:    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-		Body:       []byte(html),
+		Headers: http.Header{
+			"Content-Type":           []string{"text/html; charset=utf-8"},
+			"Cache-Control":          []string{"no-store"},
+			"X-Content-Type-Options": []string{"nosniff"},
+			"Referrer-Policy":        []string{"no-referrer"},
+			"Content-Security-Policy": []string{
+				"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+			},
+		},
+		Body: []byte(dashboardHTML),
 	}
 }
 
-// formatDuration converts a time.Duration to a human-readable string.
-func formatDuration(d time.Duration) string {
-	if d <= 0 {
-		return "—"
-	}
-	if d < time.Millisecond {
-		return fmt.Sprintf("%dµs", d.Microseconds())
-	}
-	if d < time.Second {
-		return fmt.Sprintf("%.1fms", float64(d.Microseconds())/1000.0)
-	}
-	return fmt.Sprintf("%.2fs", d.Seconds())
-}
-
-// formatNumber adds thousands separators to large numbers.
-func formatNumber(n int64) string {
-	if n == 0 {
-		return "0"
-	}
-	s := fmt.Sprintf("%d", n)
-	var result strings.Builder
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result.WriteByte(',')
-		}
-		result.WriteRune(c)
-	}
-	return result.String()
-}
-
-// renderDashboardHTML generates the complete dashboard HTML with embedded CSS and JavaScript.
-func renderDashboardHTML(stats StatsResponse) string {
-	// Summary card data
-	successRate := float64(0)
-	if stats.Summary.Requests > 0 {
-		successRate = float64(stats.Summary.Requests-stats.Summary.FailedRequests) / float64(stats.Summary.Requests) * 100
-	}
-	sinceStr := stats.Since.Format("2006-01-02 15:04:05 MST")
-	lastUsedStr := "—"
-	if !stats.LastUsed.IsZero() {
-		lastUsedStr = stats.LastUsed.Format("2006-01-02 15:04:05 MST")
-	}
-
-	// Build model rows
-	var rows strings.Builder
-	if len(stats.Models) == 0 {
-		rows.WriteString(`<tr><td colspan="12" class="empty-state">暂无用量数据。开始发起 API 请求后，统计数据将显示在此处。</td></tr>`)
-	} else {
-		for _, m := range stats.Models {
-			successPct := float64(0)
-			if m.Requests > 0 {
-				successPct = float64(m.Requests-m.FailedRequests) / float64(m.Requests) * 100
-			}
-			providerDisplay := m.Provider
-			if providerDisplay == "" {
-				providerDisplay = "—"
-			}
-			modelDisplay := m.Model
-			if modelDisplay == "" {
-				modelDisplay = "—"
-			}
-			rows.WriteString(fmt.Sprintf(`
-				<tr>
-					<td class="col-model">%s</td>
-					<td class="col-provider">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-					<td class="num">%.1f%%</td>
-					<td class="num">%s</td>
-					<td class="num">%s</td>
-				</tr>`,
-				modelDisplay,
-				providerDisplay,
-				formatNumber(m.Requests),
-				formatNumber(m.InputTokens),
-				formatNumber(m.OutputTokens),
-				formatNumber(m.ReasoningTokens),
-				formatNumber(m.CachedTokens),
-				formatNumber(m.CacheReadTokens),
-				formatNumber(m.TotalTokens),
-				successPct,
-				formatDuration(m.AvgLatency()),
-				formatDuration(m.AvgTTFT()),
-			))
-		}
-	}
-
-	// Build summary cards HTML separately to avoid format string complexity
-	cardsHTML := fmt.Sprintf(`
-	<div class="cards">
-		<div class="card card-accent">
-			<div class="label">总 Token 数</div>
-			<div class="value" id="totalTokens">%s</div>
-			<div class="sub">输入 + 输出 + 缓存</div>
-		</div>
-		<div class="card card-green">
-			<div class="label">总请求数</div>
-			<div class="value" id="totalRequests">%s</div>
-			<div class="sub" id="successRate">成功率 %.1f%%</div>
-		</div>
-		<div class="card card-purple">
-			<div class="label">输入 Token</div>
-			<div class="value" id="inputTokens">%s</div>
-		</div>
-		<div class="card card-orange">
-			<div class="label">输出 Token</div>
-			<div class="value" id="outputTokens">%s</div>
-		</div>
-		<div class="card card-yellow">
-			<div class="label">推理 Token</div>
-			<div class="value" id="reasoningTokens">%s</div>
-		</div>
-		<div class="card">
-			<div class="label">缓存 Token</div>
-			<div class="value" id="cachedTokens">%s</div>
-			<div class="sub" id="cacheSub">读取: %s · 创建: %s</div>
-		</div>
-	</div>`,
-		formatNumber(stats.Summary.TotalTokens),
-		formatNumber(stats.Summary.Requests),
-		successRate,
-		formatNumber(stats.Summary.InputTokens),
-		formatNumber(stats.Summary.OutputTokens),
-		formatNumber(stats.Summary.ReasoningTokens),
-		formatNumber(stats.Summary.CachedTokens),
-		formatNumber(stats.Summary.CacheReadTokens),
-		formatNumber(stats.Summary.CacheCreationTokens),
-	)
-
-	// Build meta bar HTML
-	metaHTML := fmt.Sprintf(`
-	<div class="meta-bar">
-		<span>追踪起始：<strong id="metaSince">%s</strong></span>
-		<span>最近活动：<strong id="metaLastUsed">%s</strong></span>
-		<span>追踪模型数：<strong id="metaModelCount">%d</strong></span>
-		<span id="lastUpdate" style="margin-left:auto;font-style:italic"></span>
-	</div>`,
-		sinceStr,
-		lastUsedStr,
-		len(stats.Models),
-	)
-
-	// Assemble final HTML
-	html := `<!DOCTYPE html>
+const dashboardHTML = `<!doctype html>
 <html lang="zh-CN">
 <head>
-	<meta charset="UTF-8">
-	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Token 用量追踪 — 仪表盘</title>
-	<style>
-		:root {
-			--bg: #0d1117;
-			--bg-card: #161b22;
-			--bg-card-hover: #1c2330;
-			--border: #30363d;
-			--text: #e6edf3;
-			--text-muted: #8b949e;
-			--text-dim: #6e7681;
-			--accent: #58a6ff;
-			--green: #3fb950;
-			--green-bg: rgba(63, 185, 80, 0.1);
-			--red: #f85149;
-			--red-bg: rgba(248, 81, 73, 0.1);
-			--yellow: #d29922;
-			--purple: #bc8cff;
-			--purple-bg: rgba(188, 140, 255, 0.1);
-			--orange: #e8873a;
-			--shadow: 0 0 transparent;
-		}
-		[data-theme="light"] {
-			--bg: #ffffff;
-			--bg-card: #f6f8fa;
-			--bg-card-hover: #e8edf2;
-			--border: #d0d7de;
-			--text: #1f2328;
-			--text-muted: #656d76;
-			--text-dim: #8c959f;
-			--accent: #0969da;
-			--green: #1a7f37;
-			--green-bg: rgba(26, 127, 55, 0.1);
-			--red: #cf222e;
-			--red-bg: rgba(207, 34, 46, 0.1);
-			--yellow: #9a6700;
-			--purple: #8250df;
-			--purple-bg: rgba(130, 80, 223, 0.1);
-			--orange: #bc4c00;
-			--shadow: 0 1px 3px rgba(0,0,0,0.08);
-		}
-		* { margin: 0; padding: 0; box-sizing: border-box; }
-		body {
-			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", "PingFang SC", Helvetica, Arial, sans-serif;
-			background: var(--bg);
-			color: var(--text);
-			min-height: 100vh;
-			padding: 24px;
-			transition: background 0.3s, color 0.3s;
-		}
-		.header {
-			display: flex;
-			justify-content: space-between;
-			align-items: center;
-			margin-bottom: 32px;
-			flex-wrap: wrap;
-			gap: 16px;
-		}
-		.header-left h1 {
-			font-size: 24px;
-			font-weight: 600;
-			display: flex;
-			align-items: center;
-			gap: 10px;
-		}
-		.header-left h1 .icon {
-			width: 28px;
-			height: 28px;
-			background: var(--accent);
-			border-radius: 6px;
-			display: flex;
-			align-items: center;
-			justify-content: center;
-			font-size: 16px;
-			color: var(--bg);
-		}
-		.header-left p {
-			color: var(--text-muted);
-			font-size: 13px;
-			margin-top: 4px;
-		}
-		.header-right {
-			display: flex;
-			gap: 12px;
-			align-items: center;
-		}
-		.auto-refresh {
-			display: flex;
-			align-items: center;
-			gap: 6px;
-			font-size: 13px;
-			color: var(--text-muted);
-		}
-		.auto-refresh .dot {
-			width: 8px;
-			height: 8px;
-			background: var(--green);
-			border-radius: 50%;
-			animation: pulse 2s ease-in-out infinite;
-		}
-		@keyframes pulse {
-			0%, 100% { opacity: 1; }
-			50% { opacity: 0.4; }
-		}
-		.btn {
-			padding: 8px 16px;
-			border-radius: 6px;
-			font-size: 13px;
-			font-weight: 500;
-			cursor: pointer;
-			border: 1px solid var(--border);
-			background: var(--bg-card);
-			color: var(--text);
-			text-decoration: none;
-			display: inline-flex;
-			align-items: center;
-			gap: 6px;
-			transition: all 0.2s;
-		}
-		.btn:hover { background: var(--bg-card-hover); border-color: var(--accent); }
-		.btn-danger { border-color: var(--red); color: var(--red); }
-		.btn-danger:hover { background: var(--red-bg); }
-		.btn-icon {
-			width: 36px;
-			height: 36px;
-			padding: 0;
-			justify-content: center;
-			font-size: 18px;
-			border-radius: 8px;
-		}
-
-		.cards {
-			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-			gap: 16px;
-			margin-bottom: 32px;
-		}
-		.card {
-			background: var(--bg-card);
-			border: 1px solid var(--border);
-			border-radius: 12px;
-			padding: 20px;
-			transition: border-color 0.2s, box-shadow 0.2s;
-			box-shadow: var(--shadow);
-		}
-		.card:hover { border-color: var(--text-dim); }
-		.card .label {
-			font-size: 12px;
-			color: var(--text-muted);
-			text-transform: uppercase;
-			letter-spacing: 0.5px;
-			margin-bottom: 8px;
-		}
-		.card .value {
-			font-size: 28px;
-			font-weight: 700;
-			line-height: 1.2;
-		}
-		.card .sub {
-			font-size: 12px;
-			color: var(--text-dim);
-			margin-top: 4px;
-		}
-		.card-accent .value { color: var(--accent); }
-		.card-green .value { color: var(--green); }
-		.card-purple .value { color: var(--purple); }
-		.card-orange .value { color: var(--orange); }
-		.card-yellow .value { color: var(--yellow); }
-
-		.meta-bar {
-			display: flex;
-			gap: 24px;
-			margin-bottom: 24px;
-			font-size: 13px;
-			color: var(--text-muted);
-			flex-wrap: wrap;
-		}
-		.meta-bar span { display: flex; align-items: center; gap: 4px; }
-
-		.table-container {
-			background: var(--bg-card);
-			border: 1px solid var(--border);
-			border-radius: 12px;
-			overflow: hidden;
-			box-shadow: var(--shadow);
-		}
-		.table-header {
-			padding: 16px 20px;
-			border-bottom: 1px solid var(--border);
-			font-size: 14px;
-			font-weight: 600;
-		}
-		.table-wrap { overflow-x: auto; }
-		table {
-			width: 100%;
-			border-collapse: collapse;
-			font-size: 13px;
-		}
-		th {
-			text-align: left;
-			padding: 10px 16px;
-			color: var(--text-muted);
-			font-weight: 500;
-			font-size: 12px;
-			text-transform: uppercase;
-			letter-spacing: 0.5px;
-			border-bottom: 1px solid var(--border);
-			white-space: nowrap;
-		}
-		td {
-			padding: 10px 16px;
-			border-bottom: 1px solid var(--border);
-			white-space: nowrap;
-		}
-		tr:last-child td { border-bottom: none; }
-		tr:hover td { background: var(--bg-card-hover); }
-		.num { text-align: right; font-variant-numeric: tabular-nums; }
-		.col-model { font-weight: 500; }
-		.col-provider { color: var(--text-muted); }
-		.empty-state {
-			text-align: center !important;
-			padding: 48px 16px !important;
-			color: var(--text-muted);
-			font-size: 14px;
-		}
-		.badge {
-			display: inline-block;
-			padding: 2px 8px;
-			border-radius: 12px;
-			font-size: 11px;
-			font-weight: 500;
-		}
-		.badge-error { background: var(--red-bg); color: var(--red); }
-		.footer {
-			margin-top: 24px;
-			text-align: center;
-			font-size: 12px;
-			color: var(--text-dim);
-		}
-	</style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Token 用量统计</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1020;--panel:#131a2d;--panel2:#19233a;--line:#2a3654;--text:#edf2ff;--muted:#91a0bd;--accent:#6ea8fe;--good:#42d392;--bad:#ff6b7a;--warn:#f5c451}*{box-sizing:border-box}body{margin:0;background:linear-gradient(145deg,#0b1020,#111a2d);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;min-height:100vh}.shell{max-width:1500px;margin:auto;padding:22px}.top{display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:18px}h1{font-size:23px;margin:0}.subtitle{color:var(--muted);margin-top:3px}.controls{display:flex;gap:9px;align-items:center;flex-wrap:wrap}button,select,input{font:inherit}button,select{color:var(--text);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px}button{cursor:pointer}button:hover{border-color:var(--accent)}button.danger{color:#ffd7dc;border-color:#783846}.status{color:var(--muted);font-size:12px}.error{color:#ffabb4;min-height:20px;margin:8px 0}.login{max-width:520px;margin:70px auto;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:26px;box-shadow:0 18px 55px #0006}.login h2{margin-top:0}.login input[type=password]{width:100%;padding:11px;border:1px solid var(--line);border-radius:8px;background:#0d1425;color:var(--text);margin:10px 0}.login label{display:flex;gap:8px;align-items:center;color:var(--muted);margin:4px 0 16px}.hidden{display:none!important}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:12px;margin-bottom:14px}.card,.chart,.table-box{background:var(--panel);border:1px solid var(--line);border-radius:12px}.card{padding:15px}.card .label{color:var(--muted);font-size:12px}.card .value{font-size:25px;font-weight:700;margin-top:5px}.card .detail{color:var(--muted);font-size:11px;margin-top:2px}.grid{display:grid;grid-template-columns:minmax(330px,1fr);gap:14px}.chart{padding:14px;margin-bottom:14px}.chart h2,.table-head h2{font-size:14px;margin:0}.chart svg{width:100%;height:190px;margin-top:10px;overflow:visible}.chart-line{fill:none;stroke:var(--accent);stroke-width:3}.chart-area{fill:#6ea8fe22}.chart-dot{fill:var(--accent)}.axis{stroke:var(--line);stroke-width:1}.table-box{overflow:hidden}.table-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line)}.table-wrap{overflow:auto;max-height:520px}table{border-collapse:collapse;width:100%;min-width:1260px}th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{position:sticky;top:0;background:var(--panel2);color:var(--muted);font-size:11px;text-transform:uppercase}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}tr:hover td{background:#ffffff05}.fail{color:var(--bad)}.empty{text-align:center!important;color:var(--muted);padding:38px!important}@media(max-width:700px){.shell{padding:14px}.controls{width:100%}.controls>*{flex:1}.login{margin:30px auto}}
+</style>
 </head>
 <body>
-	<div class="header">
-		<div class="header-left">
-			<h1><span class="icon">📊</span> Token 用量追踪</h1>
-			<p>所有模型和提供商的实时 Token 用量统计</p>
-		</div>
-		<div class="header-right">
-			<div class="auto-refresh"><span class="dot"></span> 自动刷新 5秒</div>
-			<button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()" title="切换主题">🌙</button>
-			<a class="btn" href="stats">查看 JSON</a>
-			<button class="btn btn-danger" onclick="resetStats()">重置数据</button>
-		</div>
-	</div>
+<div class="shell">
+<section id="login" class="login">
+<h2>连接管理 API</h2>
+<p class="subtitle">CLIProxyAPI 不会把管理密钥传入插件 iframe。密钥仅用于当前页面请求，不会写入插件数据库。</p>
+<input id="keyInput" type="password" autocomplete="current-password" placeholder="Management Key">
+<label><input id="rememberKey" type="checkbox">仅在当前标签页记住</label>
+<button id="connectButton" type="button">连接并加载统计</button>
+<div id="loginError" class="error" role="alert"></div>
+</section>
 
-	` + cardsHTML + `
+<main id="dashboard" class="hidden">
+<header class="top"><div><h1>Token 用量统计</h1><div class="subtitle">持久化小时聚合 · 不保存 API Key、Auth ID 或失败响应正文</div></div><div class="controls"><select id="range"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="retention">全部保留数据</option></select><button id="refreshButton" type="button">刷新</button><button id="logoutButton" type="button">清除密钥</button><button id="resetButton" class="danger" type="button">重置数据</button></div></header>
+<div id="status" class="status"></div><div id="error" class="error" role="alert"></div>
+<section class="cards">
+<div class="card"><div class="label">总 Token</div><div id="totalTokens" class="value">0</div></div>
+<div class="card"><div class="label">请求数</div><div id="requests" class="value">0</div><div id="successRate" class="detail">成功率 —</div></div>
+<div class="card"><div class="label">输入 Token</div><div id="inputTokens" class="value">0</div></div>
+<div class="card"><div class="label">输出 Token</div><div id="outputTokens" class="value">0</div></div>
+<div class="card"><div class="label">推理 Token</div><div id="reasoningTokens" class="value">0</div></div>
+<div class="card"><div class="label">缓存读取 / 创建</div><div id="cacheTokens" class="value">0 / 0</div></div>
+</section>
+<section class="chart"><h2>每小时 Token 趋势</h2><svg id="chart" viewBox="0 0 1000 190" preserveAspectRatio="none" aria-label="每小时 Token 趋势"></svg></section>
+<section class="table-box"><div class="table-head"><h2>维度明细</h2><span id="groupCount" class="status"></span></div><div class="table-wrap"><table><thead><tr><th>模型</th><th>提供商</th><th>别名</th><th>来源</th><th>执行器</th><th>认证类型</th><th>服务层级</th><th>推理强度</th><th class="num">请求</th><th class="num">失败</th><th class="num">输入</th><th class="num">输出</th><th class="num">推理</th><th class="num">缓存读取</th><th class="num">缓存创建</th><th class="num">总 Token</th><th class="num">平均延迟</th><th class="num">平均 TTFT</th></tr></thead><tbody id="groups"></tbody></table></div></section>
+</main>
+</div>
+<script>
+(function(){
+'use strict';
+var managementKey='';
+var refreshTimer=0;
+var activeController=null;
+var pluginID=readPluginID();
+var storageKey='cap-token-usage-key:'+pluginID;
+var statsURL='/v0/management/plugins/'+encodeURIComponent(pluginID)+'/stats';
+var resetURL='/v0/management/plugins/'+encodeURIComponent(pluginID)+'/reset';
+var login=document.getElementById('login');
+var dashboard=document.getElementById('dashboard');
+var keyInput=document.getElementById('keyInput');
+var rememberKey=document.getElementById('rememberKey');
 
-	` + metaHTML + `
-
-	<div class="table-container">
-		<div class="table-header">按模型明细</div>
-		<div class="table-wrap">
-			<table>
-				<thead>
-					<tr>
-						<th>模型</th>
-						<th>提供商</th>
-						<th>请求数</th>
-						<th>输入</th>
-						<th>输出</th>
-						<th>推理</th>
-						<th>缓存</th>
-						<th>缓存读取</th>
-						<th>总 Token</th>
-						<th>成功率</th>
-						<th>平均延迟</th>
-						<th>平均首Token</th>
-					</tr>
-				</thead>
-				<tbody id="modelTableBody">
-					` + rows.String() + `
-				</tbody>
-			</table>
-		</div>
-	</div>
-
-	<div class="footer">
-		由 <strong>Token Usage Tracker</strong> — CLIProxyAPI 插件 提供支持
-	</div>
-
-	<script>
-		(function() {
-			var saved = localStorage.getItem('theme') || 'dark';
-			document.documentElement.setAttribute('data-theme', saved);
-			updateThemeIcon(saved);
-		})();
-
-		function toggleTheme() {
-			var current = document.documentElement.getAttribute('data-theme') || 'dark';
-			var next = current === 'dark' ? 'light' : 'dark';
-			document.documentElement.setAttribute('data-theme', next);
-			localStorage.setItem('theme', next);
-			updateThemeIcon(next);
-		}
-
-		function updateThemeIcon(theme) {
-			var btn = document.getElementById('themeToggle');
-			if (btn) {
-				btn.textContent = theme === 'dark' ? '🌙' : '☀️';
-			}
-		}
-
-		async function resetStats() {
-			if (!confirm('确定要重置所有用量计数器吗？此操作不可撤销。')) return;
-			try {
-				const resp = await fetch('reset', { method: 'POST' });
-				if (resp.ok) {
-					alert('所有计数器已重置。');
-					location.reload();
-				} else {
-					alert('重置失败：' + resp.status);
-				}
-			} catch (e) {
-				alert('重置失败：' + e.message);
-			}
-		}
-
-		// --- AJAX auto-refresh without page reload ---
-		function fmtNum(n) {
-			if (!n || n === 0) return '0';
-			return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-		}
-
-		function fmtDur(ns) {
-			if (!ns || ns <= 0) return '\u2014';
-			var s = ns / 1e9;
-			if (s < 0.001) return Math.round(ns / 1000) + '\u00b5s';
-			if (s < 1) return (s * 1000).toFixed(1) + 'ms';
-			return s.toFixed(2) + 's';
-		}
-
-		function fmtDate(iso) {
-			if (!iso || iso === '0001-01-01T00:00:00Z') return '\u2014';
-			var d = new Date(iso);
-			if (isNaN(d.getTime())) return '\u2014';
-			return d.toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
-		}
-
-		function setText(id, val) {
-			var el = document.getElementById(id);
-			if (el) el.textContent = val;
-		}
-
-		async function autoRefresh() {
-			try {
-				var resp = await fetch('stats');
-				if (!resp.ok) return;
-				var envelope = await resp.json();
-				var data = envelope.result ? envelope.result : envelope;
-				if (!data || !data.summary) return;
-
-				var s = data.summary;
-				var rate = s.requests > 0 ? ((s.requests - s.failed_requests) / s.requests * 100) : 0;
-
-				setText('totalTokens', fmtNum(s.total_tokens));
-				setText('totalRequests', fmtNum(s.requests));
-				setText('successRate', '\u6210\u529f\u7387 ' + rate.toFixed(1) + '%');
-				setText('inputTokens', fmtNum(s.input_tokens));
-				setText('outputTokens', fmtNum(s.output_tokens));
-				setText('reasoningTokens', fmtNum(s.reasoning_tokens));
-				setText('cachedTokens', fmtNum(s.cached_tokens));
-				setText('cacheSub', '\u8bfb\u53d6: ' + fmtNum(s.cache_read_tokens) + ' \u00b7 \u521b\u5efa: ' + fmtNum(s.cache_creation_tokens));
-				setText('metaSince', fmtDate(data.since));
-				setText('metaLastUsed', fmtDate(data.last_used));
-				setText('metaModelCount', (data.models ? data.models.length : 0).toString());
-
-				// Update table rows
-				var tbody = document.getElementById('modelTableBody');
-				if (tbody && data.models) {
-					if (data.models.length === 0) {
-						tbody.innerHTML = '<tr><td colspan="12" class="empty-state">\u6682\u65e0\u7528\u91cf\u6570\u636e\u3002\u5f00\u59cb\u53d1\u8d77 API \u8bf7\u6c42\u540e\uff0c\u7edf\u8ba1\u6570\u636e\u5c06\u663e\u793a\u5728\u6b64\u5904\u3002</td></tr>';
-					} else {
-						var html = '';
-						for (var i = 0; i < data.models.length; i++) {
-							var m = data.models[i];
-							var pct = m.requests > 0 ? ((m.requests - m.failed_requests) / m.requests * 100) : 0;
-							var avgLat = m.requests > 0 ? fmtDur(m.total_latency_ns / m.requests) : '\u2014';
-							var avgTtft = m.requests > 0 ? fmtDur(m.total_ttft_ns / m.requests) : '\u2014';
-							html += '<tr>'
-								+ '<td class="col-model">' + (m.model || '\u2014') + '</td>'
-								+ '<td class="col-provider">' + (m.provider || '\u2014') + '</td>'
-								+ '<td class="num">' + fmtNum(m.requests) + '</td>'
-								+ '<td class="num">' + fmtNum(m.input_tokens) + '</td>'
-								+ '<td class="num">' + fmtNum(m.output_tokens) + '</td>'
-								+ '<td class="num">' + fmtNum(m.reasoning_tokens) + '</td>'
-								+ '<td class="num">' + fmtNum(m.cached_tokens) + '</td>'
-								+ '<td class="num">' + fmtNum(m.cache_read_tokens) + '</td>'
-								+ '<td class="num">' + fmtNum(m.total_tokens) + '</td>'
-								+ '<td class="num">' + pct.toFixed(1) + '%</td>'
-								+ '<td class="num">' + avgLat + '</td>'
-								+ '<td class="num">' + avgTtft + '</td>'
-								+ '</tr>';
-						}
-						tbody.innerHTML = html;
-					}
-				}
-
-				// Show last update time
-				var now = new Date();
-				var ts = now.getHours().toString().padStart(2,'0') + ':'
-					+ now.getMinutes().toString().padStart(2,'0') + ':'
-					+ now.getSeconds().toString().padStart(2,'0');
-				setText('lastUpdate', '\u6700\u540e\u66f4\u65b0: ' + ts);
-			} catch(e) {
-				// Silently ignore fetch errors
-			}
-		}
-
-		setInterval(autoRefresh, 5000);
-	</script>
+function readPluginID(){var parts=window.location.pathname.split('/').filter(Boolean);var index=parts.indexOf('plugins');if(index<0||!parts[index+1])return '';return decodeURIComponent(parts[index+1]);}
+function text(id,value){var node=document.getElementById(id);if(node)node.textContent=value;}
+function fmt(value){return new Intl.NumberFormat('zh-CN').format(Number(value||0));}
+function duration(ns){ns=Number(ns||0);if(!ns)return '—';if(ns<1e6)return Math.round(ns/1e3)+'µs';if(ns<1e9)return (ns/1e6).toFixed(1)+'ms';return (ns/1e9).toFixed(2)+'s';}
+function authHeaders(extra){var headers=extra||{};headers.Authorization='Bearer '+managementKey;return headers;}
+function clearErrors(){text('error','');text('loginError','');}
+function stopRequests(){if(activeController){activeController.abort();activeController=null;}if(refreshTimer){clearInterval(refreshTimer);refreshTimer=0;}}
+function showLogin(message){stopRequests();managementKey='';keyInput.value='';rememberKey.checked=false;try{sessionStorage.removeItem(storageKey);}catch(_e){}dashboard.classList.add('hidden');login.classList.remove('hidden');if(message)text('loginError',message);keyInput.focus();}
+async function api(url,options){if(activeController)activeController.abort();var controller=new AbortController();activeController=controller;var timeout=setTimeout(function(){controller.abort();},10000);options=options||{};options.headers=authHeaders(options.headers);options.signal=controller.signal;try{var response=await fetch(new URL(url,window.location.origin),options);if(response.status===401||response.status===403){showLogin('管理密钥无效或已失效。');throw new Error('unauthorized');}var body;try{body=await response.json();}catch(_e){body={error:'响应不是有效 JSON'};}if(!response.ok)throw new Error(body.error||('HTTP '+response.status));return body;}catch(error){if(error.name==='AbortError')throw new Error('请求超时或已被新请求取消');throw error;}finally{clearTimeout(timeout);if(activeController===controller)activeController=null;}}
+async function connect(){clearErrors();managementKey=keyInput.value.trim();if(!managementKey){text('loginError','请输入管理密钥。');return;}try{if(rememberKey.checked){sessionStorage.setItem(storageKey,managementKey);}else{sessionStorage.removeItem(storageKey);}}catch(_e){}try{await load();login.classList.add('hidden');dashboard.classList.remove('hidden');startTimer();}catch(error){if(error.message!=='unauthorized')text('loginError',error.message);}}
+async function load(){clearErrors();var range=document.getElementById('range').value;var data=await api(statsURL+'?range='+encodeURIComponent(range));render(data);}
+function render(data){var s=data.summary||{};text('totalTokens',fmt(s.total_tokens));text('requests',fmt(s.requests));text('inputTokens',fmt(s.input_tokens));text('outputTokens',fmt(s.output_tokens));text('reasoningTokens',fmt(s.reasoning_tokens));text('cacheTokens',fmt(s.cache_read_tokens)+' / '+fmt(s.cache_creation_tokens));var success=Number(s.requests||0)?((Number(s.requests)-Number(s.failed_requests||0))/Number(s.requests)*100):0;text('successRate','成功率 '+success.toFixed(1)+'%');text('status','范围：'+data.range+' · 最近活动：'+(data.last_used&&data.last_used.indexOf('0001-')!==0?new Date(data.last_used).toLocaleString():'—')+' · 更新：'+new Date(data.generated_at).toLocaleTimeString());renderGroups(data.groups||[]);renderChart(data.series||[]);}
+function cell(row,value,cls){var td=document.createElement('td');td.textContent=value===undefined||value===null||value===''?'—':String(value);if(cls)td.className=cls;row.appendChild(td);}
+function renderGroups(groups){var body=document.getElementById('groups');var fragment=document.createDocumentFragment();if(!groups.length){var emptyRow=document.createElement('tr');var empty=document.createElement('td');empty.colSpan=18;empty.className='empty';empty.textContent='当前范围暂无用量数据';emptyRow.appendChild(empty);fragment.appendChild(emptyRow);}else{groups.forEach(function(g){var row=document.createElement('tr');cell(row,g.model);cell(row,g.provider);cell(row,g.alias);cell(row,g.source);cell(row,g.executor_type);cell(row,g.auth_type);cell(row,g.service_tier);cell(row,g.reasoning_effort);cell(row,fmt(g.requests),'num');cell(row,fmt(g.failed_requests),'num'+(Number(g.failed_requests)>0?' fail':''));cell(row,fmt(g.input_tokens),'num');cell(row,fmt(g.output_tokens),'num');cell(row,fmt(g.reasoning_tokens),'num');cell(row,fmt(g.cache_read_tokens),'num');cell(row,fmt(g.cache_creation_tokens),'num');cell(row,fmt(g.total_tokens),'num');cell(row,duration(g.average_latency_ns),'num');cell(row,duration(g.average_ttft_ns),'num');fragment.appendChild(row);});}body.replaceChildren(fragment);text('groupCount',groups.length+' 个分组');}
+function svgNode(name,attrs){var node=document.createElementNS('http://www.w3.org/2000/svg',name);Object.keys(attrs||{}).forEach(function(key){node.setAttribute(key,String(attrs[key]));});return node;}
+function renderChart(series){var svg=document.getElementById('chart');var fragment=document.createDocumentFragment();fragment.appendChild(svgNode('line',{x1:0,y1:175,x2:1000,y2:175,class:'axis'}));if(series.length){var sampled=series;if(series.length>240){var step=Math.ceil(series.length/240);sampled=series.filter(function(_point,index){return index%step===0||index===series.length-1;});}var max=sampled.reduce(function(value,p){return Math.max(value,Number(p.total_tokens||0));},1);var points=sampled.map(function(p,index){var x=sampled.length===1?500:index/(sampled.length-1)*1000;var y=170-Number(p.total_tokens||0)/max*155;return [x,y];});var area='M '+points[0][0]+' 175 L '+points.map(function(p){return p[0]+' '+p[1];}).join(' L ')+' L '+points[points.length-1][0]+' 175 Z';fragment.appendChild(svgNode('path',{d:area,class:'chart-area'}));fragment.appendChild(svgNode('polyline',{points:points.map(function(p){return p.join(',');}).join(' '),class:'chart-line'}));points.forEach(function(p){fragment.appendChild(svgNode('circle',{cx:p[0],cy:p[1],r:3,class:'chart-dot'}));});}svg.replaceChildren(fragment);}
+async function resetStats(){if(!confirm('确定永久删除全部 Token 统计吗？此操作不可撤销。'))return;var typed=prompt('请输入 reset 确认：');if(typed!=='reset')return;try{await api(resetURL,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm:'reset'})});await load();}catch(error){if(error.message!=='unauthorized')text('error',error.message);}}
+function startTimer(){if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(function(){load().catch(function(error){if(error.message!=='unauthorized')text('error',error.message);});},15000);}
+document.getElementById('connectButton').addEventListener('click',connect);keyInput.addEventListener('keydown',function(event){if(event.key==='Enter')connect();});document.getElementById('refreshButton').addEventListener('click',function(){load().catch(function(error){if(error.message!=='unauthorized')text('error',error.message);});});document.getElementById('range').addEventListener('change',function(){load().catch(function(error){if(error.message!=='unauthorized')text('error',error.message);});});document.getElementById('resetButton').addEventListener('click',resetStats);document.getElementById('logoutButton').addEventListener('click',function(){showLogin('管理密钥已清除。');});
+if(!pluginID){text('loginError','无法从插件资源 URL 识别 plugin ID。');return;}try{var saved=sessionStorage.getItem(storageKey);if(saved){managementKey=saved;rememberKey.checked=true;keyInput.value=saved;connect();}}catch(_e){}
+})();
+</script>
 </body>
 </html>`
-
-	return html
-}
