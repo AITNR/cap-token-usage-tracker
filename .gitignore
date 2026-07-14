@@ -1,0 +1,19 @@
+# Build output
+dist/
+*.dll
+*.dylib
+*.so
+*.h
+
+# Runtime data
+*.db
+*.db.lock
+*.db.tmp
+data/
+
+# Local toolchains
+.tools/
+
+# Go tooling
+coverage.out
+*.test
