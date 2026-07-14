@@ -1,0 +1,105 @@
+name: Build
+
+on:
+  push:
+    branches: [ "**" ]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. v1.0.0)"
+        required: false
+        default: "v1.0.0"
+
+jobs:
+  build-windows-amd64:
+    name: Windows amd64 (.dll)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install MinGW-w64
+        run: choco install mingw -y
+
+      - name: Build DLL
+        shell: pwsh
+        run: |
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          $env:CGO_ENABLED = "1"
+          $version = "${{ github.event.inputs.version || 'v1.0.0' }}"
+          go build -buildmode=c-shared -trimpath -buildvcs=false `
+            -ldflags="-s -w -X main.version=$version" `
+            -o cap-token-usage-tracker-windows-amd64.dll .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cap-token-usage-tracker-windows-amd64
+          path: cap-token-usage-tracker-windows-amd64.dll
+
+  build-linux-amd64:
+    name: Linux amd64 (.so)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Build .so
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: amd64
+          VERSION: ${{ github.event.inputs.version || 'v1.0.0' }}
+        run: |
+          go build -buildmode=c-shared -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o cap-token-usage-tracker-linux-amd64.so .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cap-token-usage-tracker-linux-amd64
+          path: cap-token-usage-tracker-linux-amd64.so
+
+  build-linux-arm64:
+    name: Linux arm64 (.so)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install aarch64 cross-compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build .so
+        env:
+          CGO_ENABLED: "1"
+          GOOS: linux
+          GOARCH: arm64
+          CC: aarch64-linux-gnu-gcc
+          VERSION: ${{ github.event.inputs.version || 'v1.0.0' }}
+        run: |
+          go build -buildmode=c-shared -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o cap-token-usage-tracker-linux-arm64.so .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cap-token-usage-tracker-linux-arm64
+          path: cap-token-usage-tracker-linux-arm64.so
