@@ -7,13 +7,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. v1.0.0)"
+        description: "Release version (e.g. 1.0.0)"
         required: false
-        default: "v1.0.0"
+        default: "1.0.0"
       release:
         description: "Create release after build"
         type: boolean
         default: false
+
+env:
+  PLUGIN_ID: cap-token-usage-tracker
 
 jobs:
   build-windows-amd64:
@@ -35,9 +38,9 @@ jobs:
         shell: pwsh
         run: |
           if ("${{ github.ref_type }}" -eq "tag") {
-            $v = "${{ github.ref_name }}"
+            $v = "${{ github.ref_name }}" -replace '^v', ''
           } elseif ("${{ github.event.inputs.version }}" -ne "") {
-            $v = "${{ github.event.inputs.version }}"
+            $v = "${{ github.event.inputs.version }}" -replace '^v', ''
           } else {
             $v = "dev-${{ github.sha }}"
           }
@@ -52,13 +55,19 @@ jobs:
           $version = "${{ steps.ver.outputs.version }}"
           go build -buildmode=c-shared -trimpath -buildvcs=false `
             -ldflags="-s -w -X main.version=$version" `
-            -o cap-token-usage-tracker-windows-amd64.dll .
+            -o "${{ env.PLUGIN_ID }}.dll" .
+
+      - name: Create zip
+        shell: pwsh
+        run: |
+          $zipName = "${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_windows_amd64.zip"
+          Compress-Archive -Path "${{ env.PLUGIN_ID }}.dll" -DestinationPath $zipName
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cap-token-usage-tracker-windows-amd64
-          path: cap-token-usage-tracker-windows-amd64.dll
+          name: release-windows-amd64
+          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_windows_amd64.zip
 
   build-linux-amd64:
     name: Linux amd64 (.so)
@@ -75,9 +84,10 @@ jobs:
         id: ver
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            v="${{ github.event.inputs.version }}"
+            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
           else
             echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
@@ -91,13 +101,18 @@ jobs:
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
-            -o cap-token-usage-tracker-linux-amd64.so .
+            -o "${{ env.PLUGIN_ID }}.so" .
+
+      - name: Create zip
+        run: |
+          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_amd64.zip"
+          zip "$zipName" "${{ env.PLUGIN_ID }}.so"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cap-token-usage-tracker-linux-amd64
-          path: cap-token-usage-tracker-linux-amd64.so
+          name: release-linux-amd64
+          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_amd64.zip
 
   build-linux-arm64:
     name: Linux arm64 (.so)
@@ -119,9 +134,10 @@ jobs:
         id: ver
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            v="${{ github.event.inputs.version }}"
+            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
           else
             echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
           fi
@@ -136,13 +152,18 @@ jobs:
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
-            -o cap-token-usage-tracker-linux-arm64.so .
+            -o "${{ env.PLUGIN_ID }}.so" .
+
+      - name: Create zip
+        run: |
+          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_arm64.zip"
+          zip "$zipName" "${{ env.PLUGIN_ID }}.so"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cap-token-usage-tracker-linux-arm64
-          path: cap-token-usage-tracker-linux-arm64.so
+          name: release-linux-arm64
+          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_arm64.zip
 
   release:
     name: Create Release
@@ -158,26 +179,33 @@ jobs:
         id: ver
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+            v="${{ github.event.inputs.version }}"
+            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
 
-      - name: List artifacts
+      - name: List downloaded files
         run: find artifacts -type f
+
+      - name: Generate checksums.txt
+        run: |
+          cd artifacts
+          sha256sum *.zip > checksums.txt
+          cat checksums.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.ver.outputs.version }}
-          name: Release ${{ steps.ver.outputs.version }}
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: Release v${{ steps.ver.outputs.version }}
           generate_release_notes: true
           files: |
-            artifacts/cap-token-usage-tracker-windows-amd64/cap-token-usage-tracker-windows-amd64.dll
-            artifacts/cap-token-usage-tracker-linux-amd64/cap-token-usage-tracker-linux-amd64.so
-            artifacts/cap-token-usage-tracker-linux-arm64/cap-token-usage-tracker-linux-arm64.so
+            artifacts/*.zip
+            artifacts/checksums.txt
