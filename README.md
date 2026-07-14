@@ -1,5 +1,13 @@
 # CAP Token Usage Tracker
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**[English](#english)** | [中文](#中文)
+
+---
+
+## 中文
+
 CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册受保护的统计接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
 
 ## 功能
@@ -149,3 +157,165 @@ go test ./...
 ```
 
 `main_cgo.go` 只在 cgo 开启时参与编译。发布前必须实际执行 Linux ARM64 `c-shared` 构建；仅通过 `CGO_ENABLED=0` 测试不能证明 ABI 可以链接。
+
+## 协议
+
+[MIT License](LICENSE)
+
+---
+
+## English
+
+A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers protected statistics endpoints through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
+
+### Features
+
+- Persistent aggregation by UTC hour; no per-request body is stored
+- Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
+- Counts requests, failures, input/output/reasoning/cached tokens, latency, and TTFT
+- Supports last 24 hours, 7 days, 30 days, or all retained data
+- Self-contained Chinese dashboard with no third-party frontend dependencies
+- Data reset requires CLIProxyAPI management authentication and explicit `reset` confirmation
+- Linux ARM64 `c-shared` build
+
+### Privacy
+
+The plugin does not store or return via statistics endpoints:
+
+- API Key
+- Auth ID / Auth Index
+- Failure response body
+- Response headers
+- Request or response body
+
+The database contains only hourly aggregation dimensions and counts. Dimension fields may still reflect operational information such as model, source, or service tier, so statistics endpoints remain behind CLIProxyAPI management authentication.
+
+### Configuration
+
+Place the shared library in the CLIProxyAPI platform plugin directory:
+
+```text
+plugins/linux/arm64/cap-token-usage-tracker.so
+```
+
+CLIProxyAPI configuration example:
+
+```yaml
+plugins:
+  enabled: true
+  dir: plugins
+  configs:
+    cap-token-usage-tracker:
+      enabled: true
+      priority: 0
+      data_path: /var/lib/cliproxyapi/token-usage-tracker.db
+      retention_days: 30
+      flush_interval: 5s
+      flush_max_records: 100
+      sync_on_record: false
+```
+
+| Field | Default | Description |
+|---|---:|---|
+| `data_path` | `./data/token-usage-tracker.db` | bbolt database path; relative paths are based on the CLIProxyAPI process working directory. Absolute paths are recommended for service deployments |
+| `retention_days` | `30` | Retention period in UTC days, range 1–3650 |
+| `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
+| `flush_max_records` | `100` | Flush immediately after receiving this many records |
+| `sync_on_record` | `false` | When enabled, each record is committed to the database before acknowledgement; higher durability but lower throughput |
+
+In default batch mode, all pending data is flushed on normal shutdown. If the process is forcefully terminated, up to one `flush_interval` or unflushed `flush_max_records` window may be lost. Enable `sync_on_record` for stronger durability.
+
+Changing `data_path` switches to a separate database; the old file is not automatically migrated or deleted.
+
+### Pages & Endpoints
+
+The plugin ID is derived from the shared library filename. Using `cap-token-usage-tracker.so` as an example:
+
+- Dashboard: `/v0/resource/plugins/cap-token-usage-tracker/dashboard`
+- Statistics: `GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- Reset: `POST /v0/management/plugins/cap-token-usage-tracker/reset`
+
+Statistics ranges: `24h`, `7d`, `30d`, `retention`.
+
+The Management Center embeds the plugin page in an iframe, but the official plugin API does not pass the parent page's management key into the iframe. Therefore, the dashboard requires re-entering the management key on first open. By default it is kept in page memory only; checking "Remember in this tab only" writes it to same-origin `sessionStorage` for that tab, not to the plugin database or URL.
+
+Reset request body:
+
+```json
+{"confirm":"reset"}
+```
+
+### Linux ARM64 Build
+
+Requirements:
+
+- Go 1.26+
+- `aarch64-linux-gnu-gcc`
+- `file`, `readelf`, `nm`, `sha256sum`
+- Clash HTTP proxy listening on local port `7897`
+
+On Debian/Ubuntu/WSL you typically need:
+
+```bash
+sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu file curl
+```
+
+Both package installation and Go module downloads should go through Clash `7897`. The build script first tries `http://127.0.0.1:7897`; if WSL cannot reach Windows localhost it falls back to the WSL default gateway's `7897`. You can also specify explicitly:
+
+```bash
+export CLASH_PROXY_URL=http://<windows-host>:7897
+```
+
+Build:
+
+```bash
+bash scripts/build-linux-arm64.sh
+```
+
+Inject the plugin version via `VERSION=v1.0.0`:
+
+```bash
+VERSION=v1.0.0 bash scripts/build-linux-arm64.sh
+```
+
+Artifacts:
+
+```text
+dist/cap-token-usage-tracker-v1.0.0-linux-arm64.so  # Versioned release file
+dist/cap-token-usage-tracker-v1.0.0-linux-arm64.h   # CGO-generated ABI header
+dist/cap-token-usage-tracker.so                      # Install file
+```
+
+The install filename must be `cap-token-usage-tracker.so` because CLIProxyAPI derives the plugin ID from the shared library filename:
+
+```bash
+cp dist/cap-token-usage-tracker.so /path/to/CLIProxyAPI/plugins/linux/arm64/
+```
+
+Verify and generate portable `dist/SHA256SUMS`:
+
+```bash
+bash scripts/verify-linux-arm64.sh
+```
+
+The verification script checks Go format, vet, normal/race tests, ELF64/AArch64/DYN type, byte-level consistency between install and release files, and the following ABI exports:
+
+- `cliproxy_plugin_init`
+- `cliproxyPluginCall`
+- `cliproxyPluginFree`
+- `cliproxyPluginShutdown`
+
+### Local Development
+
+```bash
+gofmt -w *.go
+go vet ./...
+CGO_ENABLED=0 go test ./...
+go test ./...
+```
+
+`main_cgo.go` only participates in compilation when cgo is enabled. Before release, an actual Linux ARM64 `c-shared` build must be performed; passing `CGO_ENABLED=0` tests alone does not prove the ABI can link.
+
+### License
+
+[MIT License](LICENSE)
