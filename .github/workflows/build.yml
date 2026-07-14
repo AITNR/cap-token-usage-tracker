@@ -3,12 +3,17 @@ name: Build
 on:
   push:
     branches: [ "**" ]
+    tags: [ "v*" ]
   workflow_dispatch:
     inputs:
       version:
         description: "Release version (e.g. v1.0.0)"
         required: false
         default: "v1.0.0"
+      release:
+        description: "Create release after build"
+        type: boolean
+        default: false
 
 jobs:
   build-windows-amd64:
@@ -25,13 +30,26 @@ jobs:
       - name: Install MinGW-w64
         run: choco install mingw -y
 
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}"
+          } elseif ("${{ github.event.inputs.version }}" -ne "") {
+            $v = "${{ github.event.inputs.version }}"
+          } else {
+            $v = "dev-${{ github.sha }}"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
       - name: Build DLL
         shell: pwsh
         run: |
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           $env:CGO_ENABLED = "1"
-          $version = "${{ github.event.inputs.version || 'v1.0.0' }}"
+          $version = "${{ steps.ver.outputs.version }}"
           go build -buildmode=c-shared -trimpath -buildvcs=false `
             -ldflags="-s -w -X main.version=$version" `
             -o cap-token-usage-tracker-windows-amd64.dll .
@@ -53,12 +71,23 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build .so
         env:
           CGO_ENABLED: "1"
           GOOS: linux
           GOARCH: amd64
-          VERSION: ${{ github.event.inputs.version || 'v1.0.0' }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
@@ -86,13 +115,24 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build .so
         env:
           CGO_ENABLED: "1"
           GOOS: linux
           GOARCH: arm64
           CC: aarch64-linux-gnu-gcc
-          VERSION: ${{ github.event.inputs.version || 'v1.0.0' }}
+          VERSION: ${{ steps.ver.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
@@ -103,3 +143,41 @@ jobs:
         with:
           name: cap-token-usage-tracker-linux-arm64
           path: cap-token-usage-tracker-linux-arm64.so
+
+  release:
+    name: Create Release
+    needs: [ build-windows-amd64, build-linux-amd64, build-linux-arm64 ]
+    runs-on: ubuntu-latest
+    if: >
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.version }}
+          name: Release ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            artifacts/cap-token-usage-tracker-windows-amd64/cap-token-usage-tracker-windows-amd64.dll
+            artifacts/cap-token-usage-tracker-linux-amd64/cap-token-usage-tracker-linux-amd64.so
+            artifacts/cap-token-usage-tracker-linux-arm64/cap-token-usage-tracker-linux-arm64.so
