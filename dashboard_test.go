@@ -23,6 +23,12 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"attributeFilter:['data-theme']",
 		"initializeThemeSync()",
 		"window.matchMedia",
+		"<html lang=\"zh-CN\" data-theme=\"dark\">",
+		"<style id=\"initial-theme\">",
+		"html{background:#faf9f5;color-scheme:light}",
+		"html[data-theme='white']{background:#fff}",
+		"html[data-theme='dark']{background:#151412;color-scheme:dark}",
+		"var theme='dark';",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing %q", required)
@@ -44,6 +50,15 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains unsafe pattern %q", forbidden)
 		}
+	}
+}
+
+func TestDashboardResolvesCLIProxyThemeBeforeInitialBackground(t *testing.T) {
+	html := dashboardHTML
+	themeRead := strings.Index(html, "window.parent.document.documentElement.getAttribute('data-theme')")
+	initialStyle := strings.Index(html, `<style id="initial-theme">`)
+	if themeRead < 0 || initialStyle < 0 || themeRead > initialStyle {
+		t.Fatal("CLIProxyAPI theme must be resolved before the initial background stylesheet")
 	}
 }
 

@@ -23,20 +23,24 @@ func dashboardResponse() pluginapi.ManagementResponse {
 }
 
 const dashboardHTML = `<!doctype html>
-<html lang="zh-CN" data-theme="white">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>Token 用量统计</title>
 <script>
 (function(){
 'use strict';
-var theme='white';
-try{if(window.parent!==window){var parentTheme=window.parent.document.documentElement.getAttribute('data-theme');theme=parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';}else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){theme='dark';}}catch(_error){}
+var theme='dark';
+try{if(window.parent!==window){var parentTheme=window.parent.document.documentElement.getAttribute('data-theme');theme=parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';}else{theme=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'white';}}catch(_error){}
 if(theme==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',theme);
 })();
 </script>
+<style id="initial-theme">
+html{background:#faf9f5;color-scheme:light}
+html[data-theme='white']{background:#fff}
+html[data-theme='dark']{background:#151412;color-scheme:dark}
+</style>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Token 用量统计</title>
 <style>
 :root{
 color-scheme:light;
