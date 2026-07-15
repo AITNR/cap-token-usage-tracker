@@ -23,7 +23,7 @@ func dashboardResponse() pluginapi.ManagementResponse {
 }
 
 const dashboardHTML = `<!doctype html>
-<html lang="zh-CN" data-theme-mode="auto" data-theme="white">
+<html lang="zh-CN" data-theme="white">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -32,12 +32,9 @@ const dashboardHTML = `<!doctype html>
 <script>
 (function(){
 'use strict';
-var mode='auto';
-try{var saved=window.localStorage.getItem('cap-token-usage-theme');if(saved==='auto'||saved==='white'||saved==='light'||saved==='dark')mode=saved;}catch(_error){}
-var dark=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches;
-var applied=mode==='auto'?(dark?'dark':'white'):mode;
-document.documentElement.setAttribute('data-theme-mode',mode);
-if(applied==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',applied);
+var theme='white';
+try{if(window.parent!==window){var parentTheme=window.parent.document.documentElement.getAttribute('data-theme');theme=parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';}else if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches){theme='dark';}}catch(_error){}
+if(theme==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',theme);
 })();
 </script>
 <style>
@@ -138,28 +135,7 @@ button.primary{border-color:var(--primary-color);background:var(--primary-color)
 button.primary:hover{border-color:var(--primary-hover);background:var(--primary-hover)}
 button.danger{border-color:var(--warning-color);background:var(--warning-color);color:#fff}
 button.danger:hover{filter:brightness(.94)}
-.icon-button{width:38px;padding:0!important;color:var(--text-secondary)!important;background:var(--bg-primary)!important}
-.icon-button:hover{color:var(--text-primary)!important;background:var(--bg-tertiary)!important}
-.icon-button svg,.button-icon{width:17px;height:17px;display:block;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-.theme-icon[hidden]{display:none}
-.theme-menu{position:relative;display:inline-flex}
-.theme-popover{position:absolute;top:calc(100% + 10px);right:0;z-index:20;display:flex;width:max-content;max-width:calc(100vw - 24px);gap:4px;padding:8px 8px 5px;border:1px solid color-mix(in srgb,var(--border-color) 74%,transparent);border-radius:10px;background:color-mix(in srgb,var(--bg-primary) 90%,transparent);box-shadow:var(--shadow-lg);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
-.theme-popover[hidden]{display:none}
-.theme-card{display:flex;flex-direction:column;align-items:center;gap:4px;padding:6px 6px 4px;border:2px solid transparent;border-radius:8px;background:transparent;color:var(--text-primary)}
-.theme-card:hover{background:color-mix(in srgb,var(--text-primary) 8%,transparent)}
-.theme-card.active{border-color:var(--primary-color)}
-.theme-preview{display:flex;flex-direction:column;width:72px;height:52px;overflow:hidden;border:1px solid var(--preview-border);border-radius:4px;background:var(--preview-bg)}
-.theme-preview-head{height:10px;flex:none;border-bottom:1px solid var(--preview-border);background:var(--preview-card)}
-.theme-preview-body{display:flex;flex:1;min-height:0}
-.theme-preview-side{width:16px;flex:none;border-right:1px solid var(--preview-border);background:var(--preview-card)}
-.theme-preview-content{display:flex;flex:1;flex-direction:column;justify-content:center;gap:4px;padding:5px 8px;background:var(--preview-bg)}
-.theme-preview-line{height:3px;border-radius:1px;background:var(--preview-muted)}
-.theme-preview-line.short{width:60%}
-.preview-auto{--preview-bg:linear-gradient(135deg,#fff 0 50%,#111 50% 100%);--preview-card:linear-gradient(135deg,#fff 0 50%,#1a1a1a 50% 100%);--preview-border:#bdbdbd;--preview-muted:linear-gradient(135deg,#c9c9c9 0 50%,#5a5a5a 50% 100%)}
-.preview-white{--preview-bg:#fff;--preview-card:#fff;--preview-border:#e5e5e5;--preview-muted:#a29c95}
-.preview-light{--preview-bg:#faf9f5;--preview-card:#f0eee8;--preview-border:#e3e1db;--preview-muted:#a29c95}
-.preview-dark{--preview-bg:#151412;--preview-card:#1d1b18;--preview-border:#3a3530;--preview-muted:#9c958d}
-.theme-card-label{font-size:11px;font-weight:500;white-space:nowrap}
+.button-icon{width:17px;height:17px;display:block;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .feedback{display:grid;grid-template-columns:minmax(0,1fr);gap:6px;min-height:39px;margin-bottom:10px}
 .status{display:flex;align-items:center;gap:8px;min-height:20px;color:var(--text-secondary);font-size:12px}
 .status::before{content:"";width:6px;height:6px;flex:none;border-radius:50%;background:var(--text-tertiary)}
@@ -211,10 +187,9 @@ dialog input{width:100%;margin:17px 0;padding:10px 12px;border:1px solid var(--b
 ::-webkit-scrollbar-thumb{border-radius:999px;background:var(--border-color)}
 ::-webkit-scrollbar-thumb:hover{background:var(--border-hover)}
 @media(max-width:1240px){.cards{grid-template-columns:repeat(3,minmax(160px,1fr))}}
-@media(max-width:820px){.top{flex-direction:column}.controls{width:100%;justify-content:flex-start}.theme-menu{margin-left:auto}.cards{grid-template-columns:repeat(2,minmax(145px,1fr))}}
-@media(max-width:560px){.shell{padding:18px 12px 28px}.top{gap:16px}.controls{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto}.controls select{min-width:0;width:100%}.button-label{display:none}.cards{gap:8px}.card{min-height:108px;padding:14px}.card .value{font-size:21px}.chart-panel{padding:0 12px 9px}.theme-popover{right:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}.theme-card{width:100%}}
+@media(max-width:820px){.top{flex-direction:column}.controls{width:100%;justify-content:flex-start}.cards{grid-template-columns:repeat(2,minmax(145px,1fr))}}
+@media(max-width:560px){.shell{padding:18px 12px 28px}.top{gap:16px}.controls{display:grid;grid-template-columns:minmax(0,1fr) auto auto}.controls select{min-width:0;width:100%}.button-label{display:none}.cards{gap:8px}.card{min-height:108px;padding:14px}.card .value{font-size:21px}.chart-panel{padding:0 12px 9px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}}
-@media(max-width:768px),(prefers-reduced-transparency:reduce){.theme-popover{background:var(--bg-primary);backdrop-filter:none;-webkit-backdrop-filter:none}}
 </style>
 </head>
 <body>
@@ -230,20 +205,6 @@ dialog input{width:100%;margin:17px 0;padding:10px 12px;border:1px solid var(--b
 <select id="range" class="control" aria-label="统计范围"><option value="24h">最近 24 小时</option><option value="7d">最近 7 天</option><option value="30d">最近 30 天</option><option value="retention">全部保留数据</option></select>
 <button id="refreshButton" class="control primary" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"></path><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"></path></svg><span class="button-label">刷新</span></button>
 <button id="resetButton" class="control danger" type="button"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"></path><path d="M8 6V4h8v2"></path><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v5M14 11v5"></path></svg><span class="button-label">重置数据</span></button>
-<div class="theme-menu">
-<button id="themeButton" class="control icon-button" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="themePopover" aria-label="主题：跟随系统" title="主题：跟随系统">
-<span class="theme-icon" data-theme-icon="auto"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"></rect><path d="M8 21h8M12 17v4"></path><path d="M8.5 9.5a3.5 3.5 0 0 0 5 3.1A4 4 0 1 1 8.5 9.5Z"></path></svg></span>
-<span class="theme-icon" data-theme-icon="white" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M17.66 6.34l1.41-1.41"></path></svg></span>
-<span class="theme-icon" data-theme-icon="light" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5h16v13H4z"></path><path d="M7 9h10M7 12h7M7 15h9"></path></svg></span>
-<span class="theme-icon" data-theme-icon="dark" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z"></path></svg></span>
-</button>
-<div id="themePopover" class="theme-popover" role="menu" aria-label="切换主题" hidden>
-<button class="theme-card" type="button" data-theme-value="auto" role="menuitemradio" aria-checked="false"><span class="theme-preview preview-auto"><span class="theme-preview-head"></span><span class="theme-preview-body"><span class="theme-preview-side"></span><span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line short"></span></span></span></span><span class="theme-card-label">跟随系统</span></button>
-<button class="theme-card" type="button" data-theme-value="white" role="menuitemradio" aria-checked="false"><span class="theme-preview preview-white"><span class="theme-preview-head"></span><span class="theme-preview-body"><span class="theme-preview-side"></span><span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line short"></span></span></span></span><span class="theme-card-label">纯白</span></button>
-<button class="theme-card" type="button" data-theme-value="light" role="menuitemradio" aria-checked="false"><span class="theme-preview preview-light"><span class="theme-preview-head"></span><span class="theme-preview-body"><span class="theme-preview-side"></span><span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line short"></span></span></span></span><span class="theme-card-label">羊毛纸</span></button>
-<button class="theme-card" type="button" data-theme-value="dark" role="menuitemradio" aria-checked="false"><span class="theme-preview preview-dark"><span class="theme-preview-head"></span><span class="theme-preview-body"><span class="theme-preview-side"></span><span class="theme-preview-content"><span class="theme-preview-line"></span><span class="theme-preview-line short"></span></span></span></span><span class="theme-card-label">暗色</span></button>
-</div>
-</div>
 </div>
 </header>
 <div class="feedback"><div id="status" class="status" aria-live="polite">正在加载统计数据…</div><div id="error" class="error" role="alert"></div></div>
@@ -270,21 +231,17 @@ var statsURL='/v0/resource/plugins/'+encodeURIComponent(pluginID)+'/stats';
 var resetURL='/v0/management/plugins/'+encodeURIComponent(pluginID)+'/reset';
 var resetDialog=document.getElementById('resetDialog');
 var resetKeyInput=document.getElementById('resetKeyInput');
-var themeButton=document.getElementById('themeButton');
-var themePopover=document.getElementById('themePopover');
-var themeNames={auto:'跟随系统',white:'纯白',light:'羊毛纸',dark:'暗色'};
-var themeMode=document.documentElement.getAttribute('data-theme-mode')||'auto';
 var systemTheme=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+var parentThemeObserver=null;
 
 function readPluginID(){var parts=window.location.pathname.split('/').filter(Boolean);var index=parts.indexOf('plugins');if(index<0||!parts[index+1])return '';return decodeURIComponent(parts[index+1]);}
 function text(id,value){var node=document.getElementById(id);if(node)node.textContent=value;}
 function fmt(value){return new Intl.NumberFormat('zh-CN').format(Number(value||0));}
 function duration(ns){ns=Number(ns||0);if(!ns)return '—';if(ns<1e6)return Math.round(ns/1e3)+'µs';if(ns<1e9)return (ns/1e6).toFixed(1)+'ms';return (ns/1e9).toFixed(2)+'s';}
 function clearErrors(){text('error','');}
-function resolvedTheme(mode){if(mode==='auto')return systemTheme&&systemTheme.matches?'dark':'white';return mode;}
-function applyTheme(mode,persist){var applied=resolvedTheme(mode);themeMode=mode;document.documentElement.setAttribute('data-theme-mode',mode);if(applied==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',applied);if(persist){try{window.localStorage.setItem('cap-token-usage-theme',mode);}catch(_error){}}document.querySelectorAll('[data-theme-value]').forEach(function(card){var active=card.getAttribute('data-theme-value')===mode;card.classList.toggle('active',active);card.setAttribute('aria-checked',active?'true':'false');});document.querySelectorAll('[data-theme-icon]').forEach(function(icon){icon.hidden=icon.getAttribute('data-theme-icon')!==mode;});var label='主题：'+themeNames[mode];themeButton.setAttribute('aria-label',label);themeButton.setAttribute('title',label);}
-function closeThemeMenu(){themePopover.hidden=true;themeButton.setAttribute('aria-expanded','false');}
-function toggleThemeMenu(){var nextOpen=themePopover.hidden;themePopover.hidden=!nextOpen;themeButton.setAttribute('aria-expanded',nextOpen?'true':'false');}
+function applyResolvedTheme(theme){if(theme==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',theme);}
+function readCLIProxyTheme(){try{if(window.parent===window)return null;var parentTheme=window.parent.document.documentElement.getAttribute('data-theme');return parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';}catch(_error){return null;}}
+function initializeThemeSync(){var parentTheme=readCLIProxyTheme();if(parentTheme!==null){applyResolvedTheme(parentTheme);try{parentThemeObserver=new MutationObserver(function(){var nextTheme=readCLIProxyTheme();if(nextTheme!==null)applyResolvedTheme(nextTheme);});parentThemeObserver.observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['data-theme']});}catch(_error){}return;}var applySystemTheme=function(){applyResolvedTheme(systemTheme&&systemTheme.matches?'dark':'white');};applySystemTheme();if(systemTheme){if(systemTheme.addEventListener)systemTheme.addEventListener('change',applySystemTheme);else if(systemTheme.addListener)systemTheme.addListener(applySystemTheme);}}
 async function api(url,options,trackActive){trackActive=trackActive!==false;if(trackActive&&activeController)activeController.abort();var controller=new AbortController();if(trackActive)activeController=controller;var timeout=setTimeout(function(){controller.abort();},10000);options=options||{};options.signal=controller.signal;try{var response=await fetch(new URL(url,window.location.origin),options);var body;try{body=await response.json();}catch(_e){body={error:'响应不是有效 JSON'};}if(!response.ok)throw new Error(body.error||('HTTP '+response.status));return body;}catch(error){if(error.name==='AbortError')throw new Error('请求超时或已被新请求取消');throw error;}finally{clearTimeout(timeout);if(trackActive&&activeController===controller)activeController=null;}}
 async function load(){clearErrors();var range=document.getElementById('range').value;var data=await api(statsURL+'?range='+encodeURIComponent(range));render(data);}
 function render(data){var s=data.summary||{};text('totalTokens',fmt(s.total_tokens));text('requests',fmt(s.requests));text('inputTokens',fmt(s.input_tokens));text('outputTokens',fmt(s.output_tokens));text('reasoningTokens',fmt(s.reasoning_tokens));text('cacheTokens',fmt(s.cache_read_tokens)+' / '+fmt(s.cache_creation_tokens));var success=Number(s.requests||0)?((Number(s.requests)-Number(s.failed_requests||0))/Number(s.requests)*100):0;text('successRate','成功率 '+success.toFixed(1)+'%');text('status','范围：'+data.range+' · 最近活动：'+(data.last_used&&data.last_used.indexOf('0001-')!==0?new Date(data.last_used).toLocaleString():'—')+' · 更新：'+new Date(data.generated_at).toLocaleTimeString());renderGroups(data.groups||[]);renderChart(data.series||[]);}
@@ -296,15 +253,10 @@ function askManagementKey(){resetKeyInput.value='';resetDialog.returnValue='';re
 async function resetStats(){if(!confirm('确定永久删除全部 Token 统计吗？此操作不可撤销。'))return;var typed=prompt('请输入 reset 确认：');if(typed!=='reset')return;var managementKey=await askManagementKey();if(!managementKey)return;try{await api(resetURL,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+managementKey},body:JSON.stringify({confirm:'reset'})},false);await load();}catch(error){text('error',error.message);}}
 function startTimer(){if(refreshTimer)clearInterval(refreshTimer);refreshTimer=setInterval(function(){load().catch(function(error){text('error',error.message);});},15000);}
 
-themeButton.addEventListener('click',toggleThemeMenu);
-themePopover.querySelectorAll('[data-theme-value]').forEach(function(card){card.addEventListener('click',function(){applyTheme(card.getAttribute('data-theme-value'),true);closeThemeMenu();});});
-document.addEventListener('click',function(event){if(!themeButton.contains(event.target)&&!themePopover.contains(event.target))closeThemeMenu();});
-document.addEventListener('keydown',function(event){if(event.key==='Escape')closeThemeMenu();});
-if(systemTheme){var onSystemThemeChange=function(){if(themeMode==='auto')applyTheme('auto',false);};if(systemTheme.addEventListener)systemTheme.addEventListener('change',onSystemThemeChange);else if(systemTheme.addListener)systemTheme.addListener(onSystemThemeChange);}
+initializeThemeSync();
 document.getElementById('refreshButton').addEventListener('click',function(){load().catch(function(error){text('error',error.message);});});
 document.getElementById('range').addEventListener('change',function(){load().catch(function(error){text('error',error.message);});});
 document.getElementById('resetButton').addEventListener('click',resetStats);
-applyTheme(themeMode,false);
 if(!pluginID){text('error','无法从插件资源 URL 识别 plugin ID。');return;}load().catch(function(error){text('error',error.message);});startTimer();
 })();
 </script>

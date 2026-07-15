@@ -95,13 +95,10 @@ func TestDashboardSecurityContract(t *testing.T) {
 			t.Fatalf("dashboard missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"sessionStorage", "connectButton", "logoutButton", "fetch('stats')", `fetch("stats")`} {
+	for _, forbidden := range []string{"localStorage", "sessionStorage", "connectButton", "logoutButton", "fetch('stats')", `fetch("stats")`} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains forbidden pattern %q", forbidden)
 		}
-	}
-	if strings.Count(html, "localStorage.setItem") != 1 || !strings.Contains(html, "localStorage.setItem('cap-token-usage-theme',mode)") {
-		t.Fatal("dashboard may only persist the non-sensitive theme preference")
 	}
 	if response.Headers.Get("Content-Security-Policy") == "" {
 		t.Fatal("missing content security policy")
