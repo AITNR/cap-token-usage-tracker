@@ -7,10 +7,10 @@
           <value>
             <TabSessionState>
               <option name="provider" value="codex" />
-              <option name="sessionId" value="019f63bc-9810-74f1-b20b-58a6a3fe4d75" />
+              <option name="sessionId" value="019f63ea-a25d-7d31-83fb-42d2733d33b4" />
               <option name="cwd" value="D:\c\cap-token-usage-tracker" />
               <option name="model" value="gpt-5.6-sol" />
-              <option name="permissionMode" value="default" />
+              <option name="permissionMode" value="bypassPermissions" />
             </TabSessionState>
           </value>
         </entry>

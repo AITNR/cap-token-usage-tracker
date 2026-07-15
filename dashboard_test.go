@@ -53,6 +53,33 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 	}
 }
 
+func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="granularity"`,
+		`id="totalCost"`,
+		`id="topModel"`,
+		`id="donut"`,
+		`id="legend"`,
+		`bar-input`,
+		`bar-output`,
+		`model_series`,
+		`function selectModel(name)`,
+		`function toggleModel(name)`,
+		`addEventListener('wheel'`,
+		`id="pricingDialog"`,
+		`function exportCSV()`,
+		`function exportPNG()`,
+		`该时间段内暂无调用记录`,
+		`grid-template-columns:repeat(4`,
+		`grid-template-columns:repeat(2`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing analytics feature %q", required)
+		}
+	}
+}
+
 func TestDashboardResolvesCLIProxyThemeBeforeInitialBackground(t *testing.T) {
 	html := dashboardHTML
 	themeRead := strings.Index(html, "window.parent.document.documentElement.getAttribute('data-theme')")
