@@ -66,6 +66,29 @@ func TestDecodeUsageSDKJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeUsageDerivesExplicitZeroTotal(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	record := pluginapi.UsageRecord{
+		RequestedAt: now,
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  17,
+			OutputTokens: 9,
+			TotalTokens:  0,
+		},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := decodeUsage(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Counters.TotalTokens != 26 {
+		t.Fatalf("total tokens = %d, want 26", usage.Counters.TotalTokens)
+	}
+}
+
 func TestDecodeUsageSnakeCaseFallbackAndClamp(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 	raw := []byte(`{

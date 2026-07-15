@@ -8,15 +8,17 @@
 
 ## 中文
 
-CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册只读资源统计接口和受保护的重置接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
+CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册只读资源接口和受保护的模型价格保存、重置接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
 
 ## 功能
 
-- 按 UTC 小时持久化聚合，不保存逐请求正文
+- 按 UTC 分钟持久化聚合，并保存逐请求用量元数据；不保存请求或响应正文
 - 按模型、提供商、执行器、别名、来源、认证类型、服务层级、推理强度和失败状态分组
-- 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟和 TTFT
-- 支持最近 24 小时、7 天、30 天或全部保留数据
-- 自包含中文仪表盘，无第三方前端依赖
+- 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟、TTFT、生成时间、TPS 和缓存命中
+- 支持最近 24 小时、7 天、30 天或全部保留数据，趋势图可按分钟/小时/日/周/月聚合
+- 自包含中文仪表盘，无第三方前端依赖，包含指标卡片、堆叠 Token 趋势、模型环形占比、费用趋势、模型效率散点图和逐请求明细
+- 支持模型下钻联动、趋势图滚轮缩放/平移、模型自定义价格，以及当前筛选数据 CSV 和 Dashboard PNG 导出
+- 主题由 CLIProxyAPI Management Center 统一控制，自动同步跟随系统、纯白、羊毛纸和暗色模式
 - 数据重置需 CLIProxyAPI 管理鉴权和显式 `reset` 确认
 - Linux ARM64 `c-shared` 构建
 
@@ -30,7 +32,7 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 响应头
 - 请求或响应正文
 
-数据库仅包含小时聚合维度和计数。维度字段可能仍反映模型、来源或服务层级等运行信息。为使仪表盘打开时无需再次输入密钥，插件的只读资源统计接口不经过 CLIProxyAPI management 鉴权；请只在受信网络中暴露 CLIProxyAPI。受保护的 management 统计接口和重置接口仍需管理鉴权。
+数据库包含分钟级聚合维度与计数、逐请求用量元数据（例如时间、模型、来源、Tier、结果、延迟、推理强度、Token 计数和缓存命中），以及用户设置的模型单价；不会保存 prompt、响应内容或其他请求/响应正文。维度字段和逐请求元数据仍可能反映模型、来源或服务层级等运行信息。为使仪表盘打开时无需再次输入密钥，插件的只读资源接口不经过 CLIProxyAPI management 鉴权；请只在受信网络中暴露 CLIProxyAPI。受保护的 management 统计、模型价格保存和重置接口仍需管理鉴权。
 
 ## 配置
 
@@ -54,7 +56,7 @@ plugins:
       retention_days: 30
       flush_interval: 5s
       flush_max_records: 100
-      sync_on_record: false
+      sync_on_record: true
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -63,9 +65,9 @@ plugins:
 | `retention_days` | `30` | 保留的 UTC 天数，范围 1–3650 |
 | `flush_interval` | `5s` | 批量刷盘最长间隔，范围 1 秒–1 小时 |
 | `flush_max_records` | `100` | 接收指定数量记录后立即刷盘 |
-| `sync_on_record` | `false` | 开启后每条记录提交数据库后才确认，可靠性更高但吞吐更低 |
+| `sync_on_record` | `true` | 默认每条记录提交数据库后才确认；设为 `false` 可启用批量模式以提高吞吐 |
 
-默认批量模式在正常 shutdown 时会刷写全部待处理数据；进程被强制终止时，最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。需要更强持久性时开启 `sync_on_record`。
+默认同步模式会在 `usage.handle` 返回前提交每条统计，避免正常记录停留在未刷盘窗口。仅当显式设置 `sync_on_record: false` 时启用批量模式；进程被强制终止时，批量模式最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。
 
 修改 `data_path` 会切换到一个独立数据库，不会自动迁移或删除旧文件。
 
@@ -75,12 +77,15 @@ plugins:
 
 - 仪表盘：`/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - 仪表盘只读统计（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
+- 逐请求明细（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=24h&offset=0&limit=100&model=gpt-4.1`
+- 模型价格读取（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/prices`
 - 受保护统计：`GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- 模型价格保存（需要 management key）：`PUT /v0/management/plugins/cap-token-usage-tracker/prices`
 - 受保护重置：`POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
-统计范围：`24h`、`7d`、`30d`、`retention`。
+统计范围：`24h`、`7d`、`30d`、`retention`。逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
 
-Management Center 会把插件页面放入 iframe。仪表盘通过只读资源统计接口自动加载，打开和刷新页面都不需要 management key。只有点击“重置数据”时才会要求输入 Management Key，且密钥仅用于该次请求，不会写入插件数据库、浏览器存储或 URL。
+Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。保存模型价格或重置数据时会要求输入 Management Key；密钥仅用于当次保存或重置请求，不会写入插件数据库、浏览器存储或 URL。模型价格本身保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除模型价格。
 
 重置请求正文：
 
@@ -167,15 +172,17 @@ go test ./...
 
 ## English
 
-A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers a read-only resource statistics endpoint and protected reset endpoint through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
+A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers read-only resource endpoints plus protected model-price persistence and reset endpoints through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
 
 ### Features
 
-- Persistent aggregation by UTC hour; no per-request body is stored
+- Persistent aggregation by UTC minute plus per-request usage metadata; request and response bodies are not stored
 - Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
-- Counts requests, failures, input/output/reasoning/cached tokens, latency, and TTFT
-- Supports last 24 hours, 7 days, 30 days, or all retained data
-- Self-contained Chinese dashboard with no third-party frontend dependencies
+- Counts requests, failures, input/output/reasoning/cached tokens, latency, TTFT, generation time, TPS, and cache hits
+- Supports the last 24 hours, 7 days, 30 days, or all retained data, with minute/hour/day/week/month trend granularity
+- Self-contained Chinese dashboard with no third-party frontend dependencies, including stat cards, stacked Token trends, a model doughnut chart, cost trends, a model-efficiency scatter plot, and per-request details
+- Supports linked model drill-down, wheel zoom/pan for trends, custom model pricing, filtered CSV export, and Dashboard PNG export
+- Theme is controlled by the CLIProxyAPI Management Center and automatically syncs Follow System, Pure White, Wool Paper, and Dark modes
 - Data reset requires CLIProxyAPI management authentication and explicit `reset` confirmation
 - Linux ARM64 `c-shared` build
 
@@ -189,7 +196,7 @@ The plugin does not store or return via statistics endpoints:
 - Response headers
 - Request or response body
 
-The database contains only hourly aggregation dimensions and counts. Dimension fields may still reflect operational information such as model, source, or service tier. To let the dashboard open without asking for the key again, the read-only resource statistics endpoint does not use CLIProxyAPI management authentication; expose CLIProxyAPI only on a trusted network. The protected management statistics and reset endpoints still require management authentication.
+The database contains minute-level aggregation dimensions and counts, per-request usage metadata such as time, model, source, tier, result, latency, reasoning intensity, Token counters, and cache-hit status, and user-configured model prices. It does not store prompts, generated content, or other request/response bodies. Dimensions and request metadata may still reflect operational information such as model, source, or service tier. To let the dashboard open without asking for the key again, the read-only resource endpoints do not use CLIProxyAPI management authentication; expose CLIProxyAPI only on a trusted network. The protected management statistics, model-price save, and reset endpoints still require management authentication.
 
 ### Configuration
 
@@ -213,7 +220,7 @@ plugins:
       retention_days: 30
       flush_interval: 5s
       flush_max_records: 100
-      sync_on_record: false
+      sync_on_record: true
 ```
 
 | Field | Default | Description |
@@ -222,9 +229,9 @@ plugins:
 | `retention_days` | `30` | Retention period in UTC days, range 1–3650 |
 | `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
 | `flush_max_records` | `100` | Flush immediately after receiving this many records |
-| `sync_on_record` | `false` | When enabled, each record is committed to the database before acknowledgement; higher durability but lower throughput |
+| `sync_on_record` | `true` | Commits each record before acknowledgement by default; set to `false` to enable higher-throughput batching |
 
-In default batch mode, all pending data is flushed on normal shutdown. If the process is forcefully terminated, up to one `flush_interval` or unflushed `flush_max_records` window may be lost. Enable `sync_on_record` for stronger durability.
+The default synchronous mode commits each statistic before `usage.handle` returns, avoiding an unflushed normal-operation window. Batching is enabled only when `sync_on_record: false` is set explicitly; if the process is forcefully terminated in batch mode, up to one `flush_interval` or unflushed `flush_max_records` window may be lost.
 
 Changing `data_path` switches to a separate database; the old file is not automatically migrated or deleted.
 
@@ -234,12 +241,15 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 
 - Dashboard: `/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - Dashboard read-only statistics (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
+- Per-request details (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=24h&offset=0&limit=100&model=gpt-4.1`
+- Model prices (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/prices`
 - Protected statistics: `GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- Save model prices (management key required): `PUT /v0/management/plugins/cap-token-usage-tracker/prices`
 - Protected reset: `POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
-Statistics ranges: `24h`, `7d`, `30d`, `retention`.
+Statistics ranges: `24h`, `7d`, `30d`, `retention`. Request details are returned newest first; `offset` must be a non-negative integer, `limit` defaults to 100 and is capped at 500, and optional `model` applies an exact model filter.
 
-The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource statistics endpoint, so opening and refreshing it does not require a management key. A Management Key is requested only when “Reset Data” is clicked, and it is used for that request only; it is not written to the plugin database, browser storage, or URL.
+The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. A Management Key is requested when saving model prices or resetting data; it is used only for that save or reset request and is not written to the plugin database, browser storage, or URL. Model prices themselves are stored in the plugin bbolt database, survive page refreshes and service restarts, and are not removed by resetting statistics.
 
 Reset request body:
 

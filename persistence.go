@@ -14,14 +14,17 @@ import (
 )
 
 var (
-	metaBucket  = []byte("meta")
-	hoursBucket = []byte("hours")
-	schemaKey   = []byte("schema_version")
-	sinceKey    = []byte("since_unix_nano")
-	lastUsedKey = []byte("last_used_unix_nano")
+	metaBucket         = []byte("meta")
+	hoursBucket        = []byte("hours")
+	requestsBucket     = []byte("requests")
+	schemaKey          = []byte("schema_version")
+	sinceKey           = []byte("since_unix_nano")
+	lastUsedKey        = []byte("last_used_unix_nano")
+	requestSequenceKey = []byte("request_sequence")
+	modelPricesKey     = []byte("model_prices")
 )
 
-const persistenceSchemaVersion uint64 = 1
+const persistenceSchemaVersion uint64 = 3
 
 type recordCommand struct {
 	usage normalizedUsage
@@ -36,6 +39,29 @@ type queryCommand struct {
 type queryResult struct {
 	stats StatsResponse
 	err   error
+}
+
+type requestQueryCommand struct {
+	rangeName string
+	offset    int
+	limit     int
+	model     string
+	resp      chan requestQueryResult
+}
+
+type requestQueryResult struct {
+	page RequestPage
+	err  error
+}
+
+type priceQueryCommand struct{ resp chan priceQueryResult }
+type priceQueryResult struct {
+	prices map[string]ModelPrice
+	err    error
+}
+type savePricesCommand struct {
+	prices map[string]ModelPrice
+	resp   chan priceQueryResult
 }
 
 type resetCommand struct{ resp chan error }
@@ -55,15 +81,18 @@ type Store struct {
 }
 
 type storeActor struct {
-	db           *bolt.DB
-	config       Config
-	data         map[aggregateKey]Counters
-	dirty        map[aggregateKey]struct{}
-	since        time.Time
-	lastUsed     time.Time
-	pending      int
-	lastPruneAt  time.Time
-	lastFlushErr error
+	db              *bolt.DB
+	config          Config
+	data            map[aggregateKey]Counters
+	dirty           map[aggregateKey]struct{}
+	since           time.Time
+	lastUsed        time.Time
+	pending         int
+	lastPruneAt     time.Time
+	lastFlushErr    error
+	pendingRequests []RequestDetail
+	nextRequestSeq  uint64
+	modelPrices     map[string]ModelPrice
 }
 
 func openStore(config Config) (*Store, error) {
@@ -109,6 +138,37 @@ func (s *Store) Query(rangeName string) (StatsResponse, error) {
 	}
 	result := <-resp
 	return result.stats, result.err
+}
+
+func (s *Store) QueryRequests(rangeName string, offset, limit int, model string) (RequestPage, error) {
+	resp := make(chan requestQueryResult, 1)
+	if err := s.send(requestQueryCommand{rangeName: rangeName, offset: offset, limit: limit, model: model, resp: resp}); err != nil {
+		return RequestPage{}, err
+	}
+	result := <-resp
+	return result.page, result.err
+}
+
+func (s *Store) QueryModelPrices() (map[string]ModelPrice, error) {
+	resp := make(chan priceQueryResult, 1)
+	if err := s.send(priceQueryCommand{resp: resp}); err != nil {
+		return nil, err
+	}
+	result := <-resp
+	return result.prices, result.err
+}
+
+func (s *Store) SaveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
+	normalized, err := normalizeModelPrices(prices)
+	if err != nil {
+		return nil, withStatus(400, "%v", err)
+	}
+	resp := make(chan priceQueryResult, 1)
+	if err := s.send(savePricesCommand{prices: normalized, resp: resp}); err != nil {
+		return nil, err
+	}
+	result := <-resp
+	return result.prices, result.err
 }
 
 func (s *Store) Reset() error {
@@ -164,10 +224,8 @@ func (s *Store) run(actor *storeActor) {
 		case command := <-s.commands:
 			switch item := command.(type) {
 			case recordCommand:
-				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-					item.resp <- err
-					continue
-				}
+				// Always accept the new usage into the dirty in-memory aggregate. A
+				// previous transient flush failure must not make subsequent usage vanish.
 				item.resp <- actor.record(item.usage)
 			case queryCommand:
 				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
@@ -176,6 +234,20 @@ func (s *Store) run(actor *storeActor) {
 				}
 				stats, err := buildStats(actor.data, actor.since, actor.lastUsed, item.rangeName, time.Now().UTC())
 				item.resp <- queryResult{stats: stats, err: err}
+			case requestQueryCommand:
+				now := time.Now().UTC()
+				if err := actor.flush(now, true); err != nil {
+					actor.lastFlushErr = err
+					item.resp <- requestQueryResult{err: err}
+					continue
+				}
+				page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
+				item.resp <- requestQueryResult{page: page, err: err}
+			case priceQueryCommand:
+				item.resp <- priceQueryResult{prices: cloneModelPrices(actor.modelPrices)}
+			case savePricesCommand:
+				prices, err := actor.saveModelPrices(item.prices)
+				item.resp <- priceQueryResult{prices: prices, err: err}
 			case resetCommand:
 				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
 					item.resp <- err
@@ -215,8 +287,12 @@ func (a *storeActor) initialize() error {
 		if err != nil {
 			return err
 		}
+		requests, err := tx.CreateBucketIfNotExists(requestsBucket)
+		if err != nil {
+			return err
+		}
 		version := decodeUint64(meta.Get(schemaKey))
-		if version != 0 && version != persistenceSchemaVersion {
+		if version > persistenceSchemaVersion {
 			return fmt.Errorf("unsupported database schema version %d", version)
 		}
 		if err := meta.Put(schemaKey, encodeUint64(persistenceSchemaVersion)); err != nil {
@@ -236,7 +312,10 @@ func (a *storeActor) initialize() error {
 		if err := meta.Put(sinceKey, encodeInt64(since.UnixNano())); err != nil {
 			return err
 		}
-		return pruneHoursBucket(hours, cutoff)
+		if err := pruneHoursBucket(hours, cutoff); err != nil {
+			return err
+		}
+		return pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano())
 	}); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -244,10 +323,24 @@ func (a *storeActor) initialize() error {
 	return a.db.View(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
-		if meta == nil || hours == nil {
+		requests := tx.Bucket(requestsBucket)
+		if meta == nil || hours == nil || requests == nil {
 			return errors.New("database buckets are missing")
 		}
 		a.since = time.Unix(0, decodeInt64(meta.Get(sinceKey))).UTC()
+		a.nextRequestSeq = decodeUint64(meta.Get(requestSequenceKey))
+		a.modelPrices = make(map[string]ModelPrice)
+		if raw := meta.Get(modelPricesKey); len(raw) > 0 {
+			var stored map[string]ModelPrice
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode model prices: %w", err)
+			}
+			normalized, err := normalizeModelPrices(stored)
+			if err != nil {
+				return fmt.Errorf("validate model prices: %w", err)
+			}
+			a.modelPrices = normalized
+		}
 		if raw := meta.Get(lastUsedKey); len(raw) > 0 {
 			a.lastUsed = time.Unix(0, decodeInt64(raw)).UTC()
 		}
@@ -278,19 +371,24 @@ func (a *storeActor) initialize() error {
 
 func (a *storeActor) record(usage normalizedUsage) error {
 	key := aggregateKey{
-		Hour:       usage.RequestedAt.UTC().Truncate(time.Hour).Unix(),
+		Hour:       usage.RequestedAt.UTC().Truncate(time.Minute).Unix(),
 		Dimensions: usage.Dimensions,
 	}
 	counters := a.data[key]
 	counters.add(countersForUsage(usage))
 	a.data[key] = counters
 	a.dirty[key] = struct{}{}
+	a.nextRequestSeq++
+	if a.nextRequestSeq == 0 {
+		a.nextRequestSeq = 1
+	}
+	a.pendingRequests = append(a.pendingRequests, requestDetailForUsage(usage, a.nextRequestSeq))
 	a.pending++
 	if a.lastUsed.IsZero() || usage.RequestedAt.After(a.lastUsed) {
 		a.lastUsed = usage.RequestedAt
 	}
 
-	if a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
+	if a.lastFlushErr != nil || a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
 		a.lastFlushErr = a.flush(time.Now().UTC(), false)
 		return a.lastFlushErr
 	}
@@ -307,7 +405,7 @@ func (a *storeActor) retryFailedFlush(now time.Time) error {
 
 func (a *storeActor) flush(now time.Time, force bool) error {
 	shouldPrune := a.lastPruneAt.IsZero() || now.Sub(a.lastPruneAt) >= time.Hour
-	if len(a.dirty) == 0 && !shouldPrune && !force {
+	if len(a.dirty) == 0 && len(a.pendingRequests) == 0 && !shouldPrune && !force {
 		return nil
 	}
 	cutoff := retentionCutoff(a.config, now)
@@ -321,7 +419,8 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
-		if meta == nil || hours == nil {
+		requests := tx.Bucket(requestsBucket)
+		if meta == nil || hours == nil || requests == nil {
 			return errors.New("database buckets are missing")
 		}
 		for key := range a.dirty {
@@ -341,6 +440,15 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 				return err
 			}
 		}
+		for _, request := range a.pendingRequests {
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				return err
+			}
+			if err := requests.Put(encodeRequestKey(request.Time.UnixNano(), request.Sequence), encoded); err != nil {
+				return err
+			}
+		}
 		if err := meta.Put(sinceKey, encodeInt64(nextSince.UnixNano())); err != nil {
 			return err
 		}
@@ -349,8 +457,14 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 				return err
 			}
 		}
+		if err := meta.Put(requestSequenceKey, encodeUint64(a.nextRequestSeq)); err != nil {
+			return err
+		}
 		if shouldPrune {
-			return pruneHoursBucket(hours, cutoff)
+			if err := pruneHoursBucket(hours, cutoff); err != nil {
+				return err
+			}
+			return pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano())
 		}
 		return nil
 	})
@@ -359,6 +473,7 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 	}
 
 	clear(a.dirty)
+	a.pendingRequests = a.pendingRequests[:0]
 	a.pending = 0
 	a.lastFlushErr = nil
 	if shouldPrune {
@@ -395,6 +510,27 @@ func (a *storeActor) reconfigure(config Config) error {
 	return nil
 }
 
+func (a *storeActor) saveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
+	encoded, err := json.Marshal(prices)
+	if err != nil {
+		return nil, fmt.Errorf("encode model prices: %w", err)
+	}
+	if err := a.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metaBucket)
+		if meta == nil {
+			return errors.New("metadata bucket is missing")
+		}
+		if len(prices) == 0 {
+			return meta.Delete(modelPricesKey)
+		}
+		return meta.Put(modelPricesKey, encoded)
+	}); err != nil {
+		return nil, fmt.Errorf("save model prices: %w", err)
+	}
+	a.modelPrices = cloneModelPrices(prices)
+	return cloneModelPrices(a.modelPrices), nil
+}
+
 func (a *storeActor) reset() error {
 	now := time.Now().UTC()
 	if err := a.db.Update(func(tx *bolt.Tx) error {
@@ -404,11 +540,20 @@ func (a *storeActor) reset() error {
 		if _, err := tx.CreateBucket(hoursBucket); err != nil {
 			return err
 		}
+		if err := tx.DeleteBucket(requestsBucket); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
+			return err
+		}
+		if _, err := tx.CreateBucket(requestsBucket); err != nil {
+			return err
+		}
 		meta := tx.Bucket(metaBucket)
 		if meta == nil {
 			return errors.New("metadata bucket is missing")
 		}
 		if err := meta.Put(sinceKey, encodeInt64(now.UnixNano())); err != nil {
+			return err
+		}
+		if err := meta.Put(requestSequenceKey, encodeUint64(0)); err != nil {
 			return err
 		}
 		return meta.Delete(lastUsedKey)
@@ -418,14 +563,77 @@ func (a *storeActor) reset() error {
 	a.data = make(map[aggregateKey]Counters)
 	a.dirty = make(map[aggregateKey]struct{})
 	a.pending = 0
+	a.pendingRequests = nil
+	a.nextRequestSeq = 0
 	a.lastFlushErr = nil
 	a.since = now
 	a.lastUsed = time.Time{}
 	return nil
 }
 
+func (a *storeActor) queryRequests(requestedRange string, offset, limit int, model string, now time.Time) (RequestPage, error) {
+	rangeName, cutoff, err := queryCutoff(requestedRange, now)
+	if err != nil {
+		return RequestPage{}, err
+	}
+	if offset < 0 {
+		return RequestPage{}, withStatus(400, "offset must not be negative")
+	}
+	if limit == 0 {
+		limit = defaultRequestPageSize
+	}
+	if limit < 1 || limit > maxRequestPageSize {
+		return RequestPage{}, withStatus(400, "limit must be between 1 and %d", maxRequestPageSize)
+	}
+
+	page := RequestPage{
+		GeneratedAt: now.UTC(),
+		Range:       rangeName,
+		Offset:      offset,
+		Limit:       limit,
+		Items:       make([]RequestDetail, 0, limit),
+	}
+	err = a.db.View(func(tx *bolt.Tx) error {
+		requests := tx.Bucket(requestsBucket)
+		if requests == nil {
+			return errors.New("requests bucket is missing")
+		}
+		cursor := requests.Cursor()
+		for key, value := cursor.Last(); key != nil; key, value = cursor.Prev() {
+			if len(key) != 16 || value == nil {
+				continue
+			}
+			requestedAt := time.Unix(0, decodeInt64(key[:8])).UTC()
+			if !cutoff.IsZero() && requestedAt.Before(cutoff) {
+				break
+			}
+			var item RequestDetail
+			if err := json.Unmarshal(value, &item); err != nil {
+				return fmt.Errorf("decode request detail: %w", err)
+			}
+			itemModel := item.Model
+			if itemModel == "" {
+				itemModel = "未标记模型"
+			}
+			if model != "" && itemModel != model {
+				continue
+			}
+			page.Total++
+			if page.Total <= offset || len(page.Items) >= limit {
+				continue
+			}
+			page.Items = append(page.Items, item)
+		}
+		return nil
+	})
+	if err != nil {
+		return RequestPage{}, fmt.Errorf("query request details: %w", err)
+	}
+	return page, nil
+}
+
 func retentionCutoff(config Config, now time.Time) int64 {
-	return now.UTC().Add(-time.Duration(config.RetentionDays) * 24 * time.Hour).Truncate(time.Hour).Unix()
+	return now.UTC().Add(-time.Duration(config.RetentionDays) * 24 * time.Hour).Truncate(time.Minute).Unix()
 }
 
 func pruneHoursBucket(hours *bolt.Bucket, cutoff int64) error {
@@ -440,6 +648,29 @@ func pruneHoursBucket(hours *bolt.Bucket, cutoff int64) error {
 	}
 	for _, key := range expired {
 		if err := hours.DeleteBucket(key); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func encodeRequestKey(unixNano int64, sequence uint64) []byte {
+	result := make([]byte, 16)
+	copy(result[:8], encodeInt64(unixNano))
+	binary.BigEndian.PutUint64(result[8:], sequence)
+	return result
+}
+
+func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64) error {
+	cursor := requests.Cursor()
+	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
+		if len(key) != 16 {
+			continue
+		}
+		if decodeInt64(key[:8]) >= cutoffUnixNano {
+			break
+		}
+		if err := cursor.Delete(); err != nil {
 			return err
 		}
 	}

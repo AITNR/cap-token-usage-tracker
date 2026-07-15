@@ -6,6 +6,7 @@ import (
 	"mime"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
@@ -19,11 +20,14 @@ type managementRegistrationResponse struct {
 }
 
 type registeredRoutes struct {
-	pluginID          string
-	statsPath         string
-	resetPath         string
-	dashboardPath     string
-	resourceStatsPath string
+	pluginID             string
+	statsPath            string
+	resetPath            string
+	dashboardPath        string
+	resourceStatsPath    string
+	resourceRequestsPath string
+	pricesPath           string
+	resourcePricesPath   string
 }
 
 func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationResponse, error) {
@@ -37,11 +41,14 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 	}
 
 	routes := registeredRoutes{
-		pluginID:          pluginID,
-		statsPath:         "/v0/management/plugins/" + pluginID + "/stats",
-		resetPath:         "/v0/management/plugins/" + pluginID + "/reset",
-		dashboardPath:     "/v0/resource/plugins/" + pluginID + "/dashboard",
-		resourceStatsPath: "/v0/resource/plugins/" + pluginID + "/stats",
+		pluginID:             pluginID,
+		statsPath:            "/v0/management/plugins/" + pluginID + "/stats",
+		resetPath:            "/v0/management/plugins/" + pluginID + "/reset",
+		dashboardPath:        "/v0/resource/plugins/" + pluginID + "/dashboard",
+		resourceStatsPath:    "/v0/resource/plugins/" + pluginID + "/stats",
+		resourceRequestsPath: "/v0/resource/plugins/" + pluginID + "/requests",
+		pricesPath:           "/v0/management/plugins/" + pluginID + "/prices",
+		resourcePricesPath:   "/v0/resource/plugins/" + pluginID + "/prices",
 	}
 	r.mu.Lock()
 	r.routes = routes
@@ -59,6 +66,11 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 				Path:        "/plugins/" + pluginID + "/reset",
 				Description: "Reset all persisted token usage statistics.",
 			},
+			{
+				Method:      http.MethodPut,
+				Path:        "/plugins/" + pluginID + "/prices",
+				Description: "Persist per-model input and output token prices.",
+			},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{
@@ -69,6 +81,14 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Path:        "/stats",
 				Description: "Read-only token usage statistics for the plugin dashboard.",
+			},
+			{
+				Path:        "/requests",
+				Description: "Read paginated per-request token usage details.",
+			},
+			{
+				Path:        "/prices",
+				Description: "Read persisted model token prices for the plugin dashboard.",
 			},
 		},
 	}, nil
@@ -98,6 +118,21 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return r.statsResponse(request)
+	case routes.resourceRequestsPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.requestsResponse(request)
+	case routes.resourcePricesPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.pricesResponse()
+	case routes.pricesPath:
+		if !strings.EqualFold(request.Method, http.MethodPut) {
+			return methodNotAllowed(http.MethodPut), nil
+		}
+		return r.savePricesResponse(request)
 	case routes.resetPath:
 		if !strings.EqualFold(request.Method, http.MethodPost) {
 			return methodNotAllowed(http.MethodPost), nil
@@ -120,6 +155,72 @@ func (r *pluginRuntime) statsResponse(request pluginapi.ManagementRequest) (plug
 		return jsonResponse(status, map[string]any{"error": err.Error()}), nil
 	}
 	return jsonResponse(http.StatusOK, stats), nil
+}
+
+func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	offset, err := parseNonNegativeQueryInt(request.Query.Get("offset"), 0, "offset")
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	limit, err := parseNonNegativeQueryInt(request.Query.Get("limit"), defaultRequestPageSize, "limit")
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	page, err := r.store.QueryRequests(request.Query.Get("range"), offset, limit, request.Query.Get("model"))
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, page), nil
+}
+
+func (r *pluginRuntime) pricesResponse() (pluginapi.ManagementResponse, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	prices, err := r.store.QueryModelPrices()
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, ModelPricesResponse{Prices: prices}), nil
+}
+
+func (r *pluginRuntime) savePricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	contentType, _, err := mime.ParseMediaType(request.Headers.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/json"}), nil
+	}
+	var input ModelPricesResponse
+	if err := json.Unmarshal(request.Body, &input); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid model prices JSON"}), nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	prices, err := r.store.SaveModelPrices(input.Prices)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, ModelPricesResponse{Prices: prices}), nil
+}
+
+func parseNonNegativeQueryInt(raw string, fallback int, name string) (int, error) {
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 0, withStatus(http.StatusBadRequest, "%s must be a non-negative integer", name)
+	}
+	return value, nil
 }
 
 func (r *pluginRuntime) resetResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {

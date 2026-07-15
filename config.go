@@ -38,6 +38,7 @@ func defaultConfig() Config {
 		RetentionDays:   defaultRetentionDays,
 		FlushInterval:   defaultFlushInterval,
 		FlushMaxRecords: defaultFlushMaxRecords,
+		SyncOnRecord:    true,
 	}
 }
 

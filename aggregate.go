@@ -103,15 +103,25 @@ type SeriesPoint struct {
 	Counters
 }
 
+// ModelSeriesPoint preserves the time-bucketed model split needed by the dashboard for
+// stacked trends, model drill-down, and cost calculations without retaining
+// individual prompt contents.
+type ModelSeriesPoint struct {
+	Hour  string `json:"hour"`
+	Model string `json:"model"`
+	Counters
+}
+
 type StatsResponse struct {
-	SchemaVersion uint32        `json:"schema_version"`
-	GeneratedAt   time.Time     `json:"generated_at"`
-	Range         string        `json:"range"`
-	RetainedSince time.Time     `json:"retained_since"`
-	LastUsed      time.Time     `json:"last_used"`
-	Summary       Counters      `json:"summary"`
-	Groups        []GroupStats  `json:"groups"`
-	Series        []SeriesPoint `json:"series"`
+	SchemaVersion uint32             `json:"schema_version"`
+	GeneratedAt   time.Time          `json:"generated_at"`
+	Range         string             `json:"range"`
+	RetainedSince time.Time          `json:"retained_since"`
+	LastUsed      time.Time          `json:"last_used"`
+	Summary       Counters           `json:"summary"`
+	Groups        []GroupStats       `json:"groups"`
+	Series        []SeriesPoint      `json:"series"`
+	ModelSeries   []ModelSeriesPoint `json:"model_series"`
 }
 
 func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, requestedRange string, now time.Time) (StatsResponse, error) {
@@ -122,6 +132,10 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 
 	groups := make(map[Dimensions]Counters)
 	series := make(map[int64]Counters)
+	modelSeries := make(map[struct {
+		Hour  int64
+		Model string
+	}]Counters)
 	summary := Counters{}
 	for key, counters := range data {
 		if !cutoff.IsZero() && key.Hour < cutoff.Unix() {
@@ -134,6 +148,19 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		point := series[key.Hour]
 		point.add(counters)
 		series[key.Hour] = point
+
+		model := key.Dimensions.Model
+		if model == "" {
+			model = "未标记模型"
+		}
+		modelKey := struct {
+			Hour  int64
+			Model string
+		}{Hour: key.Hour, Model: model}
+		modelPoint := modelSeries[modelKey]
+		modelPoint.add(counters)
+		modelSeries[modelKey] = modelPoint
+
 		summary.add(counters)
 	}
 
@@ -166,6 +193,28 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		})
 	}
 
+	modelKeys := make([]struct {
+		Hour  int64
+		Model string
+	}, 0, len(modelSeries))
+	for key := range modelSeries {
+		modelKeys = append(modelKeys, key)
+	}
+	sort.Slice(modelKeys, func(i, j int) bool {
+		if modelKeys[i].Hour != modelKeys[j].Hour {
+			return modelKeys[i].Hour < modelKeys[j].Hour
+		}
+		return modelKeys[i].Model < modelKeys[j].Model
+	})
+	modelPoints := make([]ModelSeriesPoint, 0, len(modelKeys))
+	for _, key := range modelKeys {
+		modelPoints = append(modelPoints, ModelSeriesPoint{
+			Hour:     time.Unix(key.Hour, 0).UTC().Format(time.RFC3339),
+			Model:    key.Model,
+			Counters: modelSeries[key],
+		})
+	}
+
 	return StatsResponse{
 		SchemaVersion: 1,
 		GeneratedAt:   now.UTC(),
@@ -175,6 +224,7 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		Summary:       summary,
 		Groups:        groupRows,
 		Series:        points,
+		ModelSeries:   modelPoints,
 	}, nil
 }
 
@@ -182,11 +232,11 @@ func queryCutoff(value string, now time.Time) (string, time.Time, error) {
 	now = now.UTC()
 	switch value {
 	case "", "24h":
-		return "24h", now.Add(-24 * time.Hour).Truncate(time.Hour), nil
+		return "24h", now.Add(-24 * time.Hour).Truncate(time.Minute), nil
 	case "7d":
-		return "7d", now.Add(-7 * 24 * time.Hour).Truncate(time.Hour), nil
+		return "7d", now.Add(-7 * 24 * time.Hour).Truncate(time.Minute), nil
 	case "30d":
-		return "30d", now.Add(-30 * 24 * time.Hour).Truncate(time.Hour), nil
+		return "30d", now.Add(-30 * 24 * time.Hour).Truncate(time.Minute), nil
 	case "retention":
 		return "retention", time.Time{}, nil
 	default:

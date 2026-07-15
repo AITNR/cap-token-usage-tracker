@@ -34,12 +34,18 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 
 	failure := firstObject(root, "Failure", "failure")
 	detail := firstObject(root, "Detail", "detail")
-	total, totalPresent := firstInt64Present(detail, "TotalTokens", "total_tokens")
-	if !totalPresent {
-		total = saturatingInt64Sum(
-			firstInt64(detail, "InputTokens", "input_tokens"),
-			firstInt64(detail, "OutputTokens", "output_tokens"),
-		)
+	inputTokens := firstInt64(detail, "InputTokens", "input_tokens")
+	outputTokens := firstInt64(detail, "OutputTokens", "output_tokens")
+	reasoningTokens := firstInt64(detail, "ReasoningTokens", "reasoning_tokens")
+	cachedTokens := firstInt64(detail, "CachedTokens", "cached_tokens")
+	cacheReadTokens := firstInt64(detail, "CacheReadTokens", "cache_read_tokens")
+	cacheCreationTokens := firstInt64(detail, "CacheCreationTokens", "cache_creation_tokens")
+	total := firstInt64(detail, "TotalTokens", "total_tokens")
+	if total <= 0 {
+		// The SDK always serializes TotalTokens, so providers that leave it at
+		// zero still produce a present JSON field. Derive a useful total from the
+		// canonical input/output counters instead of treating that zero as final.
+		total = saturatingInt64Sum(inputTokens, outputTokens)
 	}
 
 	failed := firstBool(root, "Failed", "failed")
@@ -62,12 +68,12 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 		Counters: Counters{
 			Requests:            1,
 			FailedRequests:      boolCount(failed),
-			InputTokens:         positiveUint(firstInt64(detail, "InputTokens", "input_tokens")),
-			OutputTokens:        positiveUint(firstInt64(detail, "OutputTokens", "output_tokens")),
-			ReasoningTokens:     positiveUint(firstInt64(detail, "ReasoningTokens", "reasoning_tokens")),
-			CachedTokens:        positiveUint(firstInt64(detail, "CachedTokens", "cached_tokens")),
-			CacheReadTokens:     positiveUint(firstInt64(detail, "CacheReadTokens", "cache_read_tokens")),
-			CacheCreationTokens: positiveUint(firstInt64(detail, "CacheCreationTokens", "cache_creation_tokens")),
+			InputTokens:         positiveUint(inputTokens),
+			OutputTokens:        positiveUint(outputTokens),
+			ReasoningTokens:     positiveUint(reasoningTokens),
+			CachedTokens:        positiveUint(cachedTokens),
+			CacheReadTokens:     positiveUint(cacheReadTokens),
+			CacheCreationTokens: positiveUint(cacheCreationTokens),
 			TotalTokens:         positiveUint(total),
 		},
 	}, nil

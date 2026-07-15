@@ -30,6 +30,32 @@ func TestBuildStatsGroupsRangesAndAverages(t *testing.T) {
 	}
 }
 
+func TestBuildStatsIncludesModelSeries(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 30, 0, 0, time.UTC)
+	hour := now.Add(-time.Hour).Truncate(time.Hour).Unix()
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: Dimensions{Provider: "openai", Model: "gpt-test", Alias: "primary"}}: {
+			Requests: 2, InputTokens: 120, OutputTokens: 30, TotalTokens: 150,
+			TotalLatencyNS: uint64(4 * time.Second), LatencySamples: 2,
+		},
+		{Hour: hour, Dimensions: Dimensions{Provider: "openai", Model: "gpt-test", Alias: "backup"}}: {
+			Requests: 1, InputTokens: 50, OutputTokens: 20, TotalTokens: 70,
+		},
+	}
+
+	stats, err := buildStats(data, now.Add(-24*time.Hour), now, "24h", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.ModelSeries) != 1 {
+		t.Fatalf("model series length = %d, want 1: %+v", len(stats.ModelSeries), stats.ModelSeries)
+	}
+	point := stats.ModelSeries[0]
+	if point.Model != "gpt-test" || point.Requests != 3 || point.InputTokens != 170 || point.OutputTokens != 50 || point.TotalTokens != 220 {
+		t.Fatalf("unexpected model point: %+v", point)
+	}
+}
+
 func TestSaturatingAdd(t *testing.T) {
 	if got := saturatingAdd(math.MaxUint64-2, 5); got != math.MaxUint64 {
 		t.Fatalf("saturatingAdd = %d", got)
@@ -74,7 +100,7 @@ func TestQueryCutoffUsesUTCPartialBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := now.UTC().Add(-24 * time.Hour).Truncate(time.Hour)
+	expected := now.UTC().Add(-24 * time.Hour).Truncate(time.Minute)
 	if !cutoff.Equal(expected) {
 		t.Fatalf("cutoff = %v, expected %v", cutoff, expected)
 	}
