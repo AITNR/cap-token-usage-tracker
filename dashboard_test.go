@@ -14,9 +14,10 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"series.length>240",
 		"body.replaceChildren(fragment)",
 		"svg.replaceChildren(fragment)",
-		"keyInput.value=''",
-		"rememberKey.checked=false",
-		"else{sessionStorage.removeItem(storageKey);}",
+		"var statsURL='/v0/resource/plugins/'",
+		"load().catch(function(error)",
+		"resetKeyInput.value=''",
+		"resetDialog.showModal()",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing %q", required)
@@ -26,6 +27,9 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"replaceChildren.apply",
 		"Math.max.apply",
 		"localStorage",
+		"sessionStorage",
+		"connectButton",
+		"logoutButton",
 		"innerHTML",
 		"fetch('stats')",
 		`fetch("stats")`,

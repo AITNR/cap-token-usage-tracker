@@ -6,11 +6,12 @@
         <entry key="0">
           <value>
             <TabSessionState>
-              <option name="provider" value="claude" />
-              <option name="sessionId" value="7606984c-89f1-4d30-94a5-2f7be0df471b" />
+              <option name="provider" value="codex" />
+              <option name="sessionId" value="019f6361-d3b9-7153-8742-2b6698c94f15" />
               <option name="cwd" value="D:\c\cap-token-usage-tracker" />
-              <option name="model" value="claude-sonnet-4-6[1m]" />
-              <option name="permissionMode" value="plan" />
+              <option name="model" value="gpt-5.6-sol" />
+              <option name="permissionMode" value="default" />
+              <option name="reasoningEffort" value="high" />
             </TabSessionState>
           </value>
         </entry>

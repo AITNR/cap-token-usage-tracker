@@ -29,7 +29,7 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Resources[0].Path != "/dashboard" {
+	if registration.Routes[0].Path != "/plugins/custom-id/stats" || len(registration.Resources) != 2 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" {
 		t.Fatalf("unexpected registration: %+v", registration)
 	}
 	if registration.Routes[0].Menu != "" {
@@ -44,7 +44,7 @@ func TestManagementStatsAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
-		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard",
+		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats",
 	}}
 	defer runtime.shutdown()
 	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "m"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 3}}); err != nil {
@@ -61,6 +61,12 @@ func TestManagementStatsAndReset(t *testing.T) {
 	}
 	if response.Headers.Get("Cache-Control") != "no-store" {
 		t.Fatal("missing no-store header")
+	}
+
+	resourceStatsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceStatsPath, Query: url.Values{"range": []string{"24h"}}})
+	response, err = runtime.handleManagement(resourceStatsRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total_tokens":3`) {
+		t.Fatalf("resource stats response: %+v, %v", response, err)
 	}
 
 	looseContentType, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.resetPath, Headers: http.Header{"Content-Type": []string{"application/jsonp"}}, Body: []byte(`{"confirm":"reset"}`)})
@@ -84,12 +90,12 @@ func TestManagementStatsAndReset(t *testing.T) {
 func TestDashboardSecurityContract(t *testing.T) {
 	response := dashboardResponse()
 	html := string(response.Body)
-	for _, required := range []string{"/v0/management/plugins/", "Authorization", "sessionStorage", "textContent", "replaceChildren"} {
+	for _, required := range []string{"/v0/resource/plugins/", "/v0/management/plugins/", "Authorization", "type=\"password\"", "textContent", "replaceChildren", "load().catch"} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"localStorage", "fetch('stats')", `fetch("stats")`} {
+	for _, forbidden := range []string{"localStorage", "sessionStorage", "connectButton", "logoutButton", "fetch('stats')", `fetch("stats")`} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains forbidden pattern %q", forbidden)
 		}

@@ -8,7 +8,7 @@
 
 ## 中文
 
-CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册受保护的统计接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
+CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册只读资源统计接口和受保护的重置接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
 
 ## 功能
 
@@ -30,7 +30,7 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 响应头
 - 请求或响应正文
 
-数据库仅包含小时聚合维度和计数。维度字段可能仍反映模型、来源或服务层级等运行信息，因此统计接口保持在 CLIProxyAPI 的管理鉴权之后。
+数据库仅包含小时聚合维度和计数。维度字段可能仍反映模型、来源或服务层级等运行信息。为使仪表盘打开时无需再次输入密钥，插件的只读资源统计接口不经过 CLIProxyAPI management 鉴权；请只在受信网络中暴露 CLIProxyAPI。受保护的 management 统计接口和重置接口仍需管理鉴权。
 
 ## 配置
 
@@ -74,12 +74,13 @@ plugins:
 插件 ID 取自共享库文件名。以 `cap-token-usage-tracker.so` 为例：
 
 - 仪表盘：`/v0/resource/plugins/cap-token-usage-tracker/dashboard`
-- 统计：`GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
-- 重置：`POST /v0/management/plugins/cap-token-usage-tracker/reset`
+- 仪表盘只读统计（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
+- 受保护统计：`GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- 受保护重置：`POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
 统计范围：`24h`、`7d`、`30d`、`retention`。
 
-Management Center 会把插件页面放入 iframe，但官方插件接口不会把父页面的 management key 传入 iframe。因此仪表盘首次打开时需要再次输入管理密钥。默认只保存在页面内存；勾选“仅在当前标签页记住”后会写入该标签页同源的 `sessionStorage`，不会写入插件数据库或 URL。
+Management Center 会把插件页面放入 iframe。仪表盘通过只读资源统计接口自动加载，打开和刷新页面都不需要 management key。只有点击“重置数据”时才会要求输入 Management Key，且密钥仅用于该次请求，不会写入插件数据库、浏览器存储或 URL。
 
 重置请求正文：
 
@@ -166,7 +167,7 @@ go test ./...
 
 ## English
 
-A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers protected statistics endpoints through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
+A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers a read-only resource statistics endpoint and protected reset endpoint through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
 
 ### Features
 
@@ -188,7 +189,7 @@ The plugin does not store or return via statistics endpoints:
 - Response headers
 - Request or response body
 
-The database contains only hourly aggregation dimensions and counts. Dimension fields may still reflect operational information such as model, source, or service tier, so statistics endpoints remain behind CLIProxyAPI management authentication.
+The database contains only hourly aggregation dimensions and counts. Dimension fields may still reflect operational information such as model, source, or service tier. To let the dashboard open without asking for the key again, the read-only resource statistics endpoint does not use CLIProxyAPI management authentication; expose CLIProxyAPI only on a trusted network. The protected management statistics and reset endpoints still require management authentication.
 
 ### Configuration
 
@@ -232,12 +233,13 @@ Changing `data_path` switches to a separate database; the old file is not automa
 The plugin ID is derived from the shared library filename. Using `cap-token-usage-tracker.so` as an example:
 
 - Dashboard: `/v0/resource/plugins/cap-token-usage-tracker/dashboard`
-- Statistics: `GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
-- Reset: `POST /v0/management/plugins/cap-token-usage-tracker/reset`
+- Dashboard read-only statistics (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
+- Protected statistics: `GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- Protected reset: `POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
 Statistics ranges: `24h`, `7d`, `30d`, `retention`.
 
-The Management Center embeds the plugin page in an iframe, but the official plugin API does not pass the parent page's management key into the iframe. Therefore, the dashboard requires re-entering the management key on first open. By default it is kept in page memory only; checking "Remember in this tab only" writes it to same-origin `sessionStorage` for that tab, not to the plugin database or URL.
+The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource statistics endpoint, so opening and refreshing it does not require a management key. A Management Key is requested only when “Reset Data” is clicked, and it is used for that request only; it is not written to the plugin database, browser storage, or URL.
 
 Reset request body:
 

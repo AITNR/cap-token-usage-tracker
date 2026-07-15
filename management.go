@@ -19,10 +19,11 @@ type managementRegistrationResponse struct {
 }
 
 type registeredRoutes struct {
-	pluginID      string
-	statsPath     string
-	resetPath     string
-	dashboardPath string
+	pluginID          string
+	statsPath         string
+	resetPath         string
+	dashboardPath     string
+	resourceStatsPath string
 }
 
 func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationResponse, error) {
@@ -36,10 +37,11 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 	}
 
 	routes := registeredRoutes{
-		pluginID:      pluginID,
-		statsPath:     "/v0/management/plugins/" + pluginID + "/stats",
-		resetPath:     "/v0/management/plugins/" + pluginID + "/reset",
-		dashboardPath: "/v0/resource/plugins/" + pluginID + "/dashboard",
+		pluginID:          pluginID,
+		statsPath:         "/v0/management/plugins/" + pluginID + "/stats",
+		resetPath:         "/v0/management/plugins/" + pluginID + "/reset",
+		dashboardPath:     "/v0/resource/plugins/" + pluginID + "/dashboard",
+		resourceStatsPath: "/v0/resource/plugins/" + pluginID + "/stats",
 	}
 	r.mu.Lock()
 	r.routes = routes
@@ -64,6 +66,10 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 				Menu:        "Token 用量",
 				Description: "查看持久化的 Token 用量、请求和延迟统计。",
 			},
+			{
+				Path:        "/stats",
+				Description: "Read-only token usage statistics for the plugin dashboard.",
+			},
 		},
 	}, nil
 }
@@ -87,7 +93,7 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return dashboardResponse(), nil
-	case routes.statsPath:
+	case routes.statsPath, routes.resourceStatsPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
