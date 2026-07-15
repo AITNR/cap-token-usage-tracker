@@ -26,6 +26,8 @@ type registeredRoutes struct {
 	dashboardPath        string
 	resourceStatsPath    string
 	resourceRequestsPath string
+	pricesPath           string
+	resourcePricesPath   string
 }
 
 func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationResponse, error) {
@@ -45,6 +47,8 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		dashboardPath:        "/v0/resource/plugins/" + pluginID + "/dashboard",
 		resourceStatsPath:    "/v0/resource/plugins/" + pluginID + "/stats",
 		resourceRequestsPath: "/v0/resource/plugins/" + pluginID + "/requests",
+		pricesPath:           "/v0/management/plugins/" + pluginID + "/prices",
+		resourcePricesPath:   "/v0/resource/plugins/" + pluginID + "/prices",
 	}
 	r.mu.Lock()
 	r.routes = routes
@@ -62,6 +66,11 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 				Path:        "/plugins/" + pluginID + "/reset",
 				Description: "Reset all persisted token usage statistics.",
 			},
+			{
+				Method:      http.MethodPut,
+				Path:        "/plugins/" + pluginID + "/prices",
+				Description: "Persist per-model input and output token prices.",
+			},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{
@@ -76,6 +85,10 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Path:        "/requests",
 				Description: "Read paginated per-request token usage details.",
+			},
+			{
+				Path:        "/prices",
+				Description: "Read persisted model token prices for the plugin dashboard.",
 			},
 		},
 	}, nil
@@ -110,6 +123,16 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return r.requestsResponse(request)
+	case routes.resourcePricesPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.pricesResponse()
+	case routes.pricesPath:
+		if !strings.EqualFold(request.Method, http.MethodPut) {
+			return methodNotAllowed(http.MethodPut), nil
+		}
+		return r.savePricesResponse(request)
 	case routes.resetPath:
 		if !strings.EqualFold(request.Method, http.MethodPost) {
 			return methodNotAllowed(http.MethodPost), nil
@@ -153,6 +176,40 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
 	return jsonResponse(http.StatusOK, page), nil
+}
+
+func (r *pluginRuntime) pricesResponse() (pluginapi.ManagementResponse, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	prices, err := r.store.QueryModelPrices()
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, ModelPricesResponse{Prices: prices}), nil
+}
+
+func (r *pluginRuntime) savePricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	contentType, _, err := mime.ParseMediaType(request.Headers.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/json"}), nil
+	}
+	var input ModelPricesResponse
+	if err := json.Unmarshal(request.Body, &input); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid model prices JSON"}), nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	prices, err := r.store.SaveModelPrices(input.Prices)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, ModelPricesResponse{Prices: prices}), nil
 }
 
 func parseNonNegativeQueryInt(raw string, fallback int, name string) (int, error) {

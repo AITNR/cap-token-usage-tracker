@@ -8,7 +8,7 @@
 
 ## 中文
 
-CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册只读资源统计接口和受保护的重置接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
+CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_plugin` 接收用量记录，通过 `management_api` 注册只读资源接口和受保护的模型价格保存、重置接口，并在 Management Center 菜单中提供内嵌 iframe 仪表盘。
 
 ## 功能
 
@@ -32,7 +32,7 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 响应头
 - 请求或响应正文
 
-数据库包含分钟级聚合维度与计数，以及逐请求用量元数据（例如时间、模型、来源、Tier、结果、延迟、推理强度、Token 计数和缓存命中）；不会保存 prompt、响应内容或其他请求/响应正文。维度字段和逐请求元数据仍可能反映模型、来源或服务层级等运行信息。为使仪表盘打开时无需再次输入密钥，插件的只读资源接口不经过 CLIProxyAPI management 鉴权；请只在受信网络中暴露 CLIProxyAPI。受保护的 management 统计接口和重置接口仍需管理鉴权。
+数据库包含分钟级聚合维度与计数、逐请求用量元数据（例如时间、模型、来源、Tier、结果、延迟、推理强度、Token 计数和缓存命中），以及用户设置的模型单价；不会保存 prompt、响应内容或其他请求/响应正文。维度字段和逐请求元数据仍可能反映模型、来源或服务层级等运行信息。为使仪表盘打开时无需再次输入密钥，插件的只读资源接口不经过 CLIProxyAPI management 鉴权；请只在受信网络中暴露 CLIProxyAPI。受保护的 management 统计、模型价格保存和重置接口仍需管理鉴权。
 
 ## 配置
 
@@ -78,12 +78,14 @@ plugins:
 - 仪表盘：`/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - 仪表盘只读统计（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
 - 逐请求明细（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=24h&offset=0&limit=100&model=gpt-4.1`
+- 模型价格读取（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/prices`
 - 受保护统计：`GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- 模型价格保存（需要 management key）：`PUT /v0/management/plugins/cap-token-usage-tracker/prices`
 - 受保护重置：`POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
 统计范围：`24h`、`7d`、`30d`、`retention`。逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
 
-Management Center 会把插件页面放入 iframe。仪表盘通过只读资源统计接口自动加载，打开和刷新页面都不需要 management key。只有点击“重置数据”时才会要求输入 Management Key，且密钥仅用于该次请求，不会写入插件数据库、浏览器存储或 URL。
+Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。保存模型价格或重置数据时会要求输入 Management Key；密钥仅用于当次保存或重置请求，不会写入插件数据库、浏览器存储或 URL。模型价格本身保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除模型价格。
 
 重置请求正文：
 
@@ -170,7 +172,7 @@ go test ./...
 
 ## English
 
-A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers a read-only resource statistics endpoint and protected reset endpoint through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
+A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives usage records via the official `usage_plugin`, registers read-only resource endpoints plus protected model-price persistence and reset endpoints through `management_api`, and provides an embedded iframe dashboard in the Management Center menu.
 
 ### Features
 
@@ -194,7 +196,7 @@ The plugin does not store or return via statistics endpoints:
 - Response headers
 - Request or response body
 
-The database contains minute-level aggregation dimensions and counts plus per-request usage metadata such as time, model, source, tier, result, latency, reasoning intensity, Token counters, and cache-hit status. It does not store prompts, generated content, or other request/response bodies. Dimensions and request metadata may still reflect operational information such as model, source, or service tier. To let the dashboard open without asking for the key again, the read-only resource endpoints do not use CLIProxyAPI management authentication; expose CLIProxyAPI only on a trusted network. The protected management statistics and reset endpoints still require management authentication.
+The database contains minute-level aggregation dimensions and counts, per-request usage metadata such as time, model, source, tier, result, latency, reasoning intensity, Token counters, and cache-hit status, and user-configured model prices. It does not store prompts, generated content, or other request/response bodies. Dimensions and request metadata may still reflect operational information such as model, source, or service tier. To let the dashboard open without asking for the key again, the read-only resource endpoints do not use CLIProxyAPI management authentication; expose CLIProxyAPI only on a trusted network. The protected management statistics, model-price save, and reset endpoints still require management authentication.
 
 ### Configuration
 
@@ -240,12 +242,14 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 - Dashboard: `/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - Dashboard read-only statistics (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
 - Per-request details (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=24h&offset=0&limit=100&model=gpt-4.1`
+- Model prices (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/prices`
 - Protected statistics: `GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
+- Save model prices (management key required): `PUT /v0/management/plugins/cap-token-usage-tracker/prices`
 - Protected reset: `POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
 Statistics ranges: `24h`, `7d`, `30d`, `retention`. Request details are returned newest first; `offset` must be a non-negative integer, `limit` defaults to 100 and is capped at 500, and optional `model` applies an exact model filter.
 
-The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource statistics endpoint, so opening and refreshing it does not require a management key. A Management Key is requested only when “Reset Data” is clicked, and it is used for that request only; it is not written to the plugin database, browser storage, or URL.
+The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. A Management Key is requested when saving model prices or resetting data; it is used only for that save or reset request and is not written to the plugin database, browser storage, or URL. Model prices themselves are stored in the plugin bbolt database, survive page refreshes and service restarts, and are not removed by resetting statistics.
 
 Reset request body:
 

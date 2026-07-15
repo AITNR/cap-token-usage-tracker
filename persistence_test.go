@@ -72,6 +72,63 @@ func TestStorePersistsAcrossRestartAndReset(t *testing.T) {
 	}
 }
 
+func TestModelPricesPersistAcrossRestartAndStatsReset(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := store.SaveModelPrices(map[string]ModelPrice{
+		"gpt-test": {Input: 2.5, Output: 10},
+		"zero":     {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved) != 1 || saved["gpt-test"].Output != 10 {
+		t.Fatalf("saved prices = %+v", saved)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	prices, err := store.QueryModelPrices()
+	if err != nil || len(prices) != 1 || prices["gpt-test"].Input != 2.5 {
+		t.Fatalf("prices after restart = %+v, %v", prices, err)
+	}
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	prices, err = store.QueryModelPrices()
+	if err != nil || len(prices) != 1 || prices["gpt-test"].Output != 10 {
+		t.Fatalf("stats reset removed model prices: %+v, %v", prices, err)
+	}
+}
+
+func TestModelPriceValidation(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, prices := range []map[string]ModelPrice{
+		{"": {Input: 1}},
+		{"bad": {Input: -1}},
+		{"bad": {Output: maxTokenPricePerM + 1}},
+		{"gpt": {Input: 1}, " gpt ": {Output: 2}},
+	} {
+		if _, err := store.SaveModelPrices(prices); err == nil || errorHTTPStatus(err) != 400 {
+			t.Fatalf("invalid prices accepted: %+v, %v", prices, err)
+		}
+	}
+}
+
 func TestStoreAggregatesAtMinuteGranularity(t *testing.T) {
 	config := testConfig(t)
 	config.SyncOnRecord = true

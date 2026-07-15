@@ -21,9 +21,10 @@ var (
 	sinceKey           = []byte("since_unix_nano")
 	lastUsedKey        = []byte("last_used_unix_nano")
 	requestSequenceKey = []byte("request_sequence")
+	modelPricesKey     = []byte("model_prices")
 )
 
-const persistenceSchemaVersion uint64 = 2
+const persistenceSchemaVersion uint64 = 3
 
 type recordCommand struct {
 	usage normalizedUsage
@@ -51,6 +52,16 @@ type requestQueryCommand struct {
 type requestQueryResult struct {
 	page RequestPage
 	err  error
+}
+
+type priceQueryCommand struct{ resp chan priceQueryResult }
+type priceQueryResult struct {
+	prices map[string]ModelPrice
+	err    error
+}
+type savePricesCommand struct {
+	prices map[string]ModelPrice
+	resp   chan priceQueryResult
 }
 
 type resetCommand struct{ resp chan error }
@@ -81,6 +92,7 @@ type storeActor struct {
 	lastFlushErr    error
 	pendingRequests []RequestDetail
 	nextRequestSeq  uint64
+	modelPrices     map[string]ModelPrice
 }
 
 func openStore(config Config) (*Store, error) {
@@ -135,6 +147,28 @@ func (s *Store) QueryRequests(rangeName string, offset, limit int, model string)
 	}
 	result := <-resp
 	return result.page, result.err
+}
+
+func (s *Store) QueryModelPrices() (map[string]ModelPrice, error) {
+	resp := make(chan priceQueryResult, 1)
+	if err := s.send(priceQueryCommand{resp: resp}); err != nil {
+		return nil, err
+	}
+	result := <-resp
+	return result.prices, result.err
+}
+
+func (s *Store) SaveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
+	normalized, err := normalizeModelPrices(prices)
+	if err != nil {
+		return nil, withStatus(400, "%v", err)
+	}
+	resp := make(chan priceQueryResult, 1)
+	if err := s.send(savePricesCommand{prices: normalized, resp: resp}); err != nil {
+		return nil, err
+	}
+	result := <-resp
+	return result.prices, result.err
 }
 
 func (s *Store) Reset() error {
@@ -209,6 +243,11 @@ func (s *Store) run(actor *storeActor) {
 				}
 				page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
 				item.resp <- requestQueryResult{page: page, err: err}
+			case priceQueryCommand:
+				item.resp <- priceQueryResult{prices: cloneModelPrices(actor.modelPrices)}
+			case savePricesCommand:
+				prices, err := actor.saveModelPrices(item.prices)
+				item.resp <- priceQueryResult{prices: prices, err: err}
 			case resetCommand:
 				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
 					item.resp <- err
@@ -290,6 +329,18 @@ func (a *storeActor) initialize() error {
 		}
 		a.since = time.Unix(0, decodeInt64(meta.Get(sinceKey))).UTC()
 		a.nextRequestSeq = decodeUint64(meta.Get(requestSequenceKey))
+		a.modelPrices = make(map[string]ModelPrice)
+		if raw := meta.Get(modelPricesKey); len(raw) > 0 {
+			var stored map[string]ModelPrice
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode model prices: %w", err)
+			}
+			normalized, err := normalizeModelPrices(stored)
+			if err != nil {
+				return fmt.Errorf("validate model prices: %w", err)
+			}
+			a.modelPrices = normalized
+		}
 		if raw := meta.Get(lastUsedKey); len(raw) > 0 {
 			a.lastUsed = time.Unix(0, decodeInt64(raw)).UTC()
 		}
@@ -457,6 +508,27 @@ func (a *storeActor) reconfigure(config Config) error {
 	}
 	a.lastFlushErr = nil
 	return nil
+}
+
+func (a *storeActor) saveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
+	encoded, err := json.Marshal(prices)
+	if err != nil {
+		return nil, fmt.Errorf("encode model prices: %w", err)
+	}
+	if err := a.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metaBucket)
+		if meta == nil {
+			return errors.New("metadata bucket is missing")
+		}
+		if len(prices) == 0 {
+			return meta.Delete(modelPricesKey)
+		}
+		return meta.Put(modelPricesKey, encoded)
+	}); err != nil {
+		return nil, fmt.Errorf("save model prices: %w", err)
+	}
+	a.modelPrices = cloneModelPrices(prices)
+	return cloneModelPrices(a.modelPrices), nil
 }
 
 func (a *storeActor) reset() error {
