@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -10,11 +11,13 @@ const (
 	maxRequestPageSize     = 500
 )
 
-// RequestDetail contains metadata and usage counters for one model request.
-// Prompt and response content are intentionally never persisted.
+// RequestDetail is the sanitized dashboard view of one persisted request. The
+// protected /usage API exposes the complete reference-compatible record,
+// including credential identifiers and failure body.
 type RequestDetail struct {
-	Sequence uint64    `json:"sequence"`
-	Time     time.Time `json:"time"`
+	ID        string    `json:"id"`
+	Time      time.Time `json:"time"`
+	Timestamp time.Time `json:"timestamp"`
 	Dimensions
 	Counters
 	Result       string  `json:"result"`
@@ -34,32 +37,46 @@ type RequestPage struct {
 	Items       []RequestDetail `json:"items"`
 }
 
-func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail {
-	generationNS := usage.LatencyNS
-	if usage.TTFTNS > 0 && usage.LatencyNS >= usage.TTFTNS {
-		generationNS = usage.LatencyNS - usage.TTFTNS
+func requestDetailForRecord(record Record) RequestDetail {
+	latencyNS := millisecondsToNanoseconds(record.LatencyMs)
+	ttftNS := millisecondsToNanoseconds(record.TTFTMs)
+	generationNS := latencyNS
+	if ttftNS > 0 && latencyNS >= ttftNS {
+		generationNS = latencyNS - ttftNS
 	}
 	var tps float64
 	if generationNS > 0 {
-		tps = float64(usage.Counters.OutputTokens) / (float64(generationNS) / float64(time.Second))
+		tps = float64(nonNegativeInt64(record.Tokens.OutputTokens)) / (float64(generationNS) / float64(time.Second))
 	}
 	result := "成功"
-	if usage.Dimensions.Failed {
+	if record.Failed {
 		result = "失败"
-		if usage.Dimensions.FailureStatus > 0 {
-			result = fmt.Sprintf("失败 (HTTP %d)", usage.Dimensions.FailureStatus)
+		if record.FailureStatusCode > 0 {
+			result = fmt.Sprintf("失败 (HTTP %d)", record.FailureStatusCode)
 		}
 	}
+	counters := countersForRecord(record)
 	return RequestDetail{
-		Sequence:     sequence,
-		Time:         usage.RequestedAt.UTC(),
-		Dimensions:   usage.Dimensions,
-		Counters:     usage.Counters,
+		ID:           record.ID,
+		Time:         record.Timestamp.UTC(),
+		Timestamp:    record.Timestamp.UTC(),
+		Dimensions:   dimensionsForRecord(record),
+		Counters:     counters,
 		Result:       result,
-		LatencyNS:    usage.LatencyNS,
-		TTFTNS:       usage.TTFTNS,
+		LatencyNS:    latencyNS,
+		TTFTNS:       ttftNS,
 		GenerationNS: generationNS,
 		TPS:          tps,
-		CacheHit:     usage.Counters.CacheReadTokens > 0,
+		CacheHit:     record.Tokens.CacheReadTokens > 0,
 	}
+}
+
+func millisecondsToNanoseconds(milliseconds int64) uint64 {
+	if milliseconds <= 0 {
+		return 0
+	}
+	if milliseconds > int64(math.MaxUint64/uint64(time.Millisecond)) {
+		return math.MaxUint64
+	}
+	return uint64(milliseconds) * uint64(time.Millisecond)
 }

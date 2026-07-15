@@ -68,6 +68,7 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`id="legend"`,
 		`bar-input`,
 		`bar-output`,
+		`.bar-hit{fill:transparent;cursor:crosshair;outline:none}`,
 		`model_series`,
 		`function selectModel(name)`,
 		`function toggleModel(name)`,

@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	maxDimensionRunes    = 160
 	maxModelPriceEntries = 1000
 	maxTokenPricePerM    = 1_000_000.0
 )

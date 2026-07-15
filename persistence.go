@@ -1,684 +1,350 @@
 package main
 
 import (
-	"encoding/binary"
+	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
+	_ "modernc.org/sqlite"
 )
 
-var (
-	metaBucket         = []byte("meta")
-	hoursBucket        = []byte("hours")
-	requestsBucket     = []byte("requests")
-	schemaKey          = []byte("schema_version")
-	sinceKey           = []byte("since_unix_nano")
-	lastUsedKey        = []byte("last_used_unix_nano")
-	requestSequenceKey = []byte("request_sequence")
-	modelPricesKey     = []byte("model_prices")
+const (
+	sqliteTimestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+	storeOperationTimeout = 5 * time.Second
+	modelPricesSettingKey = "model_prices"
 )
 
-const persistenceSchemaVersion uint64 = 3
-
-type recordCommand struct {
-	usage     normalizedUsage
-	resp      chan error
-	forceSync bool
-}
-
-type queryCommand struct {
-	rangeName string
-	resp      chan queryResult
-}
-
-type queryResult struct {
-	stats StatsResponse
-	err   error
-}
-
-type requestQueryCommand struct {
-	rangeName string
-	offset    int
-	limit     int
-	model     string
-	resp      chan requestQueryResult
-}
-
-type requestQueryResult struct {
-	page RequestPage
-	err  error
-}
-
-type priceQueryCommand struct{ resp chan priceQueryResult }
-type priceQueryResult struct {
-	prices map[string]ModelPrice
-	err    error
-}
-type savePricesCommand struct {
-	prices map[string]ModelPrice
-	resp   chan priceQueryResult
-}
-
-type resetCommand struct{ resp chan error }
-type configCommand struct {
-	config Config
-	resp   chan error
-}
-type closeCommand struct{ resp chan error }
+const recordSelectColumns = `id, timestamp, api_key, provider, model, alias, source, auth_id, auth_index, auth_type, executor_type,
+       reasoning_effort, service_tier, latency_ms, ttft_ms,
+       input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens,
+       failed, failure_status_code, failure_body`
 
 type Store struct {
-	wake      chan struct{}
-	done      chan struct{}
+	db *sql.DB
+
+	configMu sync.RWMutex
+	config   Config
+
+	cleanupMu   sync.Mutex
+	lastCleanup time.Time
+
 	closeOnce sync.Once
-	stateMu   sync.RWMutex
-	closed    bool
 	closeErr  error
 
-	queueMu   sync.Mutex
-	queue     []any
-	queueHead int
-
-	processed    atomic.Uint64
-	persisted    atomic.Uint64
-	pendingFlush atomic.Int64
-}
-
-type storeActor struct {
-	db              *bolt.DB
-	config          Config
-	data            map[aggregateKey]Counters
-	dirty           map[aggregateKey]struct{}
-	since           time.Time
-	lastUsed        time.Time
-	pending         int
-	lastPruneAt     time.Time
-	lastFlushErr    error
-	pendingRequests []RequestDetail
-	nextRequestSeq  uint64
-	modelPrices     map[string]ModelPrice
-	metrics         *Store
+	processed atomic.Uint64
+	persisted atomic.Uint64
 }
 
 func openStore(config Config) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(config.DataPath), 0o700); err != nil {
-		return nil, fmt.Errorf("create data directory: %w", err)
-	}
-	db, err := bolt.Open(config.DataPath, 0o600, &bolt.Options{Timeout: 2 * time.Second})
+	normalized, err := normalizeConfig(config)
 	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
+		return nil, err
+	}
+	if err := prepareSQLitePath(normalized.DataPath); err != nil {
+		return nil, err
 	}
 
-	actor := &storeActor{
-		db:     db,
-		config: config,
-		data:   make(map[aggregateKey]Counters),
-		dirty:  make(map[aggregateKey]struct{}),
+	db, err := sql.Open("sqlite", normalized.DataPath)
+	if err != nil {
+		return nil, fmt.Errorf("open usage sqlite database: %w", err)
 	}
-	if err := actor.initialize(); err != nil {
+	// The reference implementation serializes access through one SQLite
+	// connection. This also keeps writes deterministic for usage.handle.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+
+	store := &Store{db: db, config: normalized}
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	if err := store.initSchema(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-
-	store := newStoreMailbox()
-	actor.metrics = store
-	go store.run(actor)
+	store.maybeCleanup(time.Now().UTC())
 	return store, nil
 }
 
-func newStoreMailbox() *Store {
-	return &Store{
-		wake: make(chan struct{}, 1),
-		done: make(chan struct{}),
+func prepareSQLitePath(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("usage sqlite path is empty")
 	}
+	dir := filepath.Clean(filepath.Dir(path))
+	if dir != "." && filepath.Dir(dir) != dir {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create usage sqlite directory: %w", err)
+		}
+	}
+
+	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return fmt.Errorf("inspect usage sqlite database: %w", openErr)
+		}
+		header := make([]byte, 16)
+		_, readErr := io.ReadFull(file, header)
+		closeErr := file.Close()
+		if closeErr != nil {
+			return fmt.Errorf("close inspected usage database: %w", closeErr)
+		}
+		if readErr != nil || string(header) != "SQLite format 3\x00" {
+			return fmt.Errorf("database %q is not SQLite; choose a new data_dir/data_path (legacy bbolt files are not overwritten)", path)
+		}
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect usage sqlite path: %w", err)
+	}
+
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("create usage sqlite database: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close created usage sqlite database: %w", err)
+	}
+	return nil
 }
 
-// Enqueue accepts a usage record into the store's FIFO mailbox without waiting
-// for disk I/O. It is used only when sync_on_record is explicitly disabled.
-func (s *Store) Enqueue(usage normalizedUsage) error {
-	return s.send(recordCommand{usage: usage})
-}
-
-func (s *Store) Diagnostics() UsageDiagnostics {
-	if s == nil {
-		return UsageDiagnostics{}
+func (s *Store) initSchema(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("usage sqlite store is nil")
 	}
-	s.queueMu.Lock()
-	mailboxDepth := len(s.queue) - s.queueHead
-	s.queueMu.Unlock()
-	return UsageDiagnostics{
-		Processed:          s.processed.Load(),
-		PersistedSinceOpen: s.persisted.Load(),
-		MailboxDepth:       mailboxDepth,
-		PendingFlush:       s.pendingFlush.Load(),
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS usage_records (
+	id TEXT PRIMARY KEY,
+	timestamp TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	provider TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	alias TEXT NOT NULL DEFAULT '',
+	source TEXT NOT NULL DEFAULT '',
+	auth_id TEXT NOT NULL DEFAULT '',
+	auth_index TEXT NOT NULL DEFAULT '',
+	auth_type TEXT NOT NULL DEFAULT '',
+	executor_type TEXT NOT NULL DEFAULT '',
+	reasoning_effort TEXT NOT NULL DEFAULT '',
+	service_tier TEXT NOT NULL DEFAULT '',
+	latency_ms INTEGER NOT NULL DEFAULT 0 CHECK (latency_ms >= 0),
+	ttft_ms INTEGER NOT NULL DEFAULT 0 CHECK (ttft_ms >= 0),
+	input_tokens INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+	output_tokens INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+	reasoning_tokens INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+	cached_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cached_tokens >= 0),
+	cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+	cache_creation_tokens INTEGER NOT NULL DEFAULT 0 CHECK (cache_creation_tokens >= 0),
+	total_tokens INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+	failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1)),
+	failure_status_code INTEGER NOT NULL DEFAULT 0 CHECK (failure_status_code >= 0),
+	failure_body TEXT NOT NULL DEFAULT ''
+)`); err != nil {
+		return fmt.Errorf("initialize usage sqlite schema: %w", err)
 	}
-}
-
-// Record waits until the actor has committed the record to bbolt. forceSync is
-// carried by the command so concurrent reconfiguration cannot weaken this
-// per-callback durability guarantee.
-func (s *Store) Record(usage normalizedUsage) error {
-	resp := make(chan error, 1)
-	if err := s.send(recordCommand{usage: usage, resp: resp, forceSync: true}); err != nil {
+	if err := s.migrateSchema(ctx); err != nil {
 		return err
 	}
-	return <-resp
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_timestamp ON usage_records(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_records_api_model ON usage_records(api_key, provider, model)`,
+		`CREATE TABLE IF NOT EXISTS plugin_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+	} {
+		if _, err := s.db.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("initialize usage sqlite indexes/settings: %w", err)
+		}
+	}
+	return nil
+}
+
+// migrateSchema mirrors the reference repository's schema self-healing: any
+// columns absent from an older SQLite usage_records table are added in place.
+func (s *Store) migrateSchema(ctx context.Context) error {
+	existing, err := s.existingColumns(ctx)
+	if err != nil {
+		return err
+	}
+	additions := []struct {
+		name string
+		ddl  string
+	}{
+		{"api_key", `ALTER TABLE usage_records ADD COLUMN api_key TEXT NOT NULL DEFAULT ''`},
+		{"provider", `ALTER TABLE usage_records ADD COLUMN provider TEXT NOT NULL DEFAULT ''`},
+		{"model", `ALTER TABLE usage_records ADD COLUMN model TEXT NOT NULL DEFAULT ''`},
+		{"alias", `ALTER TABLE usage_records ADD COLUMN alias TEXT NOT NULL DEFAULT ''`},
+		{"source", `ALTER TABLE usage_records ADD COLUMN source TEXT NOT NULL DEFAULT ''`},
+		{"auth_id", `ALTER TABLE usage_records ADD COLUMN auth_id TEXT NOT NULL DEFAULT ''`},
+		{"auth_index", `ALTER TABLE usage_records ADD COLUMN auth_index TEXT NOT NULL DEFAULT ''`},
+		{"auth_type", `ALTER TABLE usage_records ADD COLUMN auth_type TEXT NOT NULL DEFAULT ''`},
+		{"executor_type", `ALTER TABLE usage_records ADD COLUMN executor_type TEXT NOT NULL DEFAULT ''`},
+		{"reasoning_effort", `ALTER TABLE usage_records ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''`},
+		{"service_tier", `ALTER TABLE usage_records ADD COLUMN service_tier TEXT NOT NULL DEFAULT ''`},
+		{"latency_ms", `ALTER TABLE usage_records ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0`},
+		{"ttft_ms", `ALTER TABLE usage_records ADD COLUMN ttft_ms INTEGER NOT NULL DEFAULT 0`},
+		{"input_tokens", `ALTER TABLE usage_records ADD COLUMN input_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"output_tokens", `ALTER TABLE usage_records ADD COLUMN output_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"reasoning_tokens", `ALTER TABLE usage_records ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cached_tokens", `ALTER TABLE usage_records ADD COLUMN cached_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cache_read_tokens", `ALTER TABLE usage_records ADD COLUMN cache_read_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"cache_creation_tokens", `ALTER TABLE usage_records ADD COLUMN cache_creation_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"total_tokens", `ALTER TABLE usage_records ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0`},
+		{"failed", `ALTER TABLE usage_records ADD COLUMN failed INTEGER NOT NULL DEFAULT 0`},
+		{"failure_status_code", `ALTER TABLE usage_records ADD COLUMN failure_status_code INTEGER NOT NULL DEFAULT 0`},
+		{"failure_body", `ALTER TABLE usage_records ADD COLUMN failure_body TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, addition := range additions {
+		if _, ok := existing[addition.name]; ok {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, addition.ddl); err != nil {
+			return fmt.Errorf("migrate usage sqlite add %s: %w", addition.name, err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) existingColumns(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := s.db.QueryContext(ctx, "PRAGMA table_info(usage_records)")
+	if err != nil {
+		return nil, fmt.Errorf("read usage sqlite schema: %w", err)
+	}
+	defer rows.Close()
+	columns := make(map[string]struct{})
+	for rows.Next() {
+		var (
+			cid        int
+			name       string
+			ctype      string
+			notNull    int
+			defaultV   sql.NullString
+			primaryKey int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &defaultV, &primaryKey); err != nil {
+			return nil, fmt.Errorf("scan usage sqlite schema: %w", err)
+		}
+		columns[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate usage sqlite schema: %w", err)
+	}
+	return columns, nil
+}
+
+// Record synchronously inserts one request. usage.handle does not return until
+// this method has completed, matching the reference plugin's durability model.
+func (s *Store) Record(record Record) error {
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	err := s.Insert(ctx, record)
+	s.processed.Add(1)
+	if err != nil {
+		return err
+	}
+	s.persisted.Add(1)
+	s.maybeCleanup(time.Now().UTC())
+	return nil
+}
+
+func (s *Store) Insert(ctx context.Context, record Record) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("usage sqlite store is nil")
+	}
+	if strings.TrimSpace(record.ID) == "" {
+		return fmt.Errorf("usage record id is empty")
+	}
+	tokens := nonNegativeTokenStats(record.Tokens)
+	tokens.TotalTokens = normalizeTotalTokens(tokens)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO usage_records (
+	id, timestamp, api_key, provider, model, alias, source, auth_id, auth_index, auth_type, executor_type,
+	reasoning_effort, service_tier, latency_ms, ttft_ms,
+	input_tokens, output_tokens, reasoning_tokens, cached_tokens, cache_read_tokens, cache_creation_tokens, total_tokens,
+	failed, failure_status_code, failure_body
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		strings.TrimSpace(record.ID),
+		formatRecordTimestamp(record.Timestamp),
+		strings.TrimSpace(record.APIKey),
+		strings.TrimSpace(record.Provider),
+		normalizeModel(record.Model),
+		strings.TrimSpace(record.Alias),
+		strings.TrimSpace(record.Source),
+		strings.TrimSpace(record.AuthID),
+		strings.TrimSpace(record.AuthIndex),
+		strings.TrimSpace(record.AuthType),
+		strings.TrimSpace(record.ExecutorType),
+		strings.TrimSpace(record.ReasoningEffort),
+		strings.TrimSpace(record.ServiceTier),
+		nonNegativeInt64(record.LatencyMs),
+		nonNegativeInt64(record.TTFTMs),
+		tokens.InputTokens,
+		tokens.OutputTokens,
+		tokens.ReasoningTokens,
+		tokens.CachedTokens,
+		tokens.CacheReadTokens,
+		tokens.CacheCreationTokens,
+		tokens.TotalTokens,
+		boolToInt(record.Failed),
+		nonNegativeInt(record.FailureStatusCode),
+		strings.TrimSpace(record.FailureBody),
+	)
+	if err != nil {
+		return fmt.Errorf("insert usage sqlite record: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) Query(rangeName string) (StatsResponse, error) {
-	resp := make(chan queryResult, 1)
-	if err := s.send(queryCommand{rangeName: rangeName, resp: resp}); err != nil {
+	now := time.Now().UTC()
+	canonicalRange, cutoff, err := queryCutoff(rangeName, now)
+	if err != nil {
 		return StatsResponse{}, err
 	}
-	result := <-resp
-	return result.stats, result.err
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+
+	query := `SELECT ` + recordSelectColumns + ` FROM usage_records`
+	args := []any{}
+	if !cutoff.IsZero() {
+		query += ` WHERE timestamp >= ?`
+		args = append(args, formatTimestamp(cutoff))
+	}
+	query += ` ORDER BY timestamp ASC, id ASC`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return StatsResponse{}, fmt.Errorf("query usage statistics rows: %w", err)
+	}
+	defer rows.Close()
+
+	data := make(map[aggregateKey]Counters)
+	for rows.Next() {
+		record, err := scanRecord(rows)
+		if err != nil {
+			return StatsResponse{}, err
+		}
+		key := aggregateKey{
+			Hour:       record.Timestamp.UTC().Truncate(time.Minute).Unix(),
+			Dimensions: dimensionsForRecord(record),
+		}
+		counters := data[key]
+		counters.add(countersForRecord(record))
+		data[key] = counters
+	}
+	if err := rows.Err(); err != nil {
+		return StatsResponse{}, fmt.Errorf("iterate usage statistics rows: %w", err)
+	}
+
+	since, lastUsed, err := s.usageBounds(ctx, now)
+	if err != nil {
+		return StatsResponse{}, err
+	}
+	return buildStats(data, since, lastUsed, canonicalRange, now)
 }
 
 func (s *Store) QueryRequests(rangeName string, offset, limit int, model string) (RequestPage, error) {
-	resp := make(chan requestQueryResult, 1)
-	if err := s.send(requestQueryCommand{rangeName: rangeName, offset: offset, limit: limit, model: model, resp: resp}); err != nil {
-		return RequestPage{}, err
-	}
-	result := <-resp
-	return result.page, result.err
-}
-
-func (s *Store) QueryModelPrices() (map[string]ModelPrice, error) {
-	resp := make(chan priceQueryResult, 1)
-	if err := s.send(priceQueryCommand{resp: resp}); err != nil {
-		return nil, err
-	}
-	result := <-resp
-	return result.prices, result.err
-}
-
-func (s *Store) SaveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
-	normalized, err := normalizeModelPrices(prices)
-	if err != nil {
-		return nil, withStatus(400, "%v", err)
-	}
-	resp := make(chan priceQueryResult, 1)
-	if err := s.send(savePricesCommand{prices: normalized, resp: resp}); err != nil {
-		return nil, err
-	}
-	result := <-resp
-	return result.prices, result.err
-}
-
-func (s *Store) Reset() error {
-	resp := make(chan error, 1)
-	if err := s.send(resetCommand{resp: resp}); err != nil {
-		return err
-	}
-	return <-resp
-}
-
-func (s *Store) Reconfigure(config Config) error {
-	resp := make(chan error, 1)
-	if err := s.send(configCommand{config: config, resp: resp}); err != nil {
-		return err
-	}
-	return <-resp
-}
-
-func (s *Store) Close() error {
-	s.closeOnce.Do(func() {
-		resp := make(chan error, 1)
-		s.stateMu.Lock()
-		if s.closed {
-			s.stateMu.Unlock()
-			return
-		}
-		s.closed = true
-		s.enqueue(closeCommand{resp: resp})
-		s.stateMu.Unlock()
-		s.closeErr = <-resp
-		<-s.done
-	})
-	return s.closeErr
-}
-
-func (s *Store) send(command any) error {
-	s.stateMu.RLock()
-	defer s.stateMu.RUnlock()
-	if s.closed {
-		return errors.New("store is closed")
-	}
-	s.enqueue(command)
-	return nil
-}
-
-func (s *Store) enqueue(command any) {
-	s.queueMu.Lock()
-	s.queue = append(s.queue, command)
-	s.queueMu.Unlock()
-	s.signal()
-}
-
-func (s *Store) signal() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (s *Store) popCommand() (any, bool) {
-	s.queueMu.Lock()
-	defer s.queueMu.Unlock()
-	if s.queueHead >= len(s.queue) {
-		return nil, false
-	}
-	command := s.queue[s.queueHead]
-	s.queue[s.queueHead] = nil
-	s.queueHead++
-
-	remaining := len(s.queue) - s.queueHead
-	switch {
-	case remaining == 0:
-		s.queue = nil
-		s.queueHead = 0
-	case s.queueHead >= 1024 && s.queueHead >= remaining:
-		copy(s.queue[:remaining], s.queue[s.queueHead:])
-		clear(s.queue[remaining:])
-		s.queue = s.queue[:remaining]
-		s.queueHead = 0
-	}
-	return command, true
-}
-
-func (s *Store) run(actor *storeActor) {
-	if actor.metrics == nil {
-		actor.metrics = s
-	}
-	ticker := time.NewTicker(actor.config.FlushInterval)
-	defer ticker.Stop()
-	defer close(s.done)
-
-	for {
-		// Do not let a continuously busy mailbox starve the periodic flush.
-		select {
-		case now := <-ticker.C:
-			actor.lastFlushErr = actor.flush(now.UTC(), false)
-		default:
-		}
-
-		command, ok := s.popCommand()
-		if !ok {
-			select {
-			case <-s.wake:
-				continue
-			case now := <-ticker.C:
-				actor.lastFlushErr = actor.flush(now.UTC(), false)
-				continue
-			}
-		}
-
-		switch item := command.(type) {
-		case recordCommand:
-			// Always accept the new usage into the dirty in-memory aggregate. A
-			// previous transient flush failure must not make subsequent usage vanish.
-			err := actor.record(item.usage, item.forceSync)
-			s.processed.Add(1)
-			if item.resp != nil {
-				item.resp <- err
-			}
-		case queryCommand:
-			if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-				item.resp <- queryResult{err: err}
-				continue
-			}
-			stats, err := buildStats(actor.data, actor.since, actor.lastUsed, item.rangeName, time.Now().UTC())
-			item.resp <- queryResult{stats: stats, err: err}
-		case requestQueryCommand:
-			now := time.Now().UTC()
-			if err := actor.flush(now, true); err != nil {
-				actor.lastFlushErr = err
-				item.resp <- requestQueryResult{err: err}
-				continue
-			}
-			page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
-			item.resp <- requestQueryResult{page: page, err: err}
-		case priceQueryCommand:
-			item.resp <- priceQueryResult{prices: cloneModelPrices(actor.modelPrices)}
-		case savePricesCommand:
-			prices, err := actor.saveModelPrices(item.prices)
-			item.resp <- priceQueryResult{prices: prices, err: err}
-		case resetCommand:
-			if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-				item.resp <- err
-				continue
-			}
-			item.resp <- actor.reset()
-		case configCommand:
-			if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-				item.resp <- err
-				continue
-			}
-			err := actor.reconfigure(item.config)
-			if err == nil {
-				ticker.Reset(item.config.FlushInterval)
-			}
-			item.resp <- err
-		case closeCommand:
-			flushErr := actor.flush(time.Now().UTC(), true)
-			closeErr := actor.db.Close()
-			item.resp <- errors.Join(flushErr, closeErr)
-			return
-		}
-	}
-}
-
-func (a *storeActor) initialize() error {
 	now := time.Now().UTC()
-	if err := a.db.Update(func(tx *bolt.Tx) error {
-		meta, err := tx.CreateBucketIfNotExists(metaBucket)
-		if err != nil {
-			return err
-		}
-		hours, err := tx.CreateBucketIfNotExists(hoursBucket)
-		if err != nil {
-			return err
-		}
-		requests, err := tx.CreateBucketIfNotExists(requestsBucket)
-		if err != nil {
-			return err
-		}
-		version := decodeUint64(meta.Get(schemaKey))
-		if version > persistenceSchemaVersion {
-			return fmt.Errorf("unsupported database schema version %d", version)
-		}
-		if err := meta.Put(schemaKey, encodeUint64(persistenceSchemaVersion)); err != nil {
-			return err
-		}
-		var since time.Time
-		if raw := meta.Get(sinceKey); len(raw) == 8 {
-			since = time.Unix(0, decodeInt64(raw)).UTC()
-		} else {
-			since = now
-		}
-		cutoff := retentionCutoff(a.config, now)
-		cutoffTime := time.Unix(cutoff, 0).UTC()
-		if cutoffTime.After(since) {
-			since = cutoffTime
-		}
-		if err := meta.Put(sinceKey, encodeInt64(since.UnixNano())); err != nil {
-			return err
-		}
-		if err := pruneHoursBucket(hours, cutoff); err != nil {
-			return err
-		}
-		return pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano())
-	}); err != nil {
-		return fmt.Errorf("initialize database: %w", err)
-	}
-
-	return a.db.View(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(metaBucket)
-		hours := tx.Bucket(hoursBucket)
-		requests := tx.Bucket(requestsBucket)
-		if meta == nil || hours == nil || requests == nil {
-			return errors.New("database buckets are missing")
-		}
-		a.since = time.Unix(0, decodeInt64(meta.Get(sinceKey))).UTC()
-		a.nextRequestSeq = decodeUint64(meta.Get(requestSequenceKey))
-		a.modelPrices = make(map[string]ModelPrice)
-		if raw := meta.Get(modelPricesKey); len(raw) > 0 {
-			var stored map[string]ModelPrice
-			if err := json.Unmarshal(raw, &stored); err != nil {
-				return fmt.Errorf("decode model prices: %w", err)
-			}
-			normalized, err := normalizeModelPrices(stored)
-			if err != nil {
-				return fmt.Errorf("validate model prices: %w", err)
-			}
-			a.modelPrices = normalized
-		}
-		if raw := meta.Get(lastUsedKey); len(raw) > 0 {
-			a.lastUsed = time.Unix(0, decodeInt64(raw)).UTC()
-		}
-		return hours.ForEach(func(hourKey, value []byte) error {
-			if value != nil {
-				return nil
-			}
-			hourBucket := hours.Bucket(hourKey)
-			if hourBucket == nil {
-				return nil
-			}
-			hour := decodeInt64(hourKey)
-			return hourBucket.ForEach(func(dimensionKey, counterValue []byte) error {
-				var dimensions Dimensions
-				if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
-					return fmt.Errorf("decode dimensions: %w", err)
-				}
-				var counters Counters
-				if err := json.Unmarshal(counterValue, &counters); err != nil {
-					return fmt.Errorf("decode counters: %w", err)
-				}
-				a.data[aggregateKey{Hour: hour, Dimensions: dimensions}] = counters
-				return nil
-			})
-		})
-	})
-}
-
-func (a *storeActor) record(usage normalizedUsage, forceSync bool) error {
-	key := aggregateKey{
-		Hour:       usage.RequestedAt.UTC().Truncate(time.Minute).Unix(),
-		Dimensions: usage.Dimensions,
-	}
-	counters := a.data[key]
-	counters.add(countersForUsage(usage))
-	a.data[key] = counters
-	a.dirty[key] = struct{}{}
-	a.nextRequestSeq++
-	if a.nextRequestSeq == 0 {
-		a.nextRequestSeq = 1
-	}
-	a.pendingRequests = append(a.pendingRequests, requestDetailForUsage(usage, a.nextRequestSeq))
-	if a.metrics != nil {
-		a.metrics.pendingFlush.Add(1)
-	}
-	a.pending++
-	if a.lastUsed.IsZero() || usage.RequestedAt.After(a.lastUsed) {
-		a.lastUsed = usage.RequestedAt
-	}
-
-	if forceSync || a.lastFlushErr != nil || a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
-		a.lastFlushErr = a.flush(time.Now().UTC(), false)
-		return a.lastFlushErr
-	}
-	return nil
-}
-
-func (a *storeActor) retryFailedFlush(now time.Time) error {
-	if a.lastFlushErr == nil {
-		return nil
-	}
-	a.lastFlushErr = a.flush(now, true)
-	return a.lastFlushErr
-}
-
-func (a *storeActor) flush(now time.Time, force bool) error {
-	persistedRequests := len(a.pendingRequests)
-	shouldPrune := a.lastPruneAt.IsZero() || now.Sub(a.lastPruneAt) >= time.Hour
-	if len(a.dirty) == 0 && len(a.pendingRequests) == 0 && !shouldPrune && !force {
-		return nil
-	}
-	cutoff := retentionCutoff(a.config, now)
-	nextSince := a.since
-	if shouldPrune {
-		cutoffTime := time.Unix(cutoff, 0).UTC()
-		if cutoffTime.After(nextSince) {
-			nextSince = cutoffTime
-		}
-	}
-	err := a.db.Update(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(metaBucket)
-		hours := tx.Bucket(hoursBucket)
-		requests := tx.Bucket(requestsBucket)
-		if meta == nil || hours == nil || requests == nil {
-			return errors.New("database buckets are missing")
-		}
-		for key := range a.dirty {
-			hourBucket, err := hours.CreateBucketIfNotExists(encodeInt64(key.Hour))
-			if err != nil {
-				return err
-			}
-			dimensions, err := json.Marshal(key.Dimensions)
-			if err != nil {
-				return err
-			}
-			counters, err := json.Marshal(a.data[key])
-			if err != nil {
-				return err
-			}
-			if err := hourBucket.Put(dimensions, counters); err != nil {
-				return err
-			}
-		}
-		for _, request := range a.pendingRequests {
-			encoded, err := json.Marshal(request)
-			if err != nil {
-				return err
-			}
-			if err := requests.Put(encodeRequestKey(request.Time.UnixNano(), request.Sequence), encoded); err != nil {
-				return err
-			}
-		}
-		if err := meta.Put(sinceKey, encodeInt64(nextSince.UnixNano())); err != nil {
-			return err
-		}
-		if !a.lastUsed.IsZero() {
-			if err := meta.Put(lastUsedKey, encodeInt64(a.lastUsed.UnixNano())); err != nil {
-				return err
-			}
-		}
-		if err := meta.Put(requestSequenceKey, encodeUint64(a.nextRequestSeq)); err != nil {
-			return err
-		}
-		if shouldPrune {
-			if err := pruneHoursBucket(hours, cutoff); err != nil {
-				return err
-			}
-			return pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano())
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("flush database: %w", err)
-	}
-
-	if a.metrics != nil && persistedRequests > 0 {
-		a.metrics.persisted.Add(uint64(persistedRequests))
-		a.metrics.pendingFlush.Add(-int64(persistedRequests))
-	}
-	clear(a.dirty)
-	a.pendingRequests = a.pendingRequests[:0]
-	a.pending = 0
-	a.lastFlushErr = nil
-	if shouldPrune {
-		a.since = nextSince
-		for key := range a.data {
-			if key.Hour < cutoff {
-				delete(a.data, key)
-			}
-		}
-		a.lastPruneAt = now
-	}
-	return nil
-}
-
-func (a *storeActor) reconfigure(config Config) error {
-	if config.DataPath != a.config.DataPath {
-		return errors.New("data_path changes require opening a new store")
-	}
-	if err := a.flush(time.Now().UTC(), true); err != nil {
-		a.lastFlushErr = err
-		return err
-	}
-	previous := a.config
-	previousPrune := a.lastPruneAt
-	a.config = config
-	a.lastPruneAt = time.Time{}
-	if err := a.flush(time.Now().UTC(), true); err != nil {
-		a.config = previous
-		a.lastPruneAt = previousPrune
-		a.lastFlushErr = err
-		return err
-	}
-	a.lastFlushErr = nil
-	return nil
-}
-
-func (a *storeActor) saveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
-	encoded, err := json.Marshal(prices)
-	if err != nil {
-		return nil, fmt.Errorf("encode model prices: %w", err)
-	}
-	if err := a.db.Update(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(metaBucket)
-		if meta == nil {
-			return errors.New("metadata bucket is missing")
-		}
-		if len(prices) == 0 {
-			return meta.Delete(modelPricesKey)
-		}
-		return meta.Put(modelPricesKey, encoded)
-	}); err != nil {
-		return nil, fmt.Errorf("save model prices: %w", err)
-	}
-	a.modelPrices = cloneModelPrices(prices)
-	return cloneModelPrices(a.modelPrices), nil
-}
-
-func (a *storeActor) reset() error {
-	now := time.Now().UTC()
-	if err := a.db.Update(func(tx *bolt.Tx) error {
-		if err := tx.DeleteBucket(hoursBucket); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
-			return err
-		}
-		if _, err := tx.CreateBucket(hoursBucket); err != nil {
-			return err
-		}
-		if err := tx.DeleteBucket(requestsBucket); err != nil && !errors.Is(err, bolt.ErrBucketNotFound) {
-			return err
-		}
-		if _, err := tx.CreateBucket(requestsBucket); err != nil {
-			return err
-		}
-		meta := tx.Bucket(metaBucket)
-		if meta == nil {
-			return errors.New("metadata bucket is missing")
-		}
-		if err := meta.Put(sinceKey, encodeInt64(now.UnixNano())); err != nil {
-			return err
-		}
-		if err := meta.Put(requestSequenceKey, encodeUint64(0)); err != nil {
-			return err
-		}
-		return meta.Delete(lastUsedKey)
-	}); err != nil {
-		return fmt.Errorf("reset database: %w", err)
-	}
-	a.data = make(map[aggregateKey]Counters)
-	a.dirty = make(map[aggregateKey]struct{})
-	a.pending = 0
-	a.pendingRequests = nil
-	a.nextRequestSeq = 0
-	a.lastFlushErr = nil
-	a.since = now
-	a.lastUsed = time.Time{}
-	return nil
-}
-
-func (a *storeActor) queryRequests(requestedRange string, offset, limit int, model string, now time.Time) (RequestPage, error) {
-	rangeName, cutoff, err := queryCutoff(requestedRange, now)
+	canonicalRange, cutoff, err := queryCutoff(rangeName, now)
 	if err != nil {
 		return RequestPage{}, err
 	}
@@ -692,114 +358,378 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 		return RequestPage{}, withStatus(400, "limit must be between 1 and %d", maxRequestPageSize)
 	}
 
+	where, args := requestWhere(cutoff, model)
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM usage_records`+where, args...).Scan(&total); err != nil {
+		return RequestPage{}, fmt.Errorf("count usage request rows: %w", err)
+	}
+	queryArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+recordSelectColumns+` FROM usage_records`+where+` ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return RequestPage{}, fmt.Errorf("query usage request rows: %w", err)
+	}
+	defer rows.Close()
+
 	page := RequestPage{
-		GeneratedAt: now.UTC(),
-		Range:       rangeName,
+		GeneratedAt: now,
+		Range:       canonicalRange,
+		Total:       total,
 		Offset:      offset,
 		Limit:       limit,
 		Items:       make([]RequestDetail, 0, limit),
 	}
-	err = a.db.View(func(tx *bolt.Tx) error {
-		requests := tx.Bucket(requestsBucket)
-		if requests == nil {
-			return errors.New("requests bucket is missing")
+	for rows.Next() {
+		record, err := scanRecord(rows)
+		if err != nil {
+			return RequestPage{}, err
 		}
-		cursor := requests.Cursor()
-		for key, value := cursor.Last(); key != nil; key, value = cursor.Prev() {
-			if len(key) != 16 || value == nil {
-				continue
-			}
-			requestedAt := time.Unix(0, decodeInt64(key[:8])).UTC()
-			if !cutoff.IsZero() && requestedAt.Before(cutoff) {
-				break
-			}
-			var item RequestDetail
-			if err := json.Unmarshal(value, &item); err != nil {
-				return fmt.Errorf("decode request detail: %w", err)
-			}
-			itemModel := item.Model
-			if itemModel == "" {
-				itemModel = "未标记模型"
-			}
-			if model != "" && itemModel != model {
-				continue
-			}
-			page.Total++
-			if page.Total <= offset || len(page.Items) >= limit {
-				continue
-			}
-			page.Items = append(page.Items, item)
-		}
-		return nil
-	})
-	if err != nil {
-		return RequestPage{}, fmt.Errorf("query request details: %w", err)
+		page.Items = append(page.Items, requestDetailForRecord(record))
+	}
+	if err := rows.Err(); err != nil {
+		return RequestPage{}, fmt.Errorf("iterate usage request rows: %w", err)
 	}
 	return page, nil
 }
 
-func retentionCutoff(config Config, now time.Time) int64 {
-	return now.UTC().Add(-time.Duration(config.RetentionDays) * 24 * time.Hour).Truncate(time.Minute).Unix()
-}
-
-func pruneHoursBucket(hours *bolt.Bucket, cutoff int64) error {
-	var expired [][]byte
-	if err := hours.ForEach(func(key, value []byte) error {
-		if value == nil && decodeInt64(key) < cutoff {
-			expired = append(expired, append([]byte(nil), key...))
-		}
-		return nil
-	}); err != nil {
-		return err
+func requestWhere(cutoff time.Time, model string) (string, []any) {
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 2)
+	if !cutoff.IsZero() {
+		conditions = append(conditions, "timestamp >= ?")
+		args = append(args, formatTimestamp(cutoff))
 	}
-	for _, key := range expired {
-		if err := hours.DeleteBucket(key); err != nil {
-			return err
-		}
+	if model = strings.TrimSpace(model); model != "" {
+		conditions = append(conditions, "model = ?")
+		args = append(args, model)
 	}
-	return nil
+	if len(conditions) == 0 {
+		return "", args
+	}
+	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
-func encodeRequestKey(unixNano int64, sequence uint64) []byte {
-	result := make([]byte, 16)
-	copy(result[:8], encodeInt64(unixNano))
-	binary.BigEndian.PutUint64(result[8:], sequence)
-	return result
+// QueryUsage is the protected, reference-compatible raw usage query.
+func (s *Store) QueryUsage(ctx context.Context, rng QueryRange) (APIUsage, error) {
+	if s == nil || s.db == nil {
+		return APIUsage{}, nil
+	}
+	query := `SELECT ` + recordSelectColumns + ` FROM usage_records`
+	args := make([]any, 0, 2)
+	conditions := make([]string, 0, 2)
+	if rng.Start != nil && !rng.Start.IsZero() {
+		conditions = append(conditions, "timestamp >= ?")
+		args = append(args, formatTimestamp(*rng.Start))
+	}
+	if rng.End != nil && !rng.End.IsZero() {
+		conditions = append(conditions, "timestamp < ?")
+		args = append(args, formatTimestamp(*rng.End))
+	}
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY timestamp ASC, id ASC"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query raw usage records: %w", err)
+	}
+	defer rows.Close()
+	result := APIUsage{}
+	for rows.Next() {
+		record, err := scanRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		key := groupingKey(record.APIKey, record.Provider)
+		model := normalizeModel(record.Model)
+		if result[key] == nil {
+			result[key] = map[string][]UsageRequestDetail{}
+		}
+		result[key][model] = append(result[key][model], usageRequestDetail(record))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate raw usage records: %w", err)
+	}
+	return result, nil
 }
 
-func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64) error {
-	cursor := requests.Cursor()
-	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
-		if len(key) != 16 {
+func usageRequestDetail(record Record) UsageRequestDetail {
+	tokens := nonNegativeTokenStats(record.Tokens)
+	tokens.TotalTokens = normalizeTotalTokens(tokens)
+	return UsageRequestDetail{
+		ID:                record.ID,
+		Timestamp:         record.Timestamp.UTC(),
+		Provider:          record.Provider,
+		Model:             record.Model,
+		Alias:             record.Alias,
+		Source:            record.Source,
+		AuthID:            record.AuthID,
+		AuthIndex:         record.AuthIndex,
+		AuthType:          record.AuthType,
+		ExecutorType:      record.ExecutorType,
+		ReasoningEffort:   record.ReasoningEffort,
+		ServiceTier:       record.ServiceTier,
+		LatencyMs:         nonNegativeInt64(record.LatencyMs),
+		TTFTMs:            nonNegativeInt64(record.TTFTMs),
+		Tokens:            tokens,
+		Failed:            record.Failed,
+		FailureStatusCode: nonNegativeInt(record.FailureStatusCode),
+		FailureBody:       record.FailureBody,
+	}
+}
+
+func (s *Store) Delete(ctx context.Context, ids []string) (DeleteResult, error) {
+	result := DeleteResult{Missing: []string{}}
+	if s == nil || s.db == nil {
+		result.Missing = append(result.Missing, ids...)
+		return result, nil
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
 			continue
 		}
-		if decodeInt64(key[:8]) >= cutoffUnixNano {
-			break
+		res, err := s.db.ExecContext(ctx, "DELETE FROM usage_records WHERE id = ?", id)
+		if err != nil {
+			return result, fmt.Errorf("delete usage record %s: %w", id, err)
 		}
-		if err := cursor.Delete(); err != nil {
-			return err
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return result, fmt.Errorf("read deleted usage row count: %w", err)
 		}
+		if rows == 0 {
+			result.Missing = append(result.Missing, id)
+			continue
+		}
+		result.Deleted += rows
+	}
+	return result, nil
+}
+
+func (s *Store) DeleteBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	result, err := s.db.ExecContext(ctx, "DELETE FROM usage_records WHERE timestamp < ?", formatTimestamp(cutoff))
+	if err != nil {
+		return 0, fmt.Errorf("delete expired usage records: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read expired usage row count: %w", err)
+	}
+	return rows, nil
+}
+
+func (s *Store) QueryModelPrices() (map[string]ModelPrice, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	var encoded string
+	err := s.db.QueryRowContext(ctx, "SELECT value FROM plugin_settings WHERE key = ?", modelPricesSettingKey).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return map[string]ModelPrice{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query model prices: %w", err)
+	}
+	var prices map[string]ModelPrice
+	if err := json.Unmarshal([]byte(encoded), &prices); err != nil {
+		return nil, fmt.Errorf("decode model prices: %w", err)
+	}
+	normalized, err := normalizeModelPrices(prices)
+	if err != nil {
+		return nil, fmt.Errorf("validate stored model prices: %w", err)
+	}
+	return normalized, nil
+}
+
+func (s *Store) SaveModelPrices(prices map[string]ModelPrice) (map[string]ModelPrice, error) {
+	normalized, err := normalizeModelPrices(prices)
+	if err != nil {
+		return nil, withStatus(400, "%v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	if len(normalized) == 0 {
+		if _, err := s.db.ExecContext(ctx, "DELETE FROM plugin_settings WHERE key = ?", modelPricesSettingKey); err != nil {
+			return nil, fmt.Errorf("delete model prices: %w", err)
+		}
+		return map[string]ModelPrice{}, nil
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("encode model prices: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO plugin_settings (key, value) VALUES (?, ?)
+ON CONFLICT(key) DO UPDATE SET value = excluded.value`, modelPricesSettingKey, string(encoded)); err != nil {
+		return nil, fmt.Errorf("save model prices: %w", err)
+	}
+	return cloneModelPrices(normalized), nil
+}
+
+func (s *Store) Reset() error {
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM usage_records"); err != nil {
+		return fmt.Errorf("reset usage records: %w", err)
 	}
 	return nil
 }
 
-func encodeUint64(value uint64) []byte {
-	result := make([]byte, 8)
-	binary.BigEndian.PutUint64(result, value)
-	return result
-}
-
-func decodeUint64(value []byte) uint64 {
-	if len(value) != 8 {
-		return 0
+func (s *Store) Reconfigure(config Config) error {
+	normalized, err := normalizeConfig(config)
+	if err != nil {
+		return err
 	}
-	return binary.BigEndian.Uint64(value)
+	s.configMu.Lock()
+	if normalized.DataPath != s.config.DataPath {
+		s.configMu.Unlock()
+		return errors.New("database path changes require opening a new store")
+	}
+	s.config = normalized
+	s.configMu.Unlock()
+
+	s.cleanupMu.Lock()
+	s.lastCleanup = time.Time{}
+	s.cleanupMu.Unlock()
+	s.maybeCleanup(time.Now().UTC())
+	return nil
 }
 
-func encodeInt64(value int64) []byte {
-	return encodeUint64(uint64(value) ^ (uint64(1) << 63))
+func (s *Store) Diagnostics() UsageDiagnostics {
+	if s == nil {
+		return UsageDiagnostics{}
+	}
+	return UsageDiagnostics{
+		Processed:          s.processed.Load(),
+		PersistedSinceOpen: s.persisted.Load(),
+	}
 }
 
-func decodeInt64(value []byte) int64 {
-	return int64(decodeUint64(value) ^ (uint64(1) << 63))
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() { s.closeErr = s.db.Close() })
+	return s.closeErr
+}
+
+func (s *Store) maybeCleanup(now time.Time) {
+	s.configMu.RLock()
+	days := s.config.RetentionDays
+	s.configMu.RUnlock()
+	if days <= 0 {
+		return
+	}
+
+	s.cleanupMu.Lock()
+	if !s.lastCleanup.IsZero() && now.Sub(s.lastCleanup) < time.Hour {
+		s.cleanupMu.Unlock()
+		return
+	}
+	s.lastCleanup = now
+	s.cleanupMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	_, _ = s.DeleteBefore(ctx, now.Add(-time.Duration(days)*24*time.Hour))
+}
+
+func (s *Store) usageBounds(ctx context.Context, now time.Time) (time.Time, time.Time, error) {
+	var minimum sql.NullString
+	var maximum sql.NullString
+	if err := s.db.QueryRowContext(ctx, "SELECT MIN(timestamp), MAX(timestamp) FROM usage_records").Scan(&minimum, &maximum); err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("query usage time bounds: %w", err)
+	}
+	var since time.Time
+	var lastUsed time.Time
+	var err error
+	if minimum.Valid && strings.TrimSpace(minimum.String) != "" {
+		since, err = time.Parse(time.RFC3339Nano, minimum.String)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("parse first usage timestamp: %w", err)
+		}
+		since = since.UTC()
+	} else {
+		s.configMu.RLock()
+		days := s.config.RetentionDays
+		s.configMu.RUnlock()
+		if days > 0 {
+			since = now.Add(-time.Duration(days) * 24 * time.Hour)
+		} else {
+			since = now
+		}
+	}
+	if maximum.Valid && strings.TrimSpace(maximum.String) != "" {
+		lastUsed, err = time.Parse(time.RFC3339Nano, maximum.String)
+		if err != nil {
+			return time.Time{}, time.Time{}, fmt.Errorf("parse last usage timestamp: %w", err)
+		}
+		lastUsed = lastUsed.UTC()
+	}
+	return since, lastUsed, nil
+}
+
+func scanRecord(scanner interface{ Scan(dest ...any) error }) (Record, error) {
+	var (
+		record        Record
+		timestampText string
+		failedInt     int
+	)
+	if err := scanner.Scan(
+		&record.ID,
+		&timestampText,
+		&record.APIKey,
+		&record.Provider,
+		&record.Model,
+		&record.Alias,
+		&record.Source,
+		&record.AuthID,
+		&record.AuthIndex,
+		&record.AuthType,
+		&record.ExecutorType,
+		&record.ReasoningEffort,
+		&record.ServiceTier,
+		&record.LatencyMs,
+		&record.TTFTMs,
+		&record.Tokens.InputTokens,
+		&record.Tokens.OutputTokens,
+		&record.Tokens.ReasoningTokens,
+		&record.Tokens.CachedTokens,
+		&record.Tokens.CacheReadTokens,
+		&record.Tokens.CacheCreationTokens,
+		&record.Tokens.TotalTokens,
+		&failedInt,
+		&record.FailureStatusCode,
+		&record.FailureBody,
+	); err != nil {
+		return Record{}, fmt.Errorf("scan usage sqlite record: %w", err)
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, timestampText)
+	if err != nil {
+		return Record{}, fmt.Errorf("parse usage sqlite timestamp: %w", err)
+	}
+	record.Timestamp = timestamp.UTC()
+	record.LatencyMs = nonNegativeInt64(record.LatencyMs)
+	record.TTFTMs = nonNegativeInt64(record.TTFTMs)
+	record.Tokens = nonNegativeTokenStats(record.Tokens)
+	record.Tokens.TotalTokens = normalizeTotalTokens(record.Tokens)
+	record.Failed = failedInt != 0
+	record.FailureStatusCode = nonNegativeInt(record.FailureStatusCode)
+	record.Model = normalizeModel(record.Model)
+	return record, nil
+}
+
+func formatTimestamp(timestamp time.Time) string {
+	return timestamp.UTC().Format(sqliteTimestampLayout)
+}
+
+func formatRecordTimestamp(timestamp time.Time) string {
+	if timestamp.IsZero() {
+		timestamp = time.Now()
+	}
+	return formatTimestamp(timestamp)
 }

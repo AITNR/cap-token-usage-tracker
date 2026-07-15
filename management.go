@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -8,6 +9,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -21,6 +23,7 @@ type managementRegistrationResponse struct {
 
 type registeredRoutes struct {
 	pluginID             string
+	usagePath            string
 	statsPath            string
 	resetPath            string
 	dashboardPath        string
@@ -42,6 +45,7 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 
 	routes := registeredRoutes{
 		pluginID:             pluginID,
+		usagePath:            "/v0/management/plugins/" + pluginID + "/usage",
 		statsPath:            "/v0/management/plugins/" + pluginID + "/stats",
 		resetPath:            "/v0/management/plugins/" + pluginID + "/reset",
 		dashboardPath:        "/v0/resource/plugins/" + pluginID + "/dashboard",
@@ -56,6 +60,16 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 
 	return managementRegistrationResponse{
 		Routes: []pluginapi.ManagementRoute{
+			{
+				Method:      http.MethodGet,
+				Path:        "/plugins/" + pluginID + "/usage",
+				Description: "Query persisted request usage grouped by API key/provider and model.",
+			},
+			{
+				Method:      http.MethodDelete,
+				Path:        "/plugins/" + pluginID + "/usage",
+				Description: "Delete persisted request usage records by id.",
+			},
 			{
 				Method:      http.MethodGet,
 				Path:        "/plugins/" + pluginID + "/stats",
@@ -108,6 +122,15 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 	}
 
 	switch request.Path {
+	case routes.usagePath:
+		switch {
+		case strings.EqualFold(request.Method, http.MethodGet):
+			return r.usageResponse(request)
+		case strings.EqualFold(request.Method, http.MethodDelete):
+			return r.deleteUsageResponse(request)
+		default:
+			return methodNotAllowed(http.MethodGet + ", " + http.MethodDelete), nil
+		}
 	case routes.dashboardPath:
 		if request.Method != "" && !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
@@ -141,6 +164,93 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"error": "route not found"}), nil
 	}
+}
+
+func (r *pluginRuntime) usageResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	rng, err := parseUsageRange(request.Query)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusOK, APIUsage{}), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	usage, err := r.store.QueryUsage(ctx, rng)
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "failed to query usage"}), nil
+	}
+	return jsonResponse(http.StatusOK, usage), nil
+}
+
+func (r *pluginRuntime) deleteUsageResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if len(request.Body) > 0 {
+		if err := json.Unmarshal(request.Body, &body); err != nil {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid body"}), nil
+		}
+	}
+	ids := make([]string, 0, len(body.IDs))
+	seen := make(map[string]struct{}, len(body.IDs))
+	for _, id := range body.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "ids required"}), nil
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if r.store == nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "usage store unavailable"}), nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeOperationTimeout)
+	defer cancel()
+	result, err := r.store.Delete(ctx, ids)
+	if err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]any{"error": "failed to delete usage records"}), nil
+	}
+	return jsonResponse(http.StatusOK, result), nil
+}
+
+func parseUsageRange(query map[string][]string) (QueryRange, error) {
+	var result QueryRange
+	if raw := strings.TrimSpace(firstQueryValue(query, "start")); raw != "" {
+		start, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return QueryRange{}, withStatus(http.StatusBadRequest, "invalid start")
+		}
+		start = start.UTC()
+		result.Start = &start
+	}
+	if raw := strings.TrimSpace(firstQueryValue(query, "end")); raw != "" {
+		end, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			return QueryRange{}, withStatus(http.StatusBadRequest, "invalid end")
+		}
+		end = end.UTC()
+		result.End = &end
+	}
+	return result, nil
+}
+
+func firstQueryValue(values map[string][]string, key string) string {
+	if len(values[key]) > 0 {
+		return values[key][0]
+	}
+	return ""
 }
 
 func (r *pluginRuntime) statsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {

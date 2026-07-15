@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -29,26 +30,151 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registration.Routes) != 3 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || len(registration.Resources) != 4 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/prices" {
-		t.Fatalf("unexpected registration: %+v", registration)
+	if len(registration.Routes) != 5 {
+		t.Fatalf("management routes = %+v", registration.Routes)
 	}
-	if registration.Routes[0].Menu != "" {
-		t.Fatal("authenticated stats route must not declare a legacy menu")
+	wantRoutes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/plugins/custom-id/usage"},
+		{http.MethodDelete, "/plugins/custom-id/usage"},
+		{http.MethodGet, "/plugins/custom-id/stats"},
+		{http.MethodPost, "/plugins/custom-id/reset"},
+		{http.MethodPut, "/plugins/custom-id/prices"},
+	}
+	for index, want := range wantRoutes {
+		got := registration.Routes[index]
+		if got.Method != want.method || got.Path != want.path {
+			t.Fatalf("route %d = %+v, want %s %s", index, got, want.method, want.path)
+		}
+	}
+	if len(registration.Resources) != 4 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/prices" {
+		t.Fatalf("unexpected resources: %+v", registration.Resources)
+	}
+	for _, route := range registration.Routes {
+		if route.Menu != "" {
+			t.Fatalf("authenticated route must not declare a legacy menu: %+v", route)
+		}
 	}
 }
 
-func TestManagementStatsAndReset(t *testing.T) {
+func runtimeRoutesForTest() registeredRoutes {
+	return registeredRoutes{
+		pluginID:             "test",
+		usagePath:            "/v0/management/plugins/test/usage",
+		statsPath:            "/v0/management/plugins/test/stats",
+		resetPath:            "/v0/management/plugins/test/reset",
+		dashboardPath:        "/v0/resource/plugins/test/dashboard",
+		resourceStatsPath:    "/v0/resource/plugins/test/stats",
+		resourceRequestsPath: "/v0/resource/plugins/test/requests",
+		pricesPath:           "/v0/management/plugins/test/prices",
+		resourcePricesPath:   "/v0/resource/plugins/test/prices",
+	}
+}
+
+func TestManagementUsageGetAndDeleteMatchesReferenceAPI(t *testing.T) {
 	config := testConfig(t)
-	config.SyncOnRecord = true
 	store, err := openStore(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
-		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests", pricesPath: "/v0/management/plugins/test/prices", resourcePricesPath: "/v0/resource/plugins/test/prices",
-	}}
+	runtime := &pluginRuntime{store: store, config: config, routes: runtimeRoutesForTest()}
 	defer runtime.shutdown()
-	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "m"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 3}}); err != nil {
+
+	timestamp := time.Date(2026, 7, 15, 8, 0, 0, 123456789, time.UTC)
+	record := Record{
+		ID:                "sensitive-request",
+		Timestamp:         timestamp,
+		APIKey:            "client-api-key",
+		Provider:          "provider",
+		Model:             "model",
+		AuthID:            "credential-id",
+		AuthIndex:         "4",
+		AuthType:          "oauth",
+		ExecutorType:      "executor",
+		FailureBody:       "upstream private body",
+		Failed:            true,
+		FailureStatusCode: 503,
+		Tokens:            TokenStats{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	}
+	if err := store.Record(record); err != nil {
+		t.Fatal(err)
+	}
+
+	start := timestamp.Add(-time.Second).Format(time.RFC3339)
+	end := timestamp.Add(time.Second).Format(time.RFC3339)
+	getRequest, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodGet,
+		Path:   runtime.routes.usagePath,
+		Query:  url.Values{"start": []string{start}, "end": []string{end}},
+	})
+	response, err := runtime.handleManagement(getRequest)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("usage GET response: %+v, %v", response, err)
+	}
+	var usage APIUsage
+	if err := json.Unmarshal(response.Body, &usage); err != nil {
+		t.Fatal(err)
+	}
+	details := usage["client-api-key"]["model"]
+	if len(details) != 1 || details[0].ID != record.ID || details[0].AuthID != "credential-id" || details[0].FailureBody != "upstream private body" {
+		t.Fatalf("usage GET body = %s", response.Body)
+	}
+
+	invalidRange, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.usagePath, Query: url.Values{"start": []string{"not-a-time"}}})
+	response, _ = runtime.handleManagement(invalidRange)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid start status = %d body=%s", response.StatusCode, response.Body)
+	}
+
+	deleteRequest, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodDelete,
+		Path:   runtime.routes.usagePath,
+		Body:   []byte(`{"ids":["sensitive-request","sensitive-request","missing"," "]}`),
+	})
+	response, err = runtime.handleManagement(deleteRequest)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("usage DELETE response: %+v, %v", response, err)
+	}
+	var deleted DeleteResult
+	if err := json.Unmarshal(response.Body, &deleted); err != nil {
+		t.Fatal(err)
+	}
+	if deleted.Deleted != 1 || len(deleted.Missing) != 1 || deleted.Missing[0] != "missing" {
+		t.Fatalf("delete result = %+v", deleted)
+	}
+
+	missingIDs, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodDelete, Path: runtime.routes.usagePath, Body: []byte(`{"ids":[]}`)})
+	response, _ = runtime.handleManagement(missingIDs)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty ids status = %d body=%s", response.StatusCode, response.Body)
+	}
+
+	wrongMethod, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.usagePath})
+	response, _ = runtime.handleManagement(wrongMethod)
+	if response.StatusCode != http.StatusMethodNotAllowed || response.Headers.Get("Allow") != "GET, DELETE" {
+		t.Fatalf("usage method response = %+v", response)
+	}
+}
+
+func TestManagementStatsRequestsPricesAndReset(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config, routes: runtimeRoutesForTest()}
+	defer runtime.shutdown()
+	if err := store.Record(Record{
+		ID:          "stats-record",
+		Timestamp:   nowUTC(),
+		APIKey:      "must-not-leak",
+		AuthID:      "must-not-leak-auth",
+		FailureBody: "must-not-leak-body",
+		Model:       "m",
+		Tokens:      TokenStats{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,8 +193,8 @@ func TestManagementStatsAndReset(t *testing.T) {
 	if err := json.Unmarshal(response.Body, &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Diagnostics.Processed != 1 || stats.Diagnostics.PersistedSinceOpen != 1 {
-		t.Fatalf("stats diagnostics = %+v", stats.Diagnostics)
+	if stats.Summary.TotalTokens != 3 || stats.Diagnostics.Processed != 1 || stats.Diagnostics.PersistedSinceOpen != 1 {
+		t.Fatalf("stats = %+v", stats)
 	}
 
 	resourceStatsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceStatsPath, Query: url.Values{"range": []string{"24h"}}})
@@ -81,6 +207,11 @@ func TestManagementStatsAndReset(t *testing.T) {
 	response, err = runtime.handleManagement(requestsRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":1`) || !strings.Contains(string(response.Body), `"model":"m"`) {
 		t.Fatalf("resource requests response: %+v, %v", response, err)
+	}
+	for _, secret := range []string{"must-not-leak", "must-not-leak-auth", "must-not-leak-body"} {
+		if strings.Contains(string(response.Body), secret) {
+			t.Fatalf("resource requests leaked %q: %s", secret, response.Body)
+		}
 	}
 
 	pricesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePricesPath})
@@ -114,7 +245,6 @@ func TestManagementStatsAndReset(t *testing.T) {
 	if response.StatusCode != http.StatusUnsupportedMediaType {
 		t.Fatalf("loose content type status = %d", response.StatusCode)
 	}
-
 	badReset, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.resetPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"confirm":"no"}`)})
 	response, _ = runtime.handleManagement(badReset)
 	if response.StatusCode != http.StatusBadRequest {

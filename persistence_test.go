@@ -1,58 +1,95 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
-	"fmt"
+	"os"
 	"path/filepath"
-	"sync"
+	"strings"
 	"testing"
 	"time"
 
-	bolt "go.etcd.io/bbolt"
+	_ "modernc.org/sqlite"
 )
 
 func testConfig(t *testing.T) Config {
 	t.Helper()
 	return Config{
-		DataPath:        filepath.Join(t.TempDir(), "usage.db"),
-		RetentionDays:   30,
-		FlushInterval:   time.Hour,
-		FlushMaxRecords: 100,
+		DataPath:      filepath.Join(t.TempDir(), defaultDatabaseFile),
+		RetentionDays: 0,
 	}
 }
 
-func TestStorePersistsAcrossRestartAndReset(t *testing.T) {
+func testRecord(id string, timestamp time.Time, model string, total int64) Record {
+	return Record{
+		ID:        id,
+		Timestamp: timestamp,
+		Provider:  "provider",
+		Model:     model,
+		Tokens: TokenStats{
+			InputTokens:  total / 2,
+			OutputTokens: total - total/2,
+			TotalTokens:  total,
+		},
+	}
+}
+
+func TestStorePersistsCompleteRequestAcrossRestart(t *testing.T) {
 	config := testConfig(t)
 	store, err := openStore(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	usage := normalizedUsage{
-		Dimensions:  Dimensions{Provider: "p", Model: "m"},
-		RequestedAt: time.Now().UTC(),
-		LatencyNS:   uint64(time.Second),
-		Counters:    Counters{Requests: 1, InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+	timestamp := time.Date(2026, 7, 15, 8, 9, 10, 123456789, time.FixedZone("UTC+8", 8*60*60))
+	record := Record{
+		ID:              "request-1",
+		Timestamp:       timestamp,
+		APIKey:          " api-key ",
+		Provider:        " provider ",
+		Model:           " model ",
+		Alias:           " alias ",
+		Source:          " source ",
+		AuthID:          " auth-id ",
+		AuthIndex:       " 3 ",
+		AuthType:        " oauth ",
+		ExecutorType:    " executor ",
+		ReasoningEffort: " high ",
+		ServiceTier:     " priority ",
+		LatencyMs:       2500,
+		TTFTMs:          300,
+		Tokens: TokenStats{
+			InputTokens:         10,
+			OutputTokens:        20,
+			ReasoningTokens:     4,
+			CachedTokens:        5,
+			CacheReadTokens:     3,
+			CacheCreationTokens: 2,
+			TotalTokens:         34,
+		},
+		Failed:            true,
+		FailureStatusCode: 429,
+		FailureBody:       " failure body ",
 	}
-	if err := store.Record(usage); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
+	if err := store.Record(record); err != nil {
 		t.Fatal(err)
 	}
 
-	store, err = openStore(config)
+	// Record is synchronous: a separate connection can observe the committed row
+	// before Record returns.
+	observer, err := sql.Open("sqlite", config.DataPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stats, err := store.Query("retention")
-	if err != nil {
+	var count int
+	if err := observer.QueryRow("SELECT COUNT(*) FROM usage_records WHERE id = ?", record.ID).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Summary.TotalTokens != 15 || stats.Summary.Requests != 1 {
-		t.Fatalf("persisted stats = %+v", stats.Summary)
-	}
-	if err := store.Reset(); err != nil {
+	if err := observer.Close(); err != nil {
 		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("committed row count = %d, want 1", count)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -63,98 +100,99 @@ func TestStorePersistsAcrossRestartAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	stats, err = store.Query("retention")
+	usage, err := store.QueryUsage(context.Background(), QueryRange{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Summary.Requests != 0 || len(stats.Groups) != 0 {
-		t.Fatalf("reset did not persist: %+v", stats)
+	details := usage["api-key"]["model"]
+	if len(details) != 1 {
+		t.Fatalf("usage grouping = %+v", usage)
+	}
+	detail := details[0]
+	if detail.ID != record.ID || !detail.Timestamp.Equal(timestamp.UTC()) {
+		t.Fatalf("unexpected identity/time: %+v", detail)
+	}
+	if detail.Provider != "provider" || detail.Model != "model" || detail.Alias != "alias" || detail.Source != "source" {
+		t.Fatalf("unexpected routing metadata: %+v", detail)
+	}
+	if detail.AuthID != "auth-id" || detail.AuthIndex != "3" || detail.AuthType != "oauth" || detail.ExecutorType != "executor" {
+		t.Fatalf("unexpected auth metadata: %+v", detail)
+	}
+	if detail.ReasoningEffort != "high" || detail.ServiceTier != "priority" || detail.LatencyMs != 2500 || detail.TTFTMs != 300 {
+		t.Fatalf("unexpected request metadata: %+v", detail)
+	}
+	if detail.Tokens != record.Tokens || !detail.Failed || detail.FailureStatusCode != 429 || detail.FailureBody != "failure body" {
+		t.Fatalf("unexpected usage/failure metadata: %+v", detail)
+	}
+
+	var storedTimestamp string
+	if err := store.db.QueryRow("SELECT timestamp FROM usage_records WHERE id = ?", record.ID).Scan(&storedTimestamp); err != nil {
+		t.Fatal(err)
+	}
+	if storedTimestamp != formatTimestamp(timestamp) {
+		t.Fatalf("stored timestamp = %q, want %q", storedTimestamp, formatTimestamp(timestamp))
 	}
 }
 
-func TestModelPricesPersistAcrossRestartAndStatsReset(t *testing.T) {
-	config := testConfig(t)
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved, err := store.SaveModelPrices(map[string]ModelPrice{
-		"gpt-test": {Input: 2.5, Output: 10},
-		"zero":     {},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(saved) != 1 || saved["gpt-test"].Output != 10 {
-		t.Fatalf("saved prices = %+v", saved)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err = openStore(config)
+func TestStoreNormalizesTokensDurationsAndTotal(t *testing.T) {
+	store, err := openStore(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	prices, err := store.QueryModelPrices()
-	if err != nil || len(prices) != 1 || prices["gpt-test"].Input != 2.5 {
-		t.Fatalf("prices after restart = %+v, %v", prices, err)
+	record := Record{
+		ID:                "normalized",
+		Timestamp:         time.Now().UTC(),
+		Model:             "",
+		LatencyMs:         -1,
+		TTFTMs:            -2,
+		FailureStatusCode: -500,
+		Tokens: TokenStats{
+			InputTokens:         8,
+			OutputTokens:        3,
+			ReasoningTokens:     -4,
+			CachedTokens:        9,
+			CacheReadTokens:     -1,
+			CacheCreationTokens: 2,
+		},
 	}
-	if err := store.Reset(); err != nil {
+	if err := store.Record(record); err != nil {
 		t.Fatal(err)
 	}
-	prices, err = store.QueryModelPrices()
-	if err != nil || len(prices) != 1 || prices["gpt-test"].Output != 10 {
-		t.Fatalf("stats reset removed model prices: %+v, %v", prices, err)
-	}
-}
-
-func TestModelPriceValidation(t *testing.T) {
-	config := testConfig(t)
-	store, err := openStore(config)
+	usage, err := store.QueryUsage(context.Background(), QueryRange{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	for _, prices := range []map[string]ModelPrice{
-		{"": {Input: 1}},
-		{"bad": {Input: -1}},
-		{"bad": {Output: maxTokenPricePerM + 1}},
-		{"gpt": {Input: 1}, " gpt ": {Output: 2}},
-	} {
-		if _, err := store.SaveModelPrices(prices); err == nil || errorHTTPStatus(err) != 400 {
-			t.Fatalf("invalid prices accepted: %+v, %v", prices, err)
-		}
+	detail := usage["unknown"]["unknown"][0]
+	wantTokens := TokenStats{InputTokens: 8, OutputTokens: 3, CachedTokens: 9, CacheCreationTokens: 2, TotalTokens: 11}
+	if detail.Tokens != wantTokens {
+		t.Fatalf("tokens = %+v, want %+v", detail.Tokens, wantTokens)
+	}
+	if detail.LatencyMs != 0 || detail.TTFTMs != 0 || detail.FailureStatusCode != 0 {
+		t.Fatalf("negative values were not clamped: %+v", detail)
 	}
 }
 
-func TestStoreAggregatesAtMinuteGranularity(t *testing.T) {
-	config := testConfig(t)
-	config.SyncOnRecord = true
-	store, err := openStore(config)
+func TestStoreAggregatesRequestsAtMinuteGranularity(t *testing.T) {
+	store, err := openStore(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 
 	base := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Minute)
-	for _, requestedAt := range []time.Time{base.Add(10 * time.Second), base.Add(50 * time.Second), base.Add(time.Minute + 5*time.Second)} {
-		if err := store.Record(normalizedUsage{
-			Dimensions:  Dimensions{Model: "minute-model"},
-			RequestedAt: requestedAt,
-			Counters:    Counters{Requests: 1, TotalTokens: 1},
-		}); err != nil {
+	for index, requestedAt := range []time.Time{base.Add(10 * time.Second), base.Add(50 * time.Second), base.Add(time.Minute + 5*time.Second)} {
+		record := testRecord("minute-"+string(rune('a'+index)), requestedAt, "minute-model", 1)
+		if err := store.Record(record); err != nil {
 			t.Fatal(err)
 		}
 	}
-
 	stats, err := store.Query("24h")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(stats.Series) != 2 || stats.Series[0].Requests != 2 || stats.Series[1].Requests != 1 {
-		t.Fatalf("minute series = %+v, want two minute buckets", stats.Series)
+		t.Fatalf("minute series = %+v", stats.Series)
 	}
 	first, err := time.Parse(time.RFC3339, stats.Series[0].Hour)
 	if err != nil {
@@ -164,458 +202,197 @@ func TestStoreAggregatesAtMinuteGranularity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := second.Sub(first); got != time.Minute {
-		t.Fatalf("minute bucket spacing = %v, want %v", got, time.Minute)
+	if second.Sub(first) != time.Minute {
+		t.Fatalf("bucket spacing = %v, want 1m", second.Sub(first))
 	}
 }
 
-func TestStoreSyncOnRecord(t *testing.T) {
+func TestStoreQueryRequestsIsPaginatedFilteredAndSanitized(t *testing.T) {
+	store, err := openStore(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	base := time.Now().UTC().Add(-time.Minute)
+	records := []Record{
+		{ID: "one", Timestamp: base, APIKey: "secret-key", AuthID: "secret-auth", Provider: "p", Model: "a", LatencyMs: 2000, TTFTMs: 500, Tokens: TokenStats{OutputTokens: 30, TotalTokens: 30}, FailureBody: "secret-body"},
+		{ID: "two", Timestamp: base.Add(time.Second), Provider: "p", Model: "b", Failed: true, FailureStatusCode: 500, Tokens: TokenStats{TotalTokens: 2}},
+		{ID: "three", Timestamp: base.Add(2 * time.Second), Provider: "p", Model: "a", Tokens: TokenStats{TotalTokens: 3}},
+	}
+	for _, record := range records {
+		if err := store.Record(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, err := store.QueryRequests("24h", 0, 1, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != "three" {
+		t.Fatalf("unexpected filtered page: %+v", page)
+	}
+	page, err = store.QueryRequests("24h", 1, 1, "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ID != "one" {
+		t.Fatalf("unexpected second page: %+v", page)
+	}
+	item := page.Items[0]
+	if item.GenerationNS != uint64(1500*time.Millisecond) || item.TPS != 20 || item.Result != "成功" {
+		t.Fatalf("unexpected derived request fields: %+v", item)
+	}
+	encoded, err := json.Marshal(page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"secret-key", "secret-auth", "secret-body"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("dashboard request response leaked %q: %s", secret, encoded)
+		}
+	}
+}
+
+func TestStoreQueryUsageRangeAndDelete(t *testing.T) {
+	store, err := openStore(testConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	base := time.Date(2026, 7, 15, 1, 0, 0, 0, time.UTC)
+	for index, timestamp := range []time.Time{base, base.Add(time.Hour), base.Add(2 * time.Hour)} {
+		if err := store.Record(testRecord([]string{"first", "second", "third"}[index], timestamp, "m", int64(index+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := base.Add(time.Hour)
+	end := base.Add(2 * time.Hour)
+	usage, err := store.QueryUsage(context.Background(), QueryRange{Start: &start, End: &end})
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := usage["provider"]["m"]
+	if len(details) != 1 || details[0].ID != "second" {
+		t.Fatalf("range result = %+v", usage)
+	}
+	result, err := store.Delete(context.Background(), []string{"second", "missing", "second", ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Deleted != 1 || len(result.Missing) != 2 || result.Missing[0] != "missing" || result.Missing[1] != "second" {
+		t.Fatalf("delete result = %+v", result)
+	}
+}
+
+func TestStoreRetentionAndReconfigure(t *testing.T) {
 	config := testConfig(t)
-	config.SyncOnRecord = true
 	store, err := openStore(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	usage := normalizedUsage{Dimensions: Dimensions{Model: "sync"}, RequestedAt: time.Now().UTC(), Counters: Counters{Requests: 1, TotalTokens: 7}}
-	if err := store.Record(usage); err != nil {
+	defer store.Close()
+	now := time.Now().UTC()
+	if err := store.Record(testRecord("old", now.Add(-48*time.Hour), "m", 1)); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Record(testRecord("recent", now.Add(-time.Hour), "m", 1)); err != nil {
+		t.Fatal(err)
+	}
+	config.RetentionDays = 1
+	if err := store.Reconfigure(config); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := store.QueryUsage(context.Background(), QueryRange{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	details := usage["provider"]["m"]
+	if len(details) != 1 || details[0].ID != "recent" {
+		t.Fatalf("retention result = %+v", usage)
+	}
+	other := config
+	other.DataPath = filepath.Join(t.TempDir(), "other.db")
+	if err := store.Reconfigure(other); err == nil {
+		t.Fatal("reconfigure accepted a database path change")
+	}
+}
 
-	lockedConfig := config
-	lockedConfig.DataPath = config.DataPath
-	if _, err := openStore(lockedConfig); err == nil {
-		t.Fatal("expected locked database open to fail")
+func TestStoreResetKeepsModelPrices(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prices, err := store.SaveModelPrices(map[string]ModelPrice{
+		"gpt-test": {Input: 2.5, Output: 10},
+		"zero":     {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prices) != 1 || prices["gpt-test"].Output != 10 {
+		t.Fatalf("saved prices = %+v", prices)
+	}
+	if err := store.Record(testRecord("priced", time.Now().UTC(), "gpt-test", 7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-}
 
-func TestStoreRecordForcesPersistenceWhenBatchingConfigured(t *testing.T) {
-	config := testConfig(t)
-	config.SyncOnRecord = false
-	config.FlushInterval = time.Hour
-	config.FlushMaxRecords = 100_000
-	store, err := openStore(config)
+	store, err = openStore(config)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-
-	usage := normalizedUsage{Dimensions: Dimensions{Model: "forced-sync"}, RequestedAt: time.Now().UTC(), Counters: Counters{Requests: 1, TotalTokens: 7}}
-	if err := store.Record(usage); err != nil {
-		t.Fatal(err)
-	}
-	diagnostics := store.Diagnostics()
-	if diagnostics.Processed != 1 || diagnostics.PersistedSinceOpen != 1 || diagnostics.MailboxDepth != 0 || diagnostics.PendingFlush != 0 {
-		t.Fatalf("Record returned before forced persistence: %+v", diagnostics)
-	}
-}
-
-func TestStoreReconfigureSamePath(t *testing.T) {
-	config := testConfig(t)
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	config.RetentionDays = 7
-	config.FlushInterval = 2 * time.Second
-	if err := store.Reconfigure(config); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestRetentionAdvancesRetainedSinceAndSurvivesRestart(t *testing.T) {
-	config := testConfig(t)
-	config.RetentionDays = 1
-	config.SyncOnRecord = true
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := normalizedUsage{
-		Dimensions:  Dimensions{Model: "expired"},
-		RequestedAt: time.Now().UTC().Add(-48 * time.Hour),
-		Counters:    Counters{Requests: 1, TotalTokens: 9},
-	}
-	if err := store.Record(old); err != nil {
-		t.Fatal(err)
-	}
 	stats, err := store.Query("retention")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stats.Summary.Requests != 0 {
-		t.Fatalf("expired usage was retained: %+v", stats)
+		t.Fatalf("reset stats = %+v", stats.Summary)
 	}
-	minimum := time.Now().UTC().Add(-25 * time.Hour)
-	if stats.RetainedSince.Before(minimum) {
-		t.Fatalf("retained_since did not advance: %v", stats.RetainedSince)
-	}
-	retainedSince := stats.RetainedSince
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err = openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	stats, err = store.Query("retention")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stats.RetainedSince.Equal(retainedSince) {
-		t.Fatalf("retained_since changed after restart: %v != %v", stats.RetainedSince, retainedSince)
+	prices, err = store.QueryModelPrices()
+	if err != nil || len(prices) != 1 || prices["gpt-test"].Input != 2.5 {
+		t.Fatalf("prices after reset/restart = %+v, %v", prices, err)
 	}
 }
 
-func TestStoreConcurrentCloseIsIdempotent(t *testing.T) {
+func TestModelPriceValidation(t *testing.T) {
 	store, err := openStore(testConfig(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	const callers = 8
-	var wg sync.WaitGroup
-	wg.Add(callers)
-	errorsFound := make(chan error, callers)
-	for range callers {
-		go func() {
-			defer wg.Done()
-			errorsFound <- store.Close()
-		}()
-	}
-	wg.Wait()
-	close(errorsFound)
-	for err := range errorsFound {
-		if err != nil {
-			t.Fatalf("close failed: %v", err)
-		}
-	}
-}
-
-func TestRuntimeSerializesConcurrentReconfigure(t *testing.T) {
-	base := testConfig(t)
-	runtime := &pluginRuntime{}
-	request := func(retention int) []byte {
-		config := []byte("data_path: " + filepath.ToSlash(base.DataPath) + "\nretention_days: " + fmt.Sprint(retention) + "\n")
-		raw, _ := json.Marshal(lifecycleRequest{ConfigYAML: config, SchemaVersion: 1})
-		return raw
-	}
-	if _, err := runtime.register(request(30)); err != nil {
-		t.Fatal(err)
-	}
-	defer runtime.shutdown()
-
-	var wg sync.WaitGroup
-	for _, retention := range []int{7, 14, 21, 30} {
-		wg.Add(1)
-		go func(value int) {
-			defer wg.Done()
-			if _, err := runtime.reconfigure(request(value)); err != nil {
-				t.Errorf("reconfigure %d: %v", value, err)
-			}
-		}(retention)
-	}
-	wg.Wait()
-	runtime.mu.RLock()
-	active := runtime.config.RetentionDays
-	runtime.mu.RUnlock()
-	if active != 7 && active != 14 && active != 21 && active != 30 {
-		t.Fatalf("unexpected active retention: %d", active)
-	}
-}
-
-func TestStoreEnqueueDoesNotWaitForConsumer(t *testing.T) {
-	store := newStoreMailbox()
-	usage := normalizedUsage{
-		Dimensions:  Dimensions{Provider: "test", Model: "queued"},
-		RequestedAt: time.Now().UTC(),
-		Counters:    Counters{Requests: 1, TotalTokens: 1},
-	}
-
-	const records = 4096
-	done := make(chan error, 1)
-	go func() {
-		for range records {
-			if err := store.Enqueue(usage); err != nil {
-				done <- err
-				return
-			}
-		}
-		done <- nil
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("enqueue blocked on persistence consumer")
-	}
-
-	store.queueMu.Lock()
-	queued := len(store.queue) - store.queueHead
-	store.queueMu.Unlock()
-	if queued != records {
-		t.Fatalf("queued records = %d, want %d", queued, records)
-	}
-}
-
-func TestStoreCloseDrainsEnqueuedUsage(t *testing.T) {
-	config := testConfig(t)
-	config.SyncOnRecord = false
-	config.FlushMaxRecords = 100_000
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	now := time.Now().UTC()
-	const records = 1024
-	for range records {
-		if err := store.Enqueue(normalizedUsage{
-			Dimensions:  Dimensions{Provider: "test", Model: "shutdown-drain"},
-			RequestedAt: now,
-			Counters:    Counters{Requests: 1, TotalTokens: 3},
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err = openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer store.Close()
-	stats, err := store.Query("24h")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stats.Summary.Requests != records || stats.Summary.TotalTokens != records*3 {
-		t.Fatalf("shutdown did not drain queued usage: %+v", stats.Summary)
+	for _, prices := range []map[string]ModelPrice{
+		{"": {Input: 1}},
+		{"bad": {Input: -1}},
+		{"bad": {Output: maxTokenPricePerM + 1}},
+		{"gpt": {Input: 1}, " gpt ": {Output: 2}},
+		{strings.Repeat("界", maxDimensionRunes+1): {Input: 1}},
+	} {
+		if _, err := store.SaveModelPrices(prices); err == nil || errorHTTPStatus(err) != 400 {
+			t.Fatalf("invalid prices accepted: %+v, %v", prices, err)
+		}
 	}
 }
 
-func TestStoreEnqueuedUsagePreservesFIFOWithQueries(t *testing.T) {
+func TestSQLiteSchemaSelfHealing(t *testing.T) {
 	config := testConfig(t)
-	config.SyncOnRecord = false
-	config.FlushMaxRecords = 100_000
-	store, err := openStore(config)
+	if err := os.MkdirAll(filepath.Dir(config.DataPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", config.DataPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-
-	now := time.Now().UTC()
-	const records = 2048
-	for i := range records {
-		usage := normalizedUsage{
-			Dimensions:  Dimensions{Provider: "test", Model: "fifo"},
-			RequestedAt: now.Add(time.Duration(i) * time.Nanosecond),
-			Counters:    Counters{Requests: 1, InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
-		}
-		if err := store.Enqueue(usage); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	stats, err := store.Query("24h")
-	if err != nil {
+	if _, err := db.Exec(`CREATE TABLE usage_records (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, provider TEXT NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
-	if stats.Summary.Requests != records || stats.Summary.TotalTokens != records*2 {
-		t.Fatalf("unexpected queued summary: %+v", stats.Summary)
-	}
-
-	page, err := store.QueryRequests("24h", 0, 1, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.Total != records {
-		t.Fatalf("persisted request total = %d, want %d", page.Total, records)
-	}
-}
-
-func TestStoreDoesNotDropRecordsAfterFlushFailure(t *testing.T) {
-	db, err := bolt.Open(filepath.Join(t.TempDir(), "failed-flush.db"), 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	actor := &storeActor{
-		db: db,
-		config: Config{
-			RetentionDays:   30,
-			FlushInterval:   time.Hour,
-			FlushMaxRecords: 100,
-			SyncOnRecord:    true,
-		},
-		data:  make(map[aggregateKey]Counters),
-		dirty: make(map[aggregateKey]struct{}),
-		since: now,
-	}
-	store := newStoreMailbox()
-	go store.run(actor)
-
-	// Closing the database forces every synchronous flush to fail. Both usage
-	// calls should report that failure, but neither record may be discarded.
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	usage := normalizedUsage{
-		Dimensions:  Dimensions{Provider: "test", Model: "recovery"},
-		RequestedAt: now,
-		Counters:    Counters{Requests: 1, TotalTokens: 3},
-	}
-	if err := store.Record(usage); err == nil {
-		t.Fatal("first record should report the forced flush failure")
-	}
-	if err := store.Record(usage); err == nil {
-		t.Fatal("second record should report the forced flush failure")
-	}
-	_ = store.Close()
-
-	key := aggregateKey{Hour: now.Truncate(time.Minute).Unix(), Dimensions: usage.Dimensions}
-	if got := actor.data[key].Requests; got != 2 {
-		t.Fatalf("accepted requests = %d, want 2", got)
-	}
-	if actor.pending != 2 || len(actor.dirty) != 1 {
-		t.Fatalf("unexpected pending state: pending=%d dirty=%d", actor.pending, len(actor.dirty))
-	}
-}
-
-func TestStorePersistsAndQueriesPerRequestDetails(t *testing.T) {
-	config := testConfig(t)
-	base := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	usages := []normalizedUsage{
-		{
-			Dimensions:  Dimensions{Provider: "openai", Model: "alpha", Source: "cli", ServiceTier: "priority", ReasoningEffort: "high"},
-			RequestedAt: base, LatencyNS: uint64(3 * time.Second), TTFTNS: uint64(time.Second),
-			Counters: Counters{Requests: 1, InputTokens: 100, OutputTokens: 40, ReasoningTokens: 8, CacheReadTokens: 12, CacheCreationTokens: 3, TotalTokens: 148},
-		},
-		{
-			Dimensions:  Dimensions{Provider: "anthropic", Model: "beta", Source: "web", ServiceTier: "standard", Failed: true, FailureStatus: 500},
-			RequestedAt: base.Add(time.Second), LatencyNS: uint64(2 * time.Second), TTFTNS: uint64(500 * time.Millisecond),
-			Counters: Counters{Requests: 1, FailedRequests: 1, InputTokens: 20, OutputTokens: 3, TotalTokens: 23},
-		},
-		{
-			Dimensions: Dimensions{Model: "beta", Source: "batch"}, RequestedAt: base.Add(time.Second),
-			Counters: Counters{Requests: 1, InputTokens: 7, OutputTokens: 2, TotalTokens: 9},
-		},
-	}
-	for _, usage := range usages {
-		if err := store.Record(usage); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	page, err := store.QueryRequests("24h", 0, 2, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.Total != 3 || len(page.Items) != 2 {
-		t.Fatalf("unexpected first page: %+v", page)
-	}
-	if page.Items[0].Sequence <= page.Items[1].Sequence || page.Items[0].Model != "beta" {
-		t.Fatalf("requests are not newest-first: %+v", page.Items)
-	}
-	if page.Items[1].Result != "失败 (HTTP 500)" || page.Items[1].GenerationNS != uint64(1500*time.Millisecond) || page.Items[1].TPS != 2 {
-		t.Fatalf("unexpected failed request detail: %+v", page.Items[1])
-	}
-	filtered, err := store.QueryRequests("24h", 0, 100, "alpha")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if filtered.Total != 1 || len(filtered.Items) != 1 {
-		t.Fatalf("unexpected filtered page: %+v", filtered)
-	}
-	item := filtered.Items[0]
-	if item.Result != "成功" || item.GenerationNS != uint64(2*time.Second) || item.TTFTNS != uint64(time.Second) || !item.CacheHit {
-		t.Fatalf("unexpected request timings/status: %+v", item)
-	}
-	if item.TPS != 20 || item.InputTokens != 100 || item.OutputTokens != 40 || item.ReasoningTokens != 8 || item.CacheCreationTokens != 3 {
-		t.Fatalf("unexpected request counters: %+v", item)
-	}
-
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err = openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	page, err = store.QueryRequests("24h", 2, 2, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.Total != 3 || len(page.Items) != 1 || page.Items[0].Model != "alpha" {
-		t.Fatalf("request details did not survive restart/pagination: %+v", page)
-	}
-	if err := store.Reset(); err != nil {
-		t.Fatal(err)
-	}
-	page, err = store.QueryRequests("retention", 0, 100, "")
-	if err != nil || page.Total != 0 || len(page.Items) != 0 {
-		t.Fatalf("reset did not clear request details: %+v, %v", page, err)
-	}
-}
-
-func TestRequestDetailsRespectRetention(t *testing.T) {
-	config := testConfig(t)
-	config.RetentionDays = 1
-	config.SyncOnRecord = true
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.Record(normalizedUsage{
-		Dimensions: Dimensions{Model: "expired"}, RequestedAt: time.Now().UTC().Add(-48 * time.Hour),
-		Counters: Counters{Requests: 1, TotalTokens: 5},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	page, err := store.QueryRequests("retention", 0, 100, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page.Total != 0 {
-		t.Fatalf("expired request detail was retained: %+v", page)
-	}
-}
-
-func TestSchemaOneDatabaseMigratesRequestBucket(t *testing.T) {
-	config := testConfig(t)
-	db, err := bolt.Open(config.DataPath, 0o600, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		meta, err := tx.CreateBucket(metaBucket)
-		if err != nil {
-			return err
-		}
-		if err := meta.Put(schemaKey, encodeUint64(1)); err != nil {
-			return err
-		}
-		if err := meta.Put(sinceKey, encodeInt64(time.Now().UTC().UnixNano())); err != nil {
-			return err
-		}
-		_, err = tx.CreateBucket(hoursBucket)
-		return err
-	}); err != nil {
+	if _, err := db.Exec(`INSERT INTO usage_records (id, timestamp, provider) VALUES ('legacy', '2026-07-15T00:00:00.000000000Z', 'legacy-provider')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -626,26 +403,42 @@ func TestSchemaOneDatabaseMigratesRequestBucket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.QueryRequests("24h", 0, 100, ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	db, err = bolt.Open(config.DataPath, 0o600, nil)
+	defer store.Close()
+	columns, err := store.existingColumns(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if err := db.View(func(tx *bolt.Tx) error {
-		if tx.Bucket(requestsBucket) == nil {
-			return fmt.Errorf("requests bucket is missing after migration")
+	for _, column := range []string{"api_key", "model", "auth_id", "reasoning_effort", "service_tier", "cache_creation_tokens", "failure_body"} {
+		if _, ok := columns[column]; !ok {
+			t.Fatalf("self-healed schema missing %q", column)
 		}
-		if version := decodeUint64(tx.Bucket(metaBucket).Get(schemaKey)); version != persistenceSchemaVersion {
-			return fmt.Errorf("schema version = %d", version)
-		}
-		return nil
-	}); err != nil {
+	}
+	if err := store.Record(testRecord("new", time.Now().UTC(), "new-model", 9)); err != nil {
 		t.Fatal(err)
+	}
+	usage, err := store.QueryUsage(context.Background(), QueryRange{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(usage["legacy-provider"]["unknown"]) != 1 || len(usage["provider"]["new-model"]) != 1 {
+		t.Fatalf("migrated usage = %+v", usage)
+	}
+}
+
+func TestOpenStoreRejectsLegacyOrCorruptDatabase(t *testing.T) {
+	for name, contents := range map[string][]byte{
+		"legacy-bbolt": []byte("not-a-sqlite-bbolt-database"),
+		"short":        []byte("bad"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "usage.db")
+			if err := os.WriteFile(path, contents, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := openStore(Config{DataPath: path})
+			if err == nil || !strings.Contains(err.Error(), "not SQLite") {
+				t.Fatalf("open error = %v", err)
+			}
+		})
 	}
 }

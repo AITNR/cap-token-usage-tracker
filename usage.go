@@ -3,211 +3,211 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
-	"unicode/utf8"
+
+	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const maxDimensionRunes = 160
-
-type normalizedUsage struct {
-	Dimensions  Dimensions
-	RequestedAt time.Time
-	LatencyNS   uint64
-	TTFTNS      uint64
-	Counters    Counters
+// TokenStats mirrors upstream usage.Detail field semantics for one request.
+type TokenStats struct {
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	ReasoningTokens     int64 `json:"reasoning_tokens"`
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheReadTokens     int64 `json:"cache_read_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens"`
+	TotalTokens         int64 `json:"total_tokens"`
 }
 
-func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &root); err != nil {
-		return normalizedUsage{}, fmt.Errorf("decode usage record: %w", err)
+// Record is the complete persisted shape for one upstream request. Its fields
+// intentionally match the reference plugin's SQLite row model.
+type Record struct {
+	ID                string
+	Timestamp         time.Time
+	APIKey            string
+	Provider          string
+	Model             string
+	Alias             string
+	Source            string
+	AuthID            string
+	AuthIndex         string
+	AuthType          string
+	ExecutorType      string
+	ReasoningEffort   string
+	ServiceTier       string
+	LatencyMs         int64
+	TTFTMs            int64
+	Tokens            TokenStats
+	Failed            bool
+	FailureStatusCode int
+	FailureBody       string
+}
+
+// UsageRequestDetail is the protected raw-usage API shape. APIKey and Model are
+// represented by the surrounding APIUsage map keys, matching the reference.
+type UsageRequestDetail struct {
+	ID                string     `json:"id"`
+	Timestamp         time.Time  `json:"timestamp"`
+	Provider          string     `json:"provider,omitempty"`
+	Model             string     `json:"model,omitempty"`
+	Alias             string     `json:"alias,omitempty"`
+	Source            string     `json:"source"`
+	AuthID            string     `json:"auth_id,omitempty"`
+	AuthIndex         string     `json:"auth_index"`
+	AuthType          string     `json:"auth_type,omitempty"`
+	ExecutorType      string     `json:"executor_type,omitempty"`
+	ReasoningEffort   string     `json:"reasoning_effort"`
+	ServiceTier       string     `json:"service_tier"`
+	LatencyMs         int64      `json:"latency_ms"`
+	TTFTMs            int64      `json:"ttft_ms"`
+	Tokens            TokenStats `json:"tokens"`
+	Failed            bool       `json:"failed"`
+	FailureStatusCode int        `json:"failure_status_code,omitempty"`
+	FailureBody       string     `json:"failure_body,omitempty"`
+}
+
+type APIUsage map[string]map[string][]UsageRequestDetail
+
+type QueryRange struct {
+	Start *time.Time
+	End   *time.Time
+}
+
+type DeleteResult struct {
+	Deleted int64    `json:"deleted"`
+	Missing []string `json:"missing"`
+}
+
+// decodeUsage uses the SDK's UsageRecord type directly so field acquisition is
+// kept aligned with the host ABI instead of maintaining a partial JSON parser.
+func decodeUsage(raw []byte, now time.Time) (Record, error) {
+	var usage pluginapi.UsageRecord
+	if err := json.Unmarshal(raw, &usage); err != nil {
+		return Record{}, fmt.Errorf("decode usage record: %w", err)
+	}
+	return toRecord(usage, now), nil
+}
+
+func toRecord(usage pluginapi.UsageRecord, now time.Time) Record {
+	timestamp := usage.RequestedAt
+	if timestamp.IsZero() {
+		timestamp = now
+	}
+	if timestamp.IsZero() {
+		timestamp = time.Now()
 	}
 
-	requestedAt := firstTime(root, "RequestedAt", "requested_at")
-	now = now.UTC()
-	if requestedAt.IsZero() || requestedAt.After(now.Add(24*time.Hour)) {
-		requestedAt = now
-	} else {
-		requestedAt = requestedAt.UTC()
-	}
-
-	failure := firstObject(root, "Failure", "failure")
-	detail := firstObject(root, "Detail", "detail")
-	inputTokens := firstInt64(detail, "InputTokens", "input_tokens")
-	outputTokens := firstInt64(detail, "OutputTokens", "output_tokens")
-	reasoningTokens := firstInt64(detail, "ReasoningTokens", "reasoning_tokens")
-	cachedTokens := firstInt64(detail, "CachedTokens", "cached_tokens")
-	cacheReadTokens := firstInt64(detail, "CacheReadTokens", "cache_read_tokens")
-	cacheCreationTokens := firstInt64(detail, "CacheCreationTokens", "cache_creation_tokens")
-	total := firstInt64(detail, "TotalTokens", "total_tokens")
-	if total <= 0 {
-		// The SDK always serializes TotalTokens, so providers that leave it at
-		// zero still produce a present JSON field. Derive a useful total from the
-		// canonical input/output counters instead of treating that zero as final.
-		total = saturatingInt64Sum(inputTokens, outputTokens)
-	}
-
-	failed := firstBool(root, "Failed", "failed")
-	return normalizedUsage{
-		Dimensions: Dimensions{
-			Provider:        normalizeDimension(firstString(root, "Provider", "provider")),
-			ExecutorType:    normalizeDimension(firstString(root, "ExecutorType", "executor_type")),
-			Model:           normalizeDimension(firstString(root, "Model", "model")),
-			Alias:           normalizeDimension(firstString(root, "Alias", "alias")),
-			Source:          normalizeDimension(firstString(root, "Source", "source")),
-			AuthType:        normalizeDimension(firstString(root, "AuthType", "auth_type")),
-			ServiceTier:     normalizeDimension(firstString(root, "ServiceTier", "service_tier")),
-			ReasoningEffort: normalizeDimension(firstString(root, "ReasoningEffort", "reasoning_effort")),
-			Failed:          failed,
-			FailureStatus:   clampStatus(firstInt64(failure, "StatusCode", "status_code")),
+	return Record{
+		ID:              uuid.NewString(),
+		Timestamp:       timestamp.UTC(),
+		APIKey:          strings.TrimSpace(usage.APIKey),
+		Provider:        strings.TrimSpace(usage.Provider),
+		Model:           normalizeModel(usage.Model),
+		Alias:           strings.TrimSpace(usage.Alias),
+		Source:          strings.TrimSpace(usage.Source),
+		AuthID:          strings.TrimSpace(usage.AuthID),
+		AuthIndex:       strings.TrimSpace(usage.AuthIndex),
+		AuthType:        strings.TrimSpace(usage.AuthType),
+		ExecutorType:    strings.TrimSpace(usage.ExecutorType),
+		ReasoningEffort: strings.TrimSpace(usage.ReasoningEffort),
+		ServiceTier:     strings.TrimSpace(usage.ServiceTier),
+		LatencyMs:       durationToMilliseconds(usage.Latency),
+		TTFTMs:          durationToMilliseconds(usage.TTFT),
+		Tokens: TokenStats{
+			InputTokens:         usage.Detail.InputTokens,
+			OutputTokens:        usage.Detail.OutputTokens,
+			ReasoningTokens:     usage.Detail.ReasoningTokens,
+			CachedTokens:        usage.Detail.CachedTokens,
+			CacheReadTokens:     usage.Detail.CacheReadTokens,
+			CacheCreationTokens: usage.Detail.CacheCreationTokens,
+			TotalTokens:         usage.Detail.TotalTokens,
 		},
-		RequestedAt: requestedAt,
-		LatencyNS:   positiveDurationNS(root, "Latency", "latency", "latency_ns"),
-		TTFTNS:      positiveDurationNS(root, "TTFT", "ttft", "ttft_ns"),
-		Counters: Counters{
-			Requests:            1,
-			FailedRequests:      boolCount(failed),
-			InputTokens:         positiveUint(inputTokens),
-			OutputTokens:        positiveUint(outputTokens),
-			ReasoningTokens:     positiveUint(reasoningTokens),
-			CachedTokens:        positiveUint(cachedTokens),
-			CacheReadTokens:     positiveUint(cacheReadTokens),
-			CacheCreationTokens: positiveUint(cacheCreationTokens),
-			TotalTokens:         positiveUint(total),
-		},
-	}, nil
-}
-
-func firstObject(root map[string]json.RawMessage, keys ...string) map[string]json.RawMessage {
-	for _, key := range keys {
-		if value, ok := root[key]; ok {
-			var result map[string]json.RawMessage
-			if json.Unmarshal(value, &result) == nil {
-				return result
-			}
-		}
+		Failed:            usage.Failed || usage.Failure.StatusCode >= 400,
+		FailureStatusCode: usage.Failure.StatusCode,
+		FailureBody:       strings.TrimSpace(usage.Failure.Body),
 	}
-	return map[string]json.RawMessage{}
 }
 
-func firstString(root map[string]json.RawMessage, keys ...string) string {
-	for _, key := range keys {
-		if value, ok := root[key]; ok {
-			var result string
-			if json.Unmarshal(value, &result) == nil {
-				return result
-			}
-		}
-	}
-	return ""
-}
-
-func firstBool(root map[string]json.RawMessage, keys ...string) bool {
-	for _, key := range keys {
-		if value, ok := root[key]; ok {
-			var result bool
-			if json.Unmarshal(value, &result) == nil {
-				return result
-			}
-		}
-	}
-	return false
-}
-
-func firstInt64(root map[string]json.RawMessage, keys ...string) int64 {
-	value, _ := firstInt64Present(root, keys...)
-	return value
-}
-
-func firstInt64Present(root map[string]json.RawMessage, keys ...string) (int64, bool) {
-	for _, key := range keys {
-		value, ok := root[key]
-		if !ok {
-			continue
-		}
-		var result int64
-		if json.Unmarshal(value, &result) == nil {
-			return result, true
-		}
-	}
-	return 0, false
-}
-
-func firstTime(root map[string]json.RawMessage, keys ...string) time.Time {
-	for _, key := range keys {
-		if value, ok := root[key]; ok {
-			var result time.Time
-			if json.Unmarshal(value, &result) == nil {
-				return result
-			}
-		}
-	}
-	return time.Time{}
-}
-
-func positiveDurationNS(root map[string]json.RawMessage, keys ...string) uint64 {
-	for _, key := range keys {
-		value, ok := root[key]
-		if !ok {
-			continue
-		}
-		var numeric int64
-		if json.Unmarshal(value, &numeric) == nil {
-			return positiveUint(numeric)
-		}
-		var text string
-		if json.Unmarshal(value, &text) == nil {
-			if duration, err := time.ParseDuration(text); err == nil && duration > 0 {
-				return uint64(duration)
-			}
-		}
-	}
-	return 0
-}
-
-func normalizeDimension(value string) string {
-	value = strings.TrimSpace(value)
-	if !utf8.ValidString(value) {
-		value = strings.ToValidUTF8(value, "�")
-	}
-	runes := []rune(value)
-	if len(runes) > maxDimensionRunes {
-		value = string(runes[:maxDimensionRunes])
-	}
-	return value
-}
-
-func positiveUint(value int64) uint64 {
-	if value <= 0 {
+func durationToMilliseconds(duration time.Duration) int64 {
+	if duration <= 0 {
 		return 0
 	}
-	return uint64(value)
+	return int64(duration / time.Millisecond)
 }
 
-func boolCount(value bool) uint64 {
+func normalizeModel(model string) string {
+	if trimmed := strings.TrimSpace(model); trimmed != "" {
+		return trimmed
+	}
+	return "unknown"
+}
+
+func groupingKey(apiKey, provider string) string {
+	if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+		return trimmed
+	}
+	if trimmed := strings.TrimSpace(provider); trimmed != "" {
+		return trimmed
+	}
+	return "unknown"
+}
+
+func normalizeTotalTokens(tokens TokenStats) int64 {
+	if tokens.TotalTokens != 0 {
+		return tokens.TotalTokens
+	}
+	total := saturatingTokenSum(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens)
+	if total != 0 {
+		return total
+	}
+	return saturatingTokenSum(tokens.InputTokens, tokens.OutputTokens, tokens.ReasoningTokens, tokens.CachedTokens)
+}
+
+func saturatingTokenSum(values ...int64) int64 {
+	var total int64
+	for _, value := range values {
+		if value <= 0 {
+			continue
+		}
+		if total > math.MaxInt64-value {
+			return math.MaxInt64
+		}
+		total += value
+	}
+	return total
+}
+
+func nonNegativeTokenStats(tokens TokenStats) TokenStats {
+	tokens.InputTokens = nonNegativeInt64(tokens.InputTokens)
+	tokens.OutputTokens = nonNegativeInt64(tokens.OutputTokens)
+	tokens.ReasoningTokens = nonNegativeInt64(tokens.ReasoningTokens)
+	tokens.CachedTokens = nonNegativeInt64(tokens.CachedTokens)
+	tokens.CacheReadTokens = nonNegativeInt64(tokens.CacheReadTokens)
+	tokens.CacheCreationTokens = nonNegativeInt64(tokens.CacheCreationTokens)
+	tokens.TotalTokens = nonNegativeInt64(tokens.TotalTokens)
+	return tokens
+}
+
+func nonNegativeInt64(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func nonNegativeInt(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func boolToInt(value bool) int {
 	if value {
 		return 1
 	}
 	return 0
-}
-
-func clampStatus(value int64) int {
-	if value < 0 || value > 999 {
-		return 0
-	}
-	return int(value)
-}
-
-func saturatingInt64Sum(left, right int64) int64 {
-	if left <= 0 {
-		left = 0
-	}
-	if right <= 0 {
-		right = 0
-	}
-	if left > int64(^uint64(0)>>1)-right {
-		return int64(^uint64(0) >> 1)
-	}
-	return left + right
 }

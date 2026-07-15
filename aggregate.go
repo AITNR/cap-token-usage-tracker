@@ -66,17 +66,58 @@ func (c Counters) averageTTFTNS() uint64 {
 	return c.TotalTTFTNS / c.TTFTSamples
 }
 
-func countersForUsage(usage normalizedUsage) Counters {
-	result := usage.Counters
-	if usage.LatencyNS > 0 {
-		result.TotalLatencyNS = usage.LatencyNS
+func dimensionsForRecord(record Record) Dimensions {
+	return Dimensions{
+		Provider:        record.Provider,
+		ExecutorType:    record.ExecutorType,
+		Model:           record.Model,
+		Alias:           record.Alias,
+		Source:          record.Source,
+		AuthType:        record.AuthType,
+		ServiceTier:     record.ServiceTier,
+		ReasoningEffort: record.ReasoningEffort,
+		Failed:          record.Failed,
+		FailureStatus:   nonNegativeInt(record.FailureStatusCode),
+	}
+}
+
+func countersForRecord(record Record) Counters {
+	tokens := nonNegativeTokenStats(record.Tokens)
+	tokens.TotalTokens = normalizeTotalTokens(tokens)
+	result := Counters{
+		Requests:            1,
+		FailedRequests:      boolCount(record.Failed),
+		InputTokens:         positiveTokenUint(tokens.InputTokens),
+		OutputTokens:        positiveTokenUint(tokens.OutputTokens),
+		ReasoningTokens:     positiveTokenUint(tokens.ReasoningTokens),
+		CachedTokens:        positiveTokenUint(tokens.CachedTokens),
+		CacheReadTokens:     positiveTokenUint(tokens.CacheReadTokens),
+		CacheCreationTokens: positiveTokenUint(tokens.CacheCreationTokens),
+		TotalTokens:         positiveTokenUint(tokens.TotalTokens),
+	}
+	if record.LatencyMs > 0 {
+		result.TotalLatencyNS = millisecondsToNanoseconds(record.LatencyMs)
 		result.LatencySamples = 1
 	}
-	if usage.TTFTNS > 0 {
-		result.TotalTTFTNS = usage.TTFTNS
+	if record.TTFTMs > 0 {
+		result.TotalTTFTNS = millisecondsToNanoseconds(record.TTFTMs)
 		result.TTFTSamples = 1
 	}
 	return result
+}
+
+func positiveTokenUint(value int64) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
+func boolCount(value bool) uint64 {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func saturatingAdd(left, right uint64) uint64 {

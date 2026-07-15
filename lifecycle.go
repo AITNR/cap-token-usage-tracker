@@ -114,37 +114,32 @@ func (r *pluginRuntime) applyConfig(config Config) error {
 	return nil
 }
 
+// handleUsage follows the reference plugin: malformed/empty callbacks are
+// ignored, while a valid callback is acknowledged only after its SQLite INSERT
+// has completed.
 func (r *pluginRuntime) handleUsage(raw []byte) (map[string]any, error) {
 	r.usageCallbacks.Add(1)
-	usage, err := decodeUsage(raw, nowUTC())
+	if len(raw) == 0 {
+		return map[string]any{"ignored": true}, nil
+	}
+	record, err := decodeUsage(raw, nowUTC())
 	if err != nil {
 		r.decodeErrors.Add(1)
-		return nil, withStatus(400, "%v", err)
+		return map[string]any{"ignored": true}, nil
 	}
 	r.usageDecoded.Add(1)
+
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	store := r.store
-	if store == nil {
-		r.enqueueErrors.Add(1)
-		return nil, withStatus(503, "plugin storage is not initialized")
+	if r.store == nil {
+		return map[string]any{"ignored": true}, nil
 	}
-
-	var storeErr error
-	if r.config.SyncOnRecord {
-		// Reliable mode mirrors the reference SQLite plugin: do not acknowledge
-		// the callback until the usage record has been committed to disk.
-		storeErr = store.Record(usage)
-	} else {
-		// Explicit batch mode only guarantees acceptance into the in-memory FIFO.
-		storeErr = store.Enqueue(usage)
-	}
-	if storeErr != nil {
+	if err := r.store.Record(record); err != nil {
 		r.enqueueErrors.Add(1)
-		return nil, storeErr
+		return nil, err
 	}
 	r.usageEnqueued.Add(1)
-	return map[string]any{}, nil
+	return map[string]any{"stored": true}, nil
 }
 
 func (r *pluginRuntime) usageDiagnostics(store *Store) UsageDiagnostics {
@@ -159,8 +154,6 @@ func (r *pluginRuntime) usageDiagnostics(store *Store) UsageDiagnostics {
 		storeDiagnostics := store.Diagnostics()
 		diagnostics.Processed = storeDiagnostics.Processed
 		diagnostics.PersistedSinceOpen = storeDiagnostics.PersistedSinceOpen
-		diagnostics.MailboxDepth = storeDiagnostics.MailboxDepth
-		diagnostics.PendingFlush = storeDiagnostics.PendingFlush
 	}
 	return diagnostics
 }
@@ -205,8 +198,7 @@ func decodeLifecycle(raw []byte) (lifecycleRequest, Config, error) {
 }
 
 // decodeLifecycleConfigYAML accepts the host's standard base64 encoding of a
-// []byte field, while remaining compatible with hosts/tools that send a plain
-// YAML string or an explicit JSON byte array.
+// []byte field, while remaining compatible with plain YAML and JSON byte arrays.
 func decodeLifecycleConfigYAML(raw json.RawMessage) ([]byte, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
@@ -234,11 +226,8 @@ func pluginRegistration() registration {
 			Author:           "AITNR",
 			GitHubRepository: "https://github.com/AITNR/cap-token-usage-tracker",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "bbolt database path; relative paths use the CLIProxyAPI working directory."},
-				{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Number of UTC days of minute-level statistics and request details to retain (1-3650)."},
-				{Name: "flush_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Maximum delay before batched statistics are flushed, for example 5s."},
-				{Name: "flush_max_records", Type: pluginapi.ConfigFieldTypeInteger, Description: "Flush after this many accepted usage records."},
-				{Name: "sync_on_record", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Have the background store actor commit each accepted usage record individually."},
+				{Name: "data_dir", Type: pluginapi.ConfigFieldTypeString, Description: "Directory containing usage.db. Defaults to ~/.cli-proxy-api/plugins/cap-token-usage-tracker."},
+				{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Delete request rows older than this many days; 0 disables cleanup."},
 			},
 		},
 		Capabilities: registrationCapabilities{UsagePlugin: true, ManagementAPI: true},
