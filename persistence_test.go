@@ -307,6 +307,121 @@ func TestRuntimeSerializesConcurrentReconfigure(t *testing.T) {
 	}
 }
 
+func TestStoreEnqueueDoesNotWaitForConsumer(t *testing.T) {
+	store := newStoreMailbox()
+	usage := normalizedUsage{
+		Dimensions:  Dimensions{Provider: "test", Model: "queued"},
+		RequestedAt: time.Now().UTC(),
+		Counters:    Counters{Requests: 1, TotalTokens: 1},
+	}
+
+	const records = 4096
+	done := make(chan error, 1)
+	go func() {
+		for range records {
+			if err := store.Enqueue(usage); err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("enqueue blocked on persistence consumer")
+	}
+
+	store.queueMu.Lock()
+	queued := len(store.queue) - store.queueHead
+	store.queueMu.Unlock()
+	if queued != records {
+		t.Fatalf("queued records = %d, want %d", queued, records)
+	}
+}
+
+func TestStoreCloseDrainsEnqueuedUsage(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = false
+	config.FlushMaxRecords = 100_000
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	const records = 1024
+	for range records {
+		if err := store.Enqueue(normalizedUsage{
+			Dimensions:  Dimensions{Provider: "test", Model: "shutdown-drain"},
+			RequestedAt: now,
+			Counters:    Counters{Requests: 1, TotalTokens: 3},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	stats, err := store.Query("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.Requests != records || stats.Summary.TotalTokens != records*3 {
+		t.Fatalf("shutdown did not drain queued usage: %+v", stats.Summary)
+	}
+}
+
+func TestStoreEnqueuedUsagePreservesFIFOWithQueries(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = false
+	config.FlushMaxRecords = 100_000
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC()
+	const records = 2048
+	for i := range records {
+		usage := normalizedUsage{
+			Dimensions:  Dimensions{Provider: "test", Model: "fifo"},
+			RequestedAt: now.Add(time.Duration(i) * time.Nanosecond),
+			Counters:    Counters{Requests: 1, InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+		}
+		if err := store.Enqueue(usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := store.Query("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.Requests != records || stats.Summary.TotalTokens != records*2 {
+		t.Fatalf("unexpected queued summary: %+v", stats.Summary)
+	}
+
+	page, err := store.QueryRequests("24h", 0, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != records {
+		t.Fatalf("persisted request total = %d, want %d", page.Total, records)
+	}
+}
+
 func TestStoreDoesNotDropRecordsAfterFlushFailure(t *testing.T) {
 	db, err := bolt.Open(filepath.Join(t.TempDir(), "failed-flush.db"), 0o600, nil)
 	if err != nil {
@@ -325,7 +440,7 @@ func TestStoreDoesNotDropRecordsAfterFlushFailure(t *testing.T) {
 		dirty: make(map[aggregateKey]struct{}),
 		since: now,
 	}
-	store := &Store{commands: make(chan any, 8), done: make(chan struct{})}
+	store := newStoreMailbox()
 	go store.run(actor)
 
 	// Closing the database forces every synchronous flush to fail. Both usage

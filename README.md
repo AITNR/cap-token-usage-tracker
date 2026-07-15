@@ -12,6 +12,7 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 
 ## 功能
 
+- 用量回调先进入无固定容量的进程内 FIFO 队列，避免数据库刷盘、查询和重配置阻塞宿主分发
 - 按 UTC 分钟持久化聚合，并保存逐请求用量元数据；不保存请求或响应正文
 - 按模型、提供商、执行器、别名、来源、认证类型、服务层级、推理强度和失败状态分组
 - 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟、TTFT、生成时间、TPS 和缓存命中
@@ -65,9 +66,9 @@ plugins:
 | `retention_days` | `30` | 保留的 UTC 天数，范围 1–3650 |
 | `flush_interval` | `5s` | 批量刷盘最长间隔，范围 1 秒–1 小时 |
 | `flush_max_records` | `100` | 接收指定数量记录后立即刷盘 |
-| `sync_on_record` | `true` | 默认每条记录提交数据库后才确认；设为 `false` 可启用批量模式以提高吞吐 |
+| `sync_on_record` | `true` | 后台存储 actor 默认逐条提交已入队记录；设为 `false` 可启用批量刷盘以提高吞吐 |
 
-默认同步模式会在 `usage.handle` 返回前提交每条统计，避免正常记录停留在未刷盘窗口。仅当显式设置 `sync_on_record: false` 时启用批量模式；进程被强制终止时，批量模式最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。
+`usage.handle` 在完成解码并把记录放入进程内 FIFO 队列后立即返回，不再等待 bbolt 刷盘、仪表盘查询或插件重配置。这样可避免 CLIProxyAPI 异步分发用量时，前一条记录的磁盘 I/O 阻塞后续回调，导致后续请求上下文在进入插件前已经取消。`sync_on_record: true` 会让后台存储 actor 尽快逐条提交队列中的记录；设为 `false` 时按 `flush_interval` / `flush_max_records` 批量提交。正常 shutdown 会按 FIFO 排空队列并刷盘；进程被强制终止时，尚在内存队列中或尚未刷盘的记录仍可能丢失。
 
 修改 `data_path` 会切换到一个独立数据库，不会自动迁移或删除旧文件。
 
@@ -176,6 +177,7 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 
 ### Features
 
+- Usage callbacks first enter an unbounded in-process FIFO mailbox so database fsync, queries, and reconfiguration cannot block host delivery
 - Persistent aggregation by UTC minute plus per-request usage metadata; request and response bodies are not stored
 - Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
 - Counts requests, failures, input/output/reasoning/cached tokens, latency, TTFT, generation time, TPS, and cache hits
@@ -229,9 +231,9 @@ plugins:
 | `retention_days` | `30` | Retention period in UTC days, range 1–3650 |
 | `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
 | `flush_max_records` | `100` | Flush immediately after receiving this many records |
-| `sync_on_record` | `true` | Commits each record before acknowledgement by default; set to `false` to enable higher-throughput batching |
+| `sync_on_record` | `true` | Makes the background store actor commit accepted records individually; set to `false` for higher-throughput batching |
 
-The default synchronous mode commits each statistic before `usage.handle` returns, avoiding an unflushed normal-operation window. Batching is enabled only when `sync_on_record: false` is set explicitly; if the process is forcefully terminated in batch mode, up to one `flush_interval` or unflushed `flush_max_records` window may be lost.
+`usage.handle` now returns as soon as the decoded record has entered the in-process FIFO mailbox; it no longer waits for bbolt fsync, dashboard queries, or plugin reconfiguration. This prevents one slow storage operation from delaying later host callbacks until their original request contexts have already been canceled. With `sync_on_record: true`, the background store actor commits queued records individually as soon as possible; `false` batches them according to `flush_interval` / `flush_max_records`. A normal shutdown drains the FIFO and flushes it. A forced process termination can still lose records that remain queued in memory or have not yet been flushed.
 
 Changing `data_path` switches to a separate database; the old file is not automatically migrated or deleted.
 

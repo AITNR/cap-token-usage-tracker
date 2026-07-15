@@ -72,12 +72,16 @@ type configCommand struct {
 type closeCommand struct{ resp chan error }
 
 type Store struct {
-	commands  chan any
+	wake      chan struct{}
 	done      chan struct{}
 	closeOnce sync.Once
 	stateMu   sync.RWMutex
 	closed    bool
 	closeErr  error
+
+	queueMu   sync.Mutex
+	queue     []any
+	queueHead int
 }
 
 type storeActor struct {
@@ -115,14 +119,29 @@ func openStore(config Config) (*Store, error) {
 		return nil, err
 	}
 
-	store := &Store{
-		commands: make(chan any, 256),
-		done:     make(chan struct{}),
-	}
+	store := newStoreMailbox()
 	go store.run(actor)
 	return store, nil
 }
 
+func newStoreMailbox() *Store {
+	return &Store{
+		wake: make(chan struct{}, 1),
+		done: make(chan struct{}),
+	}
+}
+
+// Enqueue accepts a usage record into the store's FIFO mailbox without waiting
+// for disk I/O. Usage callbacks must stay independent from bbolt fsync latency,
+// dashboard scans, and reconfiguration work because the host dispatches usage
+// with the original request context; blocking here can make later callbacks
+// expire before they ever enter the plugin.
+func (s *Store) Enqueue(usage normalizedUsage) error {
+	return s.send(recordCommand{usage: usage})
+}
+
+// Record waits until the actor has processed the record. It is kept for
+// internal callers and tests that need synchronous persistence semantics.
 func (s *Store) Record(usage normalizedUsage) error {
 	resp := make(chan error, 1)
 	if err := s.send(recordCommand{usage: usage, resp: resp}); err != nil {
@@ -196,7 +215,7 @@ func (s *Store) Close() error {
 			return
 		}
 		s.closed = true
-		s.commands <- closeCommand{resp: resp}
+		s.enqueue(closeCommand{resp: resp})
 		s.stateMu.Unlock()
 		s.closeErr = <-resp
 		<-s.done
@@ -210,8 +229,46 @@ func (s *Store) send(command any) error {
 	if s.closed {
 		return errors.New("store is closed")
 	}
-	s.commands <- command
+	s.enqueue(command)
 	return nil
+}
+
+func (s *Store) enqueue(command any) {
+	s.queueMu.Lock()
+	s.queue = append(s.queue, command)
+	s.queueMu.Unlock()
+	s.signal()
+}
+
+func (s *Store) signal() {
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Store) popCommand() (any, bool) {
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if s.queueHead >= len(s.queue) {
+		return nil, false
+	}
+	command := s.queue[s.queueHead]
+	s.queue[s.queueHead] = nil
+	s.queueHead++
+
+	remaining := len(s.queue) - s.queueHead
+	switch {
+	case remaining == 0:
+		s.queue = nil
+		s.queueHead = 0
+	case s.queueHead >= 1024 && s.queueHead >= remaining:
+		copy(s.queue[:remaining], s.queue[s.queueHead:])
+		clear(s.queue[remaining:])
+		s.queue = s.queue[:remaining]
+		s.queueHead = 0
+	}
+	return command, true
 }
 
 func (s *Store) run(actor *storeActor) {
@@ -220,58 +277,74 @@ func (s *Store) run(actor *storeActor) {
 	defer close(s.done)
 
 	for {
+		// Do not let a continuously busy mailbox starve the periodic flush.
 		select {
-		case command := <-s.commands:
-			switch item := command.(type) {
-			case recordCommand:
-				// Always accept the new usage into the dirty in-memory aggregate. A
-				// previous transient flush failure must not make subsequent usage vanish.
-				item.resp <- actor.record(item.usage)
-			case queryCommand:
-				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-					item.resp <- queryResult{err: err}
-					continue
-				}
-				stats, err := buildStats(actor.data, actor.since, actor.lastUsed, item.rangeName, time.Now().UTC())
-				item.resp <- queryResult{stats: stats, err: err}
-			case requestQueryCommand:
-				now := time.Now().UTC()
-				if err := actor.flush(now, true); err != nil {
-					actor.lastFlushErr = err
-					item.resp <- requestQueryResult{err: err}
-					continue
-				}
-				page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
-				item.resp <- requestQueryResult{page: page, err: err}
-			case priceQueryCommand:
-				item.resp <- priceQueryResult{prices: cloneModelPrices(actor.modelPrices)}
-			case savePricesCommand:
-				prices, err := actor.saveModelPrices(item.prices)
-				item.resp <- priceQueryResult{prices: prices, err: err}
-			case resetCommand:
-				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-					item.resp <- err
-					continue
-				}
-				item.resp <- actor.reset()
-			case configCommand:
-				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-					item.resp <- err
-					continue
-				}
-				err := actor.reconfigure(item.config)
-				if err == nil {
-					ticker.Reset(item.config.FlushInterval)
-				}
-				item.resp <- err
-			case closeCommand:
-				flushErr := actor.flush(time.Now().UTC(), true)
-				closeErr := actor.db.Close()
-				item.resp <- errors.Join(flushErr, closeErr)
-				return
-			}
 		case now := <-ticker.C:
 			actor.lastFlushErr = actor.flush(now.UTC(), false)
+		default:
+		}
+
+		command, ok := s.popCommand()
+		if !ok {
+			select {
+			case <-s.wake:
+				continue
+			case now := <-ticker.C:
+				actor.lastFlushErr = actor.flush(now.UTC(), false)
+				continue
+			}
+		}
+
+		switch item := command.(type) {
+		case recordCommand:
+			// Always accept the new usage into the dirty in-memory aggregate. A
+			// previous transient flush failure must not make subsequent usage vanish.
+			err := actor.record(item.usage)
+			if item.resp != nil {
+				item.resp <- err
+			}
+		case queryCommand:
+			if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
+				item.resp <- queryResult{err: err}
+				continue
+			}
+			stats, err := buildStats(actor.data, actor.since, actor.lastUsed, item.rangeName, time.Now().UTC())
+			item.resp <- queryResult{stats: stats, err: err}
+		case requestQueryCommand:
+			now := time.Now().UTC()
+			if err := actor.flush(now, true); err != nil {
+				actor.lastFlushErr = err
+				item.resp <- requestQueryResult{err: err}
+				continue
+			}
+			page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
+			item.resp <- requestQueryResult{page: page, err: err}
+		case priceQueryCommand:
+			item.resp <- priceQueryResult{prices: cloneModelPrices(actor.modelPrices)}
+		case savePricesCommand:
+			prices, err := actor.saveModelPrices(item.prices)
+			item.resp <- priceQueryResult{prices: prices, err: err}
+		case resetCommand:
+			if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
+				item.resp <- err
+				continue
+			}
+			item.resp <- actor.reset()
+		case configCommand:
+			if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
+				item.resp <- err
+				continue
+			}
+			err := actor.reconfigure(item.config)
+			if err == nil {
+				ticker.Reset(item.config.FlushInterval)
+			}
+			item.resp <- err
+		case closeCommand:
+			flushErr := actor.flush(time.Now().UTC(), true)
+			closeErr := actor.db.Close()
+			item.resp <- errors.Join(flushErr, closeErr)
+			return
 		}
 	}
 }

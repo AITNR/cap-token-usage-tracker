@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"testing"
+	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
 func TestDecodeLifecycleAcceptsConfigYAMLRepresentations(t *testing.T) {
@@ -57,5 +60,48 @@ func TestDecodeLifecycleEmptyUsesReliableDefaults(t *testing.T) {
 	}
 	if !config.SyncOnRecord {
 		t.Fatal("sync_on_record should default to true")
+	}
+}
+
+func TestHandleUsageOnlyWaitsForMailboxAcceptance(t *testing.T) {
+	store := newStoreMailbox()
+	runtime := &pluginRuntime{store: store}
+	raw, err := json.Marshal(pluginapi.UsageRecord{
+		Provider:    "test",
+		Model:       "non-blocking",
+		RequestedAt: time.Now().UTC(),
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  2,
+			OutputTokens: 3,
+			TotalTokens:  5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, handleErr := runtime.handleUsage(raw)
+		done <- handleErr
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("usage callback waited for the storage actor")
+	}
+
+	store.queueMu.Lock()
+	defer store.queueMu.Unlock()
+	if len(store.queue)-store.queueHead != 1 {
+		t.Fatalf("queued commands = %d, want 1", len(store.queue)-store.queueHead)
+	}
+	command, ok := store.queue[store.queueHead].(recordCommand)
+	if !ok || command.resp != nil || command.usage.Counters.TotalTokens != 5 {
+		t.Fatalf("unexpected queued command: %#v", store.queue[store.queueHead])
 	}
 }

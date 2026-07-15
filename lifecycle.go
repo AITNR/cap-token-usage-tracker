@@ -117,7 +117,7 @@ func (r *pluginRuntime) handleUsage(raw []byte) (map[string]any, error) {
 	if r.store == nil {
 		return nil, withStatus(503, "plugin storage is not initialized")
 	}
-	if err := r.store.Record(usage); err != nil {
+	if err := r.store.Enqueue(usage); err != nil {
 		return nil, err
 	}
 	return map[string]any{}, nil
@@ -196,7 +196,7 @@ func pluginRegistration() registration {
 				{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Number of UTC days of minute-level statistics and request details to retain (1-3650)."},
 				{Name: "flush_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Maximum delay before batched statistics are flushed, for example 5s."},
 				{Name: "flush_max_records", Type: pluginapi.ConfigFieldTypeInteger, Description: "Flush after this many accepted usage records."},
-				{Name: "sync_on_record", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Commit every usage record before acknowledging it."},
+				{Name: "sync_on_record", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Have the background store actor commit each accepted usage record individually."},
 			},
 		},
 		Capabilities: registrationCapabilities{UsagePlugin: true, ManagementAPI: true},
