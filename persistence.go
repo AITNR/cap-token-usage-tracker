@@ -164,10 +164,8 @@ func (s *Store) run(actor *storeActor) {
 		case command := <-s.commands:
 			switch item := command.(type) {
 			case recordCommand:
-				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
-					item.resp <- err
-					continue
-				}
+				// Always accept the new usage into the dirty in-memory aggregate. A
+				// previous transient flush failure must not make subsequent usage vanish.
 				item.resp <- actor.record(item.usage)
 			case queryCommand:
 				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
@@ -290,7 +288,7 @@ func (a *storeActor) record(usage normalizedUsage) error {
 		a.lastUsed = usage.RequestedAt
 	}
 
-	if a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
+	if a.lastFlushErr != nil || a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
 		a.lastFlushErr = a.flush(time.Now().UTC(), false)
 		return a.lastFlushErr
 	}

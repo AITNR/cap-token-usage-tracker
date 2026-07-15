@@ -55,7 +55,7 @@ plugins:
       retention_days: 30
       flush_interval: 5s
       flush_max_records: 100
-      sync_on_record: false
+      sync_on_record: true
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -64,9 +64,9 @@ plugins:
 | `retention_days` | `30` | 保留的 UTC 天数，范围 1–3650 |
 | `flush_interval` | `5s` | 批量刷盘最长间隔，范围 1 秒–1 小时 |
 | `flush_max_records` | `100` | 接收指定数量记录后立即刷盘 |
-| `sync_on_record` | `false` | 开启后每条记录提交数据库后才确认，可靠性更高但吞吐更低 |
+| `sync_on_record` | `true` | 默认每条记录提交数据库后才确认；设为 `false` 可启用批量模式以提高吞吐 |
 
-默认批量模式在正常 shutdown 时会刷写全部待处理数据；进程被强制终止时，最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。需要更强持久性时开启 `sync_on_record`。
+默认同步模式会在 `usage.handle` 返回前提交每条统计，避免正常记录停留在未刷盘窗口。仅当显式设置 `sync_on_record: false` 时启用批量模式；进程被强制终止时，批量模式最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。
 
 修改 `data_path` 会切换到一个独立数据库，不会自动迁移或删除旧文件。
 
@@ -215,7 +215,7 @@ plugins:
       retention_days: 30
       flush_interval: 5s
       flush_max_records: 100
-      sync_on_record: false
+      sync_on_record: true
 ```
 
 | Field | Default | Description |
@@ -224,9 +224,9 @@ plugins:
 | `retention_days` | `30` | Retention period in UTC days, range 1–3650 |
 | `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
 | `flush_max_records` | `100` | Flush immediately after receiving this many records |
-| `sync_on_record` | `false` | When enabled, each record is committed to the database before acknowledgement; higher durability but lower throughput |
+| `sync_on_record` | `true` | Commits each record before acknowledgement by default; set to `false` to enable higher-throughput batching |
 
-In default batch mode, all pending data is flushed on normal shutdown. If the process is forcefully terminated, up to one `flush_interval` or unflushed `flush_max_records` window may be lost. Enable `sync_on_record` for stronger durability.
+The default synchronous mode commits each statistic before `usage.handle` returns, avoiding an unflushed normal-operation window. Batching is enabled only when `sync_on_record: false` is set explicitly; if the process is forcefully terminated in batch mode, up to one `flush_interval` or unflushed `flush_max_records` window may be lost.
 
 Changing `data_path` switches to a separate database; the old file is not automatically migrated or deleted.
 

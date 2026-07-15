@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,15 +140,47 @@ func (r *pluginRuntime) shutdown() error {
 }
 
 func decodeLifecycle(raw []byte) (lifecycleRequest, Config, error) {
-	var request lifecycleRequest
-	if err := json.Unmarshal(raw, &request); err != nil {
+	if len(raw) == 0 {
+		raw = []byte(`{}`)
+	}
+	var envelope struct {
+		ConfigYAML    json.RawMessage `json:"config_yaml"`
+		SchemaVersion uint32          `json:"schema_version"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return lifecycleRequest{}, Config{}, fmt.Errorf("decode lifecycle request: %w", err)
 	}
+	configYAML, err := decodeLifecycleConfigYAML(envelope.ConfigYAML)
+	if err != nil {
+		return lifecycleRequest{}, Config{}, err
+	}
+	request := lifecycleRequest{ConfigYAML: configYAML, SchemaVersion: envelope.SchemaVersion}
 	config, err := parseConfig(request.ConfigYAML)
 	if err != nil {
 		return lifecycleRequest{}, Config{}, err
 	}
 	return request, config, nil
+}
+
+// decodeLifecycleConfigYAML accepts the host's standard base64 encoding of a
+// []byte field, while remaining compatible with hosts/tools that send a plain
+// YAML string or an explicit JSON byte array.
+func decodeLifecycleConfigYAML(raw json.RawMessage) ([]byte, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		if decoded, decodeErr := base64.StdEncoding.DecodeString(text); decodeErr == nil && strings.Contains(string(decoded), ":") {
+			return decoded, nil
+		}
+		return []byte(text), nil
+	}
+	var bytes []byte
+	if err := json.Unmarshal(raw, &bytes); err == nil {
+		return bytes, nil
+	}
+	return nil, fmt.Errorf("config_yaml must be a base64/plain string or byte array")
 }
 
 func pluginRegistration() registration {

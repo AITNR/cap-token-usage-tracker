@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func testConfig(t *testing.T) Config {
@@ -205,5 +207,53 @@ func TestRuntimeSerializesConcurrentReconfigure(t *testing.T) {
 	runtime.mu.RUnlock()
 	if active != 7 && active != 14 && active != 21 && active != 30 {
 		t.Fatalf("unexpected active retention: %d", active)
+	}
+}
+
+func TestStoreDoesNotDropRecordsAfterFlushFailure(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "failed-flush.db"), 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	actor := &storeActor{
+		db: db,
+		config: Config{
+			RetentionDays:   30,
+			FlushInterval:   time.Hour,
+			FlushMaxRecords: 100,
+			SyncOnRecord:    true,
+		},
+		data:  make(map[aggregateKey]Counters),
+		dirty: make(map[aggregateKey]struct{}),
+		since: now,
+	}
+	store := &Store{commands: make(chan any, 8), done: make(chan struct{})}
+	go store.run(actor)
+
+	// Closing the database forces every synchronous flush to fail. Both usage
+	// calls should report that failure, but neither record may be discarded.
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	usage := normalizedUsage{
+		Dimensions:  Dimensions{Provider: "test", Model: "recovery"},
+		RequestedAt: now,
+		Counters:    Counters{Requests: 1, TotalTokens: 3},
+	}
+	if err := store.Record(usage); err == nil {
+		t.Fatal("first record should report the forced flush failure")
+	}
+	if err := store.Record(usage); err == nil {
+		t.Fatal("second record should report the forced flush failure")
+	}
+	_ = store.Close()
+
+	key := aggregateKey{Hour: now.Truncate(time.Hour).Unix(), Dimensions: usage.Dimensions}
+	if got := actor.data[key].Requests; got != 2 {
+		t.Fatalf("accepted requests = %d, want 2", got)
+	}
+	if actor.pending != 2 || len(actor.dirty) != 1 {
+		t.Fatalf("unexpected pending state: pending=%d dirty=%d", actor.pending, len(actor.dirty))
 	}
 }
