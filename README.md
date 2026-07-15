@@ -16,7 +16,8 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 按模型、提供商、执行器、别名、来源、认证类型、服务层级、推理强度和失败状态分组
 - 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟和 TTFT
 - 支持最近 24 小时、7 天、30 天或全部保留数据
-- 自包含中文仪表盘，无第三方前端依赖
+- 自包含中文仪表盘，无第三方前端依赖，采用 CLIProxyAPI Management Center 风格
+- 支持跟随系统、纯白、羊毛纸和暗色四种主题
 - 数据重置需 CLIProxyAPI 管理鉴权和显式 `reset` 确认
 - Linux ARM64 `c-shared` 构建
 
@@ -175,7 +176,8 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 - Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
 - Counts requests, failures, input/output/reasoning/cached tokens, latency, and TTFT
 - Supports last 24 hours, 7 days, 30 days, or all retained data
-- Self-contained Chinese dashboard with no third-party frontend dependencies
+- Self-contained Chinese dashboard with no third-party frontend dependencies, styled after the CLIProxyAPI Management Center
+- Supports Follow System, Pure White, Wool Paper, and Dark themes
 - Data reset requires CLIProxyAPI management authentication and explicit `reset` confirmation
 - Linux ARM64 `c-shared` build
 

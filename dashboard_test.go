@@ -18,6 +18,13 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"load().catch(function(error)",
 		"resetKeyInput.value=''",
 		"resetDialog.showModal()",
+		"data-theme-value=\"auto\"",
+		"data-theme-value=\"white\"",
+		"data-theme-value=\"light\"",
+		"data-theme-value=\"dark\"",
+		"window.matchMedia",
+		"cap-token-usage-theme",
+		"羊毛纸",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing %q", required)
@@ -26,8 +33,9 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 	for _, forbidden := range []string{
 		"replaceChildren.apply",
 		"Math.max.apply",
-		"localStorage",
 		"sessionStorage",
+		"localStorage.setItem('management",
+		"localStorage.setItem('reset",
 		"connectButton",
 		"logoutButton",
 		"innerHTML",
