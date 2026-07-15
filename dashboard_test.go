@@ -106,6 +106,25 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	}
 }
 
+func TestDashboardIncludesTotalTokenUnitSwitcher(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="tokenUnitButton"`,
+		`class="unit-toggle"`,
+		`var tokenUnitModes=[{unit:',',name:'千分位'},{unit:'k',name:'千 Token'},{unit:'M',name:'百万 Token'}]`,
+		`function formatTotalTokens(value)`,
+		`function updateTokenUnitButton()`,
+		`function renderTotalTokens(value)`,
+		`tokenUnitIndex=(tokenUnitIndex+1)%tokenUnitModes.length`,
+		`renderTotalTokens(summary.total_tokens)`,
+		`formatTotalTokens(summary.total_tokens)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing total Token unit switcher feature %q", required)
+		}
+	}
+}
+
 func TestDashboardPaintsDarkBeforeRunningThemeSync(t *testing.T) {
 	html := dashboardHTML
 	rootStart := strings.Index(html, `<html lang="zh-CN" data-theme="dark" style="background:#151412;color-scheme:dark">`)
