@@ -21,15 +21,19 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"resetDialog.showModal()",
 		"window.parent.document.documentElement",
 		"new MutationObserver",
-		"attributeFilter:['data-theme']",
+		"attributeFilter:['data-theme','style','class']",
 		"initializeThemeSync()",
 		"window.matchMedia",
-		"<html lang=\"zh-CN\" data-theme=\"dark\">",
+		"<html lang=\"zh-CN\" data-theme=\"dark\" style=\"background:#151412;color-scheme:dark\">",
+		"<meta name=\"color-scheme\" content=\"dark light\">",
 		"<style id=\"initial-theme\">",
-		"html{background:#faf9f5;color-scheme:light}",
-		"html[data-theme='white']{background:#fff}",
+		"html{background:#151412;color-scheme:dark}",
+		"html:not([data-theme]){background:#faf9f5;color-scheme:light}",
+		"html[data-theme='white']{background:#fff;color-scheme:light}",
 		"html[data-theme='dark']{background:#151412;color-scheme:dark}",
-		"var theme='dark';",
+		"var theme='dark',background='#151412';",
+		"getComputedStyle(parentRoot).getPropertyValue('--bg-secondary')",
+		"window.frameElement.style.backgroundColor=background",
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing %q", required)
@@ -96,12 +100,27 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	}
 }
 
-func TestDashboardResolvesCLIProxyThemeBeforeInitialBackground(t *testing.T) {
+func TestDashboardPaintsDarkBeforeRunningThemeSync(t *testing.T) {
 	html := dashboardHTML
-	themeRead := strings.Index(html, "window.parent.document.documentElement.getAttribute('data-theme')")
+	rootStart := strings.Index(html, `<html lang="zh-CN" data-theme="dark" style="background:#151412;color-scheme:dark">`)
 	initialStyle := strings.Index(html, `<style id="initial-theme">`)
-	if themeRead < 0 || initialStyle < 0 || themeRead > initialStyle {
-		t.Fatal("CLIProxyAPI theme must be resolved before the initial background stylesheet")
+	initialScript := strings.Index(html, `<script>`)
+	if rootStart < 0 || initialStyle < 0 || initialScript < 0 || rootStart > initialStyle || initialStyle > initialScript {
+		t.Fatal("dark root background and initial stylesheet must be available before theme sync script runs")
+	}
+}
+
+func TestDashboardSynchronizesHostFrameBackground(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		"getComputedStyle(parentRoot).getPropertyValue('--bg-secondary')",
+		"root.style.backgroundColor=background",
+		"window.frameElement.style.backgroundColor=background",
+		"window.frameElement.parentElement.style.backgroundColor=background",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing host background sync %q", required)
+		}
 	}
 }
 

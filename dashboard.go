@@ -23,22 +23,25 @@ func dashboardResponse() pluginapi.ManagementResponse {
 }
 
 const dashboardHTML = `<!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="dark" style="background:#151412;color-scheme:dark">
 <head>
 <meta charset="utf-8">
+<meta name="color-scheme" content="dark light">
+<style id="initial-theme">
+html{background:#151412;color-scheme:dark}
+html:not([data-theme]){background:#faf9f5;color-scheme:light}
+html[data-theme='white']{background:#fff;color-scheme:light}
+html[data-theme='dark']{background:#151412;color-scheme:dark}
+</style>
 <script>
 (function(){
 'use strict';
-var theme='dark';
-try{if(window.parent!==window){var parentTheme=window.parent.document.documentElement.getAttribute('data-theme');theme=parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';}else{theme=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'white';}}catch(_error){}
-if(theme==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',theme);
+var theme='dark',background='#151412';
+try{if(window.parent!==window){var parentRoot=window.parent.document.documentElement,parentTheme=parentRoot.getAttribute('data-theme'),parentBackground=window.parent.getComputedStyle(parentRoot).getPropertyValue('--bg-secondary').trim();theme=parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';if(parentBackground)background=parentBackground;}else{theme=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'white';background=theme==='dark'?'#151412':'#fff';}}catch(_error){}
+var root=document.documentElement;if(theme==='light')root.removeAttribute('data-theme');else root.setAttribute('data-theme',theme);root.style.backgroundColor=background;root.style.colorScheme=theme==='dark'?'dark':'light';
+try{if(window.frameElement){window.frameElement.style.backgroundColor=background;if(window.frameElement.parentElement)window.frameElement.parentElement.style.backgroundColor=background;}}catch(_error){}
 })();
 </script>
-<style id="initial-theme">
-html{background:#faf9f5;color-scheme:light}
-html[data-theme='white']{background:#fff}
-html[data-theme='dark']{background:#151412;color-scheme:dark}
-</style>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Token 用量统计</title>
 <style>
@@ -86,9 +89,11 @@ function money(value){value=Number(value||0);return new Intl.NumberFormat('zh-CN
 function duration(ns){ns=Number(ns||0);if(!ns)return '—';if(ns<1e6)return Math.round(ns/1e3)+'µs';if(ns<1e9)return (ns/1e6).toFixed(1)+'ms';return (ns/1e9).toFixed(2)+'s';}
 function modelName(value){return value&&String(value).trim()?String(value):'未标记模型';}
 function clearErrors(){text('error','');}
-function applyResolvedTheme(theme){if(theme==='light')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme',theme);}
-function readCLIProxyTheme(){try{if(window.parent===window)return null;var parentTheme=window.parent.document.documentElement.getAttribute('data-theme');return parentTheme==='dark'||parentTheme==='white'?parentTheme:'light';}catch(_error){return null;}}
-function initializeThemeSync(){var parentTheme=readCLIProxyTheme();if(parentTheme!==null){applyResolvedTheme(parentTheme);try{new MutationObserver(function(){var next=readCLIProxyTheme();if(next!==null){applyResolvedTheme(next);if(currentData)renderVisuals();}}).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['data-theme']});}catch(_error){}return;}var media=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;if(media){var sync=function(event){applyResolvedTheme(event.matches?'dark':'white');if(currentData)renderVisuals();};if(media.addEventListener)media.addEventListener('change',sync);else if(media.addListener)media.addListener(sync);}}
+function themeBackground(theme){return theme==='dark'?'#151412':theme==='white'?'#fff':'#faf9f5';}
+function applyFrameBackground(background){try{if(window.frameElement){window.frameElement.style.backgroundColor=background;if(window.frameElement.parentElement)window.frameElement.parentElement.style.backgroundColor=background;}}catch(_error){}}
+function applyResolvedTheme(theme,background){var root=document.documentElement;if(theme==='light')root.removeAttribute('data-theme');else root.setAttribute('data-theme',theme);background=background||themeBackground(theme);root.style.backgroundColor=background;root.style.colorScheme=theme==='dark'?'dark':'light';applyFrameBackground(background);}
+function readCLIProxyTheme(){try{if(window.parent===window)return null;var parentRoot=window.parent.document.documentElement,parentTheme=parentRoot.getAttribute('data-theme'),background=window.parent.getComputedStyle(parentRoot).getPropertyValue('--bg-secondary').trim();return {theme:parentTheme==='dark'||parentTheme==='white'?parentTheme:'light',background:background};}catch(_error){return null;}}
+function initializeThemeSync(){var parentTheme=readCLIProxyTheme();if(parentTheme!==null){applyResolvedTheme(parentTheme.theme,parentTheme.background);try{new MutationObserver(function(){var next=readCLIProxyTheme();if(next!==null){applyResolvedTheme(next.theme,next.background);if(currentData)renderVisuals();}}).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['data-theme','style','class']});}catch(_error){}return;}var media=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;if(media){var sync=function(event){applyResolvedTheme(event.matches?'dark':'white');if(currentData)renderVisuals();};sync(media);if(media.addEventListener)media.addEventListener('change',sync);else if(media.addListener)media.addListener(sync);}}
 async function api(url,options,includeKey){var controller=new AbortController();var timer=setTimeout(function(){controller.abort();},10000);try{var opts=Object.assign({},options||{},{signal:controller.signal,credentials:'same-origin'});var response=await fetch(url,opts);var payload=await response.json().catch(function(){return {};});if(!response.ok)throw new Error(payload.error||('请求失败（HTTP '+response.status+'）'));return payload;}finally{clearTimeout(timer);}}
 async function load(resetRequestPage){clearErrors();var button=document.getElementById('refreshButton');button.disabled=true;if(resetRequestPage)requestOffset=0;try{var range=document.getElementById('range').value;var data=await api(statsURL+'?range='+encodeURIComponent(range));render(data);await loadRequests();}finally{button.disabled=false;}}
 function animateText(id,value){var node=document.getElementById(id);if(!node)return;node.textContent=value;node.classList.remove('animate');void node.offsetWidth;node.classList.add('animate');}
