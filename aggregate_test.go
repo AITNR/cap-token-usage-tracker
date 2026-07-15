@@ -30,7 +30,7 @@ func TestBuildStatsGroupsRangesAndAverages(t *testing.T) {
 	}
 }
 
-func TestBuildStatsIncludesModelSeriesAndExportRecords(t *testing.T) {
+func TestBuildStatsIncludesModelSeries(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 30, 0, 0, time.UTC)
 	hour := now.Add(-time.Hour).Truncate(time.Hour).Unix()
 	data := map[aggregateKey]Counters{
@@ -53,12 +53,6 @@ func TestBuildStatsIncludesModelSeriesAndExportRecords(t *testing.T) {
 	point := stats.ModelSeries[0]
 	if point.Model != "gpt-test" || point.Requests != 3 || point.InputTokens != 170 || point.OutputTokens != 50 || point.TotalTokens != 220 {
 		t.Fatalf("unexpected model point: %+v", point)
-	}
-	if len(stats.Records) != 2 {
-		t.Fatalf("records length = %d, want 2", len(stats.Records))
-	}
-	if stats.Records[0].Hour == "" || stats.Records[0].Model != "gpt-test" {
-		t.Fatalf("unexpected export record: %+v", stats.Records[0])
 	}
 }
 
@@ -106,7 +100,7 @@ func TestQueryCutoffUsesUTCPartialBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := now.UTC().Add(-24 * time.Hour).Truncate(time.Hour)
+	expected := now.UTC().Add(-24 * time.Hour).Truncate(time.Minute)
 	if !cutoff.Equal(expected) {
 		t.Fatalf("cutoff = %v, expected %v", cutoff, expected)
 	}

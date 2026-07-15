@@ -29,7 +29,7 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registration.Routes[0].Path != "/plugins/custom-id/stats" || len(registration.Resources) != 2 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" {
+	if registration.Routes[0].Path != "/plugins/custom-id/stats" || len(registration.Resources) != 3 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" {
 		t.Fatalf("unexpected registration: %+v", registration)
 	}
 	if registration.Routes[0].Menu != "" {
@@ -44,7 +44,7 @@ func TestManagementStatsAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
-		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats",
+		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests",
 	}}
 	defer runtime.shutdown()
 	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "m"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 3}}); err != nil {
@@ -67,6 +67,18 @@ func TestManagementStatsAndReset(t *testing.T) {
 	response, err = runtime.handleManagement(resourceStatsRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total_tokens":3`) {
 		t.Fatalf("resource stats response: %+v, %v", response, err)
+	}
+
+	requestsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: url.Values{"range": []string{"24h"}, "offset": []string{"0"}, "limit": []string{"20"}, "model": []string{"m"}}})
+	response, err = runtime.handleManagement(requestsRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":1`) || !strings.Contains(string(response.Body), `"model":"m"`) {
+		t.Fatalf("resource requests response: %+v, %v", response, err)
+	}
+
+	badRequestsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: url.Values{"offset": []string{"bad"}}})
+	response, _ = runtime.handleManagement(badRequestsRequest)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad requests query status = %d", response.StatusCode)
 	}
 
 	looseContentType, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.resetPath, Headers: http.Header{"Content-Type": []string{"application/jsonp"}}, Body: []byte(`{"confirm":"reset"}`)})

@@ -103,24 +103,13 @@ type SeriesPoint struct {
 	Counters
 }
 
-// ModelSeriesPoint preserves the hourly model split needed by the dashboard for
+// ModelSeriesPoint preserves the time-bucketed model split needed by the dashboard for
 // stacked trends, model drill-down, and cost calculations without retaining
 // individual prompt contents.
 type ModelSeriesPoint struct {
 	Hour  string `json:"hour"`
 	Model string `json:"model"`
 	Counters
-}
-
-// UsageRecord is the finest-grained persisted record available to exports. The
-// store intentionally persists hourly dimension aggregates rather than raw
-// request payloads so usage data remains bounded and prompt-safe.
-type UsageRecord struct {
-	Hour string `json:"hour"`
-	Dimensions
-	Counters
-	AverageLatencyNS uint64 `json:"average_latency_ns"`
-	AverageTTFTNS    uint64 `json:"average_ttft_ns"`
 }
 
 type StatsResponse struct {
@@ -133,7 +122,6 @@ type StatsResponse struct {
 	Groups        []GroupStats       `json:"groups"`
 	Series        []SeriesPoint      `json:"series"`
 	ModelSeries   []ModelSeriesPoint `json:"model_series"`
-	Records       []UsageRecord      `json:"records"`
 }
 
 func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, requestedRange string, now time.Time) (StatsResponse, error) {
@@ -148,7 +136,6 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		Hour  int64
 		Model string
 	}]Counters)
-	records := make([]UsageRecord, 0, len(data))
 	summary := Counters{}
 	for key, counters := range data {
 		if !cutoff.IsZero() && key.Hour < cutoff.Unix() {
@@ -174,13 +161,6 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		modelPoint.add(counters)
 		modelSeries[modelKey] = modelPoint
 
-		records = append(records, UsageRecord{
-			Hour:             time.Unix(key.Hour, 0).UTC().Format(time.RFC3339),
-			Dimensions:       key.Dimensions,
-			Counters:         counters,
-			AverageLatencyNS: counters.averageLatencyNS(),
-			AverageTTFTNS:    counters.averageTTFTNS(),
-		})
 		summary.add(counters)
 	}
 
@@ -235,13 +215,6 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		})
 	}
 
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].Hour != records[j].Hour {
-			return records[i].Hour < records[j].Hour
-		}
-		return compareDimensions(records[i].Dimensions, records[j].Dimensions) < 0
-	})
-
 	return StatsResponse{
 		SchemaVersion: 1,
 		GeneratedAt:   now.UTC(),
@@ -252,7 +225,6 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		Groups:        groupRows,
 		Series:        points,
 		ModelSeries:   modelPoints,
-		Records:       records,
 	}, nil
 }
 
@@ -260,11 +232,11 @@ func queryCutoff(value string, now time.Time) (string, time.Time, error) {
 	now = now.UTC()
 	switch value {
 	case "", "24h":
-		return "24h", now.Add(-24 * time.Hour).Truncate(time.Hour), nil
+		return "24h", now.Add(-24 * time.Hour).Truncate(time.Minute), nil
 	case "7d":
-		return "7d", now.Add(-7 * 24 * time.Hour).Truncate(time.Hour), nil
+		return "7d", now.Add(-7 * 24 * time.Hour).Truncate(time.Minute), nil
 	case "30d":
-		return "30d", now.Add(-30 * 24 * time.Hour).Truncate(time.Hour), nil
+		return "30d", now.Add(-30 * 24 * time.Hour).Truncate(time.Minute), nil
 	case "retention":
 		return "retention", time.Time{}, nil
 	default:
