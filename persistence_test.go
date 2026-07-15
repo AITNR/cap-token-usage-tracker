@@ -191,6 +191,27 @@ func TestStoreSyncOnRecord(t *testing.T) {
 	}
 }
 
+func TestStoreRecordForcesPersistenceWhenBatchingConfigured(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = false
+	config.FlushInterval = time.Hour
+	config.FlushMaxRecords = 100_000
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	usage := normalizedUsage{Dimensions: Dimensions{Model: "forced-sync"}, RequestedAt: time.Now().UTC(), Counters: Counters{Requests: 1, TotalTokens: 7}}
+	if err := store.Record(usage); err != nil {
+		t.Fatal(err)
+	}
+	diagnostics := store.Diagnostics()
+	if diagnostics.Processed != 1 || diagnostics.PersistedSinceOpen != 1 || diagnostics.MailboxDepth != 0 || diagnostics.PendingFlush != 0 {
+		t.Fatalf("Record returned before forced persistence: %+v", diagnostics)
+	}
+}
+
 func TestStoreReconfigureSamePath(t *testing.T) {
 	config := testConfig(t)
 	store, err := openStore(config)

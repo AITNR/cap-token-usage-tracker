@@ -112,6 +112,18 @@ type ModelSeriesPoint struct {
 	Counters
 }
 
+type UsageDiagnostics struct {
+	CallbacksReceived  uint64 `json:"callbacks_received"`
+	Decoded            uint64 `json:"decoded"`
+	Enqueued           uint64 `json:"enqueued"`
+	Processed          uint64 `json:"processed"`
+	PersistedSinceOpen uint64 `json:"persisted_since_open"`
+	MailboxDepth       int    `json:"mailbox_depth"`
+	PendingFlush       int64  `json:"pending_flush"`
+	DecodeErrors       uint64 `json:"decode_errors"`
+	EnqueueErrors      uint64 `json:"enqueue_errors"`
+}
+
 type StatsResponse struct {
 	SchemaVersion uint32             `json:"schema_version"`
 	GeneratedAt   time.Time          `json:"generated_at"`
@@ -122,6 +134,7 @@ type StatsResponse struct {
 	Groups        []GroupStats       `json:"groups"`
 	Series        []SeriesPoint      `json:"series"`
 	ModelSeries   []ModelSeriesPoint `json:"model_series"`
+	Diagnostics   UsageDiagnostics   `json:"diagnostics"`
 }
 
 func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, requestedRange string, now time.Time) (StatsResponse, error) {

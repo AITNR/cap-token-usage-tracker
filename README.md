@@ -12,7 +12,8 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 
 ## 功能
 
-- 用量回调先进入无固定容量的进程内 FIFO 队列，避免数据库刷盘、查询和重配置阻塞宿主分发
+- 默认可靠模式在 `usage.handle` 返回前完成 bbolt 提交，避免已回调记录因进程退出或内存队列积压而丢失；可显式启用异步批处理模式
+- 统计接口暴露从宿主回调、解码、入队、处理到持久化的链路诊断计数，便于准确区分宿主漏发与插件内部积压
 - 按 UTC 分钟持久化聚合，并保存逐请求用量元数据；不保存请求或响应正文
 - 按模型、提供商、执行器、别名、来源、认证类型、服务层级、推理强度和失败状态分组
 - 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟、TTFT、生成时间、TPS 和缓存命中
@@ -43,7 +44,17 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 plugins/linux/arm64/cap-token-usage-tracker.so
 ```
 
-CLIProxyAPI 配置示例：
+最小配置如下。默认配置已启用可靠模式，不需要修改或重新编译 CLIProxyAPI：
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    cap-token-usage-tracker:
+      enabled: true
+```
+
+如需指定持久化路径或调整保留策略，可使用完整配置：
 
 ```yaml
 plugins:
@@ -52,7 +63,6 @@ plugins:
   configs:
     cap-token-usage-tracker:
       enabled: true
-      priority: 0
       data_path: /var/lib/cliproxyapi/token-usage-tracker.db
       retention_days: 30
       flush_interval: 5s
@@ -66,9 +76,24 @@ plugins:
 | `retention_days` | `30` | 保留的 UTC 天数，范围 1–3650 |
 | `flush_interval` | `5s` | 批量刷盘最长间隔，范围 1 秒–1 小时 |
 | `flush_max_records` | `100` | 接收指定数量记录后立即刷盘 |
-| `sync_on_record` | `true` | 后台存储 actor 默认逐条提交已入队记录；设为 `false` 可启用批量刷盘以提高吞吐 |
+| `sync_on_record` | `true` | `true`：回调返回前完成记录处理和 bbolt 提交，优先保证不漏记；`false`：仅进入内存 FIFO 后返回，并按批次刷盘 |
 
-`usage.handle` 在完成解码并把记录放入进程内 FIFO 队列后立即返回，不再等待 bbolt 刷盘、仪表盘查询或插件重配置。这样可避免 CLIProxyAPI 异步分发用量时，前一条记录的磁盘 I/O 阻塞后续回调，导致后续请求上下文在进入插件前已经取消。`sync_on_record: true` 会让后台存储 actor 尽快逐条提交队列中的记录；设为 `false` 时按 `flush_interval` / `flush_max_records` 批量提交。正常 shutdown 会按 FIFO 排空队列并刷盘；进程被强制终止时，尚在内存队列中或尚未刷盘的记录仍可能丢失。
+默认 `sync_on_record: true` 时，`usage.handle` 会等待存储 actor 完成记录处理和 bbolt transaction，数据库提交成功后才向宿主返回。这与参考插件在回调内同步执行 SQLite `INSERT` 后再返回的可靠性策略一致，只需加载本插件即可生效，不依赖任何 CLIProxyAPI 宿主补丁。
+
+只有显式设置 `sync_on_record: false` 时，回调才会在记录进入进程内 FIFO 后立即返回，并按 `flush_interval` / `flush_max_records` 批量提交。该模式吞吐更高，但进程被强制终止时，尚在队列中或尚未刷盘的记录可能丢失。正常 shutdown 会按 FIFO 排空并刷盘。
+
+统计接口中的 `diagnostics` 可用于定位实际链路：
+
+| 字段 | 含义 |
+|---|---|
+| `callbacks_received` | 真正进入本插件 `usage.handle` 的次数 |
+| `decoded` / `enqueued` | 成功解码并被存储层接受的次数 |
+| `processed` | 存储 actor 已处理的次数 |
+| `persisted_since_open` | 本次打开数据库后已成功提交到 bbolt 的次数 |
+| `mailbox_depth` / `pending_flush` | 尚待 actor 处理 / 尚待刷盘的记录数 |
+| `decode_errors` / `enqueue_errors` | 解码或存储错误数 |
+
+默认可靠模式下，成功回调返回后 `callbacks_received`、`decoded`、`enqueued`、`processed` 和 `persisted_since_open` 应同步增长，且 `mailbox_depth` / `pending_flush` 应回到 0。`persisted_since_open` 是进程启动后的计数，不包含数据库中原有记录。
 
 修改 `data_path` 会切换到一个独立数据库，不会自动迁移或删除旧文件。
 
@@ -177,7 +202,8 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 
 ### Features
 
-- Usage callbacks first enter an unbounded in-process FIFO mailbox so database fsync, queries, and reconfiguration cannot block host delivery
+- Reliable mode commits each usage record to bbolt before `usage.handle` returns, preventing acknowledged callbacks from being lost to process exit or in-memory backlog; asynchronous batching remains opt-in
+- Statistics expose callback-to-persistence diagnostics so host-side non-delivery can be distinguished from plugin backlog or storage failures
 - Persistent aggregation by UTC minute plus per-request usage metadata; request and response bodies are not stored
 - Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
 - Counts requests, failures, input/output/reasoning/cached tokens, latency, TTFT, generation time, TPS, and cache hits
@@ -208,7 +234,17 @@ Place the shared library in the CLIProxyAPI platform plugin directory:
 plugins/linux/arm64/cap-token-usage-tracker.so
 ```
 
-CLIProxyAPI configuration example:
+The minimal configuration is shown below. Reliable mode is enabled by default and does not require patching or rebuilding CLIProxyAPI:
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    cap-token-usage-tracker:
+      enabled: true
+```
+
+Use the full configuration only when you need to customize persistence or retention:
 
 ```yaml
 plugins:
@@ -217,7 +253,6 @@ plugins:
   configs:
     cap-token-usage-tracker:
       enabled: true
-      priority: 0
       data_path: /var/lib/cliproxyapi/token-usage-tracker.db
       retention_days: 30
       flush_interval: 5s
@@ -231,9 +266,24 @@ plugins:
 | `retention_days` | `30` | Retention period in UTC days, range 1–3650 |
 | `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
 | `flush_max_records` | `100` | Flush immediately after receiving this many records |
-| `sync_on_record` | `true` | Makes the background store actor commit accepted records individually; set to `false` for higher-throughput batching |
+| `sync_on_record` | `true` | `true`: process and commit to bbolt before the callback returns; `false`: return after FIFO acceptance and flush in batches |
 
-`usage.handle` now returns as soon as the decoded record has entered the in-process FIFO mailbox; it no longer waits for bbolt fsync, dashboard queries, or plugin reconfiguration. This prevents one slow storage operation from delaying later host callbacks until their original request contexts have already been canceled. With `sync_on_record: true`, the background store actor commits queued records individually as soon as possible; `false` batches them according to `flush_interval` / `flush_max_records`. A normal shutdown drains the FIFO and flushes it. A forced process termination can still lose records that remain queued in memory or have not yet been flushed.
+With the default `sync_on_record: true`, `usage.handle` waits for the store actor to process the record and commit its bbolt transaction before acknowledging the host callback. This matches the reference plugin's durability strategy of returning only after its synchronous SQLite `INSERT` succeeds. Loading this plugin is sufficient; no CLIProxyAPI host patch is required.
+
+Only an explicit `sync_on_record: false` enables asynchronous batching: the callback returns after FIFO acceptance, and records are committed according to `flush_interval` / `flush_max_records`. This improves throughput, but a forced process termination can lose records still queued or awaiting a flush. Normal shutdown drains the FIFO and flushes it.
+
+The statistics response includes `diagnostics` for tracing the callback-to-persistence path:
+
+| Field | Meaning |
+|---|---|
+| `callbacks_received` | Calls that actually entered this plugin's `usage.handle` |
+| `decoded` / `enqueued` | Records successfully decoded and accepted by storage |
+| `processed` | Records processed by the store actor |
+| `persisted_since_open` | Records committed to bbolt since this database was opened |
+| `mailbox_depth` / `pending_flush` | Records awaiting actor processing / disk flush |
+| `decode_errors` / `enqueue_errors` | Decode or storage errors |
+
+In reliable mode, after a successful callback returns, `callbacks_received`, `decoded`, `enqueued`, `processed`, and `persisted_since_open` should advance together, while `mailbox_depth` and `pending_flush` return to zero. `persisted_since_open` excludes records that existed before process startup.
 
 Changing `data_path` switches to a separate database; the old file is not automatically migrated or deleted.
 

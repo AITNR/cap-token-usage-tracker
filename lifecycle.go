@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
@@ -36,6 +37,12 @@ type pluginRuntime struct {
 	store       *Store
 	config      Config
 	routes      registeredRoutes
+
+	usageCallbacks atomic.Uint64
+	usageDecoded   atomic.Uint64
+	usageEnqueued  atomic.Uint64
+	decodeErrors   atomic.Uint64
+	enqueueErrors  atomic.Uint64
 }
 
 var runtimeState = &pluginRuntime{}
@@ -108,19 +115,54 @@ func (r *pluginRuntime) applyConfig(config Config) error {
 }
 
 func (r *pluginRuntime) handleUsage(raw []byte) (map[string]any, error) {
+	r.usageCallbacks.Add(1)
 	usage, err := decodeUsage(raw, nowUTC())
 	if err != nil {
+		r.decodeErrors.Add(1)
 		return nil, withStatus(400, "%v", err)
 	}
+	r.usageDecoded.Add(1)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.store == nil {
+	store := r.store
+	if store == nil {
+		r.enqueueErrors.Add(1)
 		return nil, withStatus(503, "plugin storage is not initialized")
 	}
-	if err := r.store.Enqueue(usage); err != nil {
-		return nil, err
+
+	var storeErr error
+	if r.config.SyncOnRecord {
+		// Reliable mode mirrors the reference SQLite plugin: do not acknowledge
+		// the callback until the usage record has been committed to disk.
+		storeErr = store.Record(usage)
+	} else {
+		// Explicit batch mode only guarantees acceptance into the in-memory FIFO.
+		storeErr = store.Enqueue(usage)
 	}
+	if storeErr != nil {
+		r.enqueueErrors.Add(1)
+		return nil, storeErr
+	}
+	r.usageEnqueued.Add(1)
 	return map[string]any{}, nil
+}
+
+func (r *pluginRuntime) usageDiagnostics(store *Store) UsageDiagnostics {
+	diagnostics := UsageDiagnostics{
+		CallbacksReceived: r.usageCallbacks.Load(),
+		Decoded:           r.usageDecoded.Load(),
+		Enqueued:          r.usageEnqueued.Load(),
+		DecodeErrors:      r.decodeErrors.Load(),
+		EnqueueErrors:     r.enqueueErrors.Load(),
+	}
+	if store != nil {
+		storeDiagnostics := store.Diagnostics()
+		diagnostics.Processed = storeDiagnostics.Processed
+		diagnostics.PersistedSinceOpen = storeDiagnostics.PersistedSinceOpen
+		diagnostics.MailboxDepth = storeDiagnostics.MailboxDepth
+		diagnostics.PendingFlush = storeDiagnostics.PendingFlush
+	}
+	return diagnostics
 }
 
 func (r *pluginRuntime) shutdown() error {

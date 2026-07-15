@@ -21,7 +21,7 @@ typedef struct {
 	cliproxy_host_free_fn free_buffer;
 } cliproxy_host_api;
 
-typedef int (*cliproxy_plugin_call_fn)(const char*, const uint8_t*, size_t, cliproxy_buffer*);
+typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
 typedef void (*cliproxy_plugin_free_fn)(void*, size_t);
 typedef void (*cliproxy_plugin_shutdown_fn)(void);
 
@@ -36,7 +36,6 @@ extern int cliproxyPluginCall(char*, uint8_t*, size_t, cliproxy_buffer*);
 extern void cliproxyPluginFree(void*, size_t);
 extern void cliproxyPluginShutdown(void);
 
-extern int cliproxy_plugin_call_bridge(const char*, const uint8_t*, size_t, cliproxy_buffer*);
 */
 import "C"
 
@@ -63,7 +62,7 @@ func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_a
 		return 2
 	}
 	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
-	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxy_plugin_call_bridge)
+	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
 	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
 	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
 	return 0

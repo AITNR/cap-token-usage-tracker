@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -27,8 +28,9 @@ var (
 const persistenceSchemaVersion uint64 = 3
 
 type recordCommand struct {
-	usage normalizedUsage
-	resp  chan error
+	usage     normalizedUsage
+	resp      chan error
+	forceSync bool
 }
 
 type queryCommand struct {
@@ -82,6 +84,10 @@ type Store struct {
 	queueMu   sync.Mutex
 	queue     []any
 	queueHead int
+
+	processed    atomic.Uint64
+	persisted    atomic.Uint64
+	pendingFlush atomic.Int64
 }
 
 type storeActor struct {
@@ -97,6 +103,7 @@ type storeActor struct {
 	pendingRequests []RequestDetail
 	nextRequestSeq  uint64
 	modelPrices     map[string]ModelPrice
+	metrics         *Store
 }
 
 func openStore(config Config) (*Store, error) {
@@ -120,6 +127,7 @@ func openStore(config Config) (*Store, error) {
 	}
 
 	store := newStoreMailbox()
+	actor.metrics = store
 	go store.run(actor)
 	return store, nil
 }
@@ -132,19 +140,32 @@ func newStoreMailbox() *Store {
 }
 
 // Enqueue accepts a usage record into the store's FIFO mailbox without waiting
-// for disk I/O. Usage callbacks must stay independent from bbolt fsync latency,
-// dashboard scans, and reconfiguration work because the host dispatches usage
-// with the original request context; blocking here can make later callbacks
-// expire before they ever enter the plugin.
+// for disk I/O. It is used only when sync_on_record is explicitly disabled.
 func (s *Store) Enqueue(usage normalizedUsage) error {
 	return s.send(recordCommand{usage: usage})
 }
 
-// Record waits until the actor has processed the record. It is kept for
-// internal callers and tests that need synchronous persistence semantics.
+func (s *Store) Diagnostics() UsageDiagnostics {
+	if s == nil {
+		return UsageDiagnostics{}
+	}
+	s.queueMu.Lock()
+	mailboxDepth := len(s.queue) - s.queueHead
+	s.queueMu.Unlock()
+	return UsageDiagnostics{
+		Processed:          s.processed.Load(),
+		PersistedSinceOpen: s.persisted.Load(),
+		MailboxDepth:       mailboxDepth,
+		PendingFlush:       s.pendingFlush.Load(),
+	}
+}
+
+// Record waits until the actor has committed the record to bbolt. forceSync is
+// carried by the command so concurrent reconfiguration cannot weaken this
+// per-callback durability guarantee.
 func (s *Store) Record(usage normalizedUsage) error {
 	resp := make(chan error, 1)
-	if err := s.send(recordCommand{usage: usage, resp: resp}); err != nil {
+	if err := s.send(recordCommand{usage: usage, resp: resp, forceSync: true}); err != nil {
 		return err
 	}
 	return <-resp
@@ -272,6 +293,9 @@ func (s *Store) popCommand() (any, bool) {
 }
 
 func (s *Store) run(actor *storeActor) {
+	if actor.metrics == nil {
+		actor.metrics = s
+	}
 	ticker := time.NewTicker(actor.config.FlushInterval)
 	defer ticker.Stop()
 	defer close(s.done)
@@ -299,7 +323,8 @@ func (s *Store) run(actor *storeActor) {
 		case recordCommand:
 			// Always accept the new usage into the dirty in-memory aggregate. A
 			// previous transient flush failure must not make subsequent usage vanish.
-			err := actor.record(item.usage)
+			err := actor.record(item.usage, item.forceSync)
+			s.processed.Add(1)
 			if item.resp != nil {
 				item.resp <- err
 			}
@@ -442,7 +467,7 @@ func (a *storeActor) initialize() error {
 	})
 }
 
-func (a *storeActor) record(usage normalizedUsage) error {
+func (a *storeActor) record(usage normalizedUsage, forceSync bool) error {
 	key := aggregateKey{
 		Hour:       usage.RequestedAt.UTC().Truncate(time.Minute).Unix(),
 		Dimensions: usage.Dimensions,
@@ -456,12 +481,15 @@ func (a *storeActor) record(usage normalizedUsage) error {
 		a.nextRequestSeq = 1
 	}
 	a.pendingRequests = append(a.pendingRequests, requestDetailForUsage(usage, a.nextRequestSeq))
+	if a.metrics != nil {
+		a.metrics.pendingFlush.Add(1)
+	}
 	a.pending++
 	if a.lastUsed.IsZero() || usage.RequestedAt.After(a.lastUsed) {
 		a.lastUsed = usage.RequestedAt
 	}
 
-	if a.lastFlushErr != nil || a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
+	if forceSync || a.lastFlushErr != nil || a.config.SyncOnRecord || a.pending >= a.config.FlushMaxRecords {
 		a.lastFlushErr = a.flush(time.Now().UTC(), false)
 		return a.lastFlushErr
 	}
@@ -477,6 +505,7 @@ func (a *storeActor) retryFailedFlush(now time.Time) error {
 }
 
 func (a *storeActor) flush(now time.Time, force bool) error {
+	persistedRequests := len(a.pendingRequests)
 	shouldPrune := a.lastPruneAt.IsZero() || now.Sub(a.lastPruneAt) >= time.Hour
 	if len(a.dirty) == 0 && len(a.pendingRequests) == 0 && !shouldPrune && !force {
 		return nil
@@ -545,6 +574,10 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 		return fmt.Errorf("flush database: %w", err)
 	}
 
+	if a.metrics != nil && persistedRequests > 0 {
+		a.metrics.persisted.Add(uint64(persistedRequests))
+		a.metrics.pendingFlush.Add(-int64(persistedRequests))
+	}
 	clear(a.dirty)
 	a.pendingRequests = a.pendingRequests[:0]
 	a.pending = 0

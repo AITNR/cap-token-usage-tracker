@@ -149,11 +149,13 @@ func (r *pluginRuntime) statsResponse(request pluginapi.ManagementRequest) (plug
 	if r.store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	stats, err := r.store.Query(request.Query.Get("range"))
+	store := r.store
+	stats, err := store.Query(request.Query.Get("range"))
 	if err != nil {
 		status := errorHTTPStatus(err)
 		return jsonResponse(status, map[string]any{"error": err.Error()}), nil
 	}
+	stats.Diagnostics = r.usageDiagnostics(store)
 	return jsonResponse(http.StatusOK, stats), nil
 }
 

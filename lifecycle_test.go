@@ -63,12 +63,75 @@ func TestDecodeLifecycleEmptyUsesReliableDefaults(t *testing.T) {
 	}
 }
 
-func TestHandleUsageOnlyWaitsForMailboxAcceptance(t *testing.T) {
+func TestHandleUsageReliableModeWaitsForStoreCommit(t *testing.T) {
 	store := newStoreMailbox()
-	runtime := &pluginRuntime{store: store}
+	runtime := &pluginRuntime{store: store, config: Config{SyncOnRecord: true}}
 	raw, err := json.Marshal(pluginapi.UsageRecord{
 		Provider:    "test",
-		Model:       "non-blocking",
+		Model:       "reliable",
+		RequestedAt: time.Now().UTC(),
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  2,
+			OutputTokens: 3,
+			TotalTokens:  5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, handleErr := runtime.handleUsage(raw)
+		done <- handleErr
+	}()
+
+	var command recordCommand
+	deadline := time.Now().Add(time.Second)
+	for {
+		store.queueMu.Lock()
+		if len(store.queue)-store.queueHead == 1 {
+			var ok bool
+			command, ok = store.queue[store.queueHead].(recordCommand)
+			store.queueMu.Unlock()
+			if !ok {
+				t.Fatalf("unexpected queued command: %#v", store.queue[store.queueHead])
+			}
+			break
+		}
+		store.queueMu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("usage command was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if command.resp == nil || !command.forceSync || command.usage.Counters.TotalTokens != 5 {
+		t.Fatalf("unexpected reliable command: %#v", command)
+	}
+
+	select {
+	case err := <-done:
+		t.Fatalf("usage callback returned before persistence acknowledgement: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	command.resp <- nil
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("usage callback did not return after persistence acknowledgement")
+	}
+}
+
+func TestHandleUsageBatchModeOnlyWaitsForMailboxAcceptance(t *testing.T) {
+	store := newStoreMailbox()
+	runtime := &pluginRuntime{store: store, config: Config{SyncOnRecord: false}}
+	raw, err := json.Marshal(pluginapi.UsageRecord{
+		Provider:    "test",
+		Model:       "batch",
 		RequestedAt: time.Now().UTC(),
 		Detail: pluginapi.UsageDetail{
 			InputTokens:  2,
@@ -92,7 +155,7 @@ func TestHandleUsageOnlyWaitsForMailboxAcceptance(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("usage callback waited for the storage actor")
+		t.Fatal("batch-mode callback waited for the storage actor")
 	}
 
 	store.queueMu.Lock()
@@ -101,7 +164,100 @@ func TestHandleUsageOnlyWaitsForMailboxAcceptance(t *testing.T) {
 		t.Fatalf("queued commands = %d, want 1", len(store.queue)-store.queueHead)
 	}
 	command, ok := store.queue[store.queueHead].(recordCommand)
-	if !ok || command.resp != nil || command.usage.Counters.TotalTokens != 5 {
-		t.Fatalf("unexpected queued command: %#v", store.queue[store.queueHead])
+	if !ok || command.resp != nil || command.forceSync || command.usage.Counters.TotalTokens != 5 {
+		t.Fatalf("unexpected batch command: %#v", store.queue[store.queueHead])
+	}
+}
+
+func TestHandleUsageReliableModeReturnsAfterPersistence(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config}
+	defer runtime.shutdown()
+
+	raw, err := json.Marshal(pluginapi.UsageRecord{
+		Provider:    "test",
+		Model:       "committed-before-return",
+		RequestedAt: time.Now().UTC(),
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  2,
+			OutputTokens: 3,
+			TotalTokens:  5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.handleUsage(raw); err != nil {
+		t.Fatal(err)
+	}
+
+	diagnostics := runtime.usageDiagnostics(store)
+	if diagnostics.CallbacksReceived != 1 || diagnostics.Decoded != 1 || diagnostics.Enqueued != 1 || diagnostics.Processed != 1 || diagnostics.PersistedSinceOpen != 1 {
+		t.Fatalf("unexpected reliable-mode diagnostics: %+v", diagnostics)
+	}
+	if diagnostics.MailboxDepth != 0 || diagnostics.PendingFlush != 0 || diagnostics.DecodeErrors != 0 || diagnostics.EnqueueErrors != 0 {
+		t.Fatalf("reliable callback returned with backlog/errors: %+v", diagnostics)
+	}
+}
+
+func TestUsageDiagnosticsTrackCallbackToPersistence(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = false
+	config.FlushMaxRecords = 100_000
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config}
+	defer runtime.shutdown()
+
+	raw, err := json.Marshal(pluginapi.UsageRecord{
+		Provider:    "test",
+		Model:       "diagnostics",
+		RequestedAt: time.Now().UTC(),
+		Detail: pluginapi.UsageDetail{
+			InputTokens:  2,
+			OutputTokens: 3,
+			TotalTokens:  5,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const records = 256
+	for range records {
+		if _, err := runtime.handleUsage(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := runtime.handleUsage([]byte(`{"broken"`)); err == nil {
+		t.Fatal("invalid usage JSON should fail")
+	}
+
+	// A request query is ordered after every usage command and forces all
+	// processed request details to disk before returning.
+	page, err := store.QueryRequests("24h", 0, 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != records {
+		t.Fatalf("persisted request total = %d, want %d", page.Total, records)
+	}
+
+	diagnostics := runtime.usageDiagnostics(store)
+	if diagnostics.CallbacksReceived != records+1 || diagnostics.Decoded != records || diagnostics.Enqueued != records {
+		t.Fatalf("unexpected callback diagnostics: %+v", diagnostics)
+	}
+	if diagnostics.Processed != records || diagnostics.PersistedSinceOpen != records {
+		t.Fatalf("unexpected store diagnostics: %+v", diagnostics)
+	}
+	if diagnostics.MailboxDepth != 0 || diagnostics.PendingFlush != 0 || diagnostics.DecodeErrors != 1 || diagnostics.EnqueueErrors != 0 {
+		t.Fatalf("unexpected diagnostic backlog/errors: %+v", diagnostics)
 	}
 }

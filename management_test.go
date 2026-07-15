@@ -39,6 +39,7 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 
 func TestManagementStatsAndReset(t *testing.T) {
 	config := testConfig(t)
+	config.SyncOnRecord = true
 	store, err := openStore(config)
 	if err != nil {
 		t.Fatal(err)
@@ -61,6 +62,13 @@ func TestManagementStatsAndReset(t *testing.T) {
 	}
 	if response.Headers.Get("Cache-Control") != "no-store" {
 		t.Fatal("missing no-store header")
+	}
+	var stats StatsResponse
+	if err := json.Unmarshal(response.Body, &stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Diagnostics.Processed != 1 || stats.Diagnostics.PersistedSinceOpen != 1 {
+		t.Fatalf("stats diagnostics = %+v", stats.Diagnostics)
 	}
 
 	resourceStatsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceStatsPath, Query: url.Values{"range": []string{"24h"}}})
