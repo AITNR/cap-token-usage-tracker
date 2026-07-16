@@ -6,10 +6,10 @@
         <entry key="0">
           <value>
             <TabSessionState>
-              <option name="provider" value="codex" />
-              <option name="sessionId" value="019f63ea-a25d-7d31-83fb-42d2733d33b4" />
+              <option name="provider" value="claude" />
+              <option name="sessionId" value="0c230dd6-28e0-41ac-ac86-b4aeb7908b0d" />
               <option name="cwd" value="D:\c\cap-token-usage-tracker" />
-              <option name="model" value="gpt-5.6-sol" />
+              <option name="model" value="claude-fable-5[1m]" />
               <option name="permissionMode" value="bypassPermissions" />
             </TabSessionState>
           </value>

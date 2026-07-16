@@ -51,6 +51,9 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"innerHTML",
 		"fetch('stats')",
 		`fetch("stats")`,
+		`costFor(name,input,output)`,
+		`fetch('https://models.dev`,
+		`fetch("https://models.dev`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains unsafe pattern %q", forbidden)
@@ -75,10 +78,39 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`id="pricingDialog"`,
 		`id="pricingKeyInput"`,
 		`var pricesURL=resourceBase+'/prices'`,
+		`var costsURL=resourceBase+'/costs'`,
 		`var savePricesURL=managementBase+'/prices'`,
+		`var syncPricesURL=managementBase+'/prices/sync'`,
 		`function applyPrices(values)`,
+		`function aggregateCostSeries()`,
+		`function visibleCostSummary()`,
 		`async function savePricing()`,
-		`价格保存在插件数据库中`,
+		`async function syncPricing()`,
+		`price-cache-read`,
+		`price-cache-creation`,
+		`context-tier-controls`,
+		`add-context-tier`,
+		`remove-context-tier`,
+		`remove-model-price`,
+		`row.dataset.deleted='true'`,
+		`if(row.dataset.deleted==='true')return`,
+		`id="providerPriority"`,
+		`id="ignoredSuffixes"`,
+		`id="syncMappings"`,
+		`id="syncPrices"`,
+		`id="costCoverage"`,
+		`id="priceCoverageStatus"`,
+		`id="missingPriceStatus"`,
+		`id="lastSyncStatus"`,
+		`item.estimated_cost`,
+		`record.estimated_cost`,
+		`estimated.input_usd`,
+		`estimated.output_usd`,
+		`estimated.cache_read_usd`,
+		`estimated.cache_creation_usd`,
+		`estimated.total_usd`,
+		`sync_settings:settings`,
+		`价格和同步设置保存在插件数据库中`,
 		`async function exportCSV()`,
 		`function exportPNG()`,
 		`该时间段内暂无调用记录`,
@@ -102,6 +134,58 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing analytics feature %q", required)
+		}
+	}
+}
+
+func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`var costsURL=resourceBase+'/costs'`,
+		`var syncPricesURL=managementBase+'/prices/sync'`,
+		`api(costsURL+'?range='`,
+		`currentCosts.models`,
+		`currentCosts.series`,
+		`price_book_revision`,
+		`priced_requests`,
+		`unpriced_requests`,
+		`input_usd`,
+		`output_usd`,
+		`cache_read_usd`,
+		`cache_creation_usd`,
+		`total_usd`,
+		`estimated_cost`,
+		`accounting_mode`,
+		`tier_threshold`,
+		`context_tiers`,
+		`provider_priority`,
+		`ignored_suffixes`,
+		`mappings`,
+		`last_sync`,
+		`source:'models.dev'`,
+		`body:JSON.stringify({prices:next,sync_settings:settings})`,
+		`body:JSON.stringify({source:'models.dev',sync_settings:settings})`,
+		`renderVisuals();await loadRequests();return responses`,
+		`pricingDialog.addEventListener('close',function(){pricingKeyInput.value='';})`,
+		`价格覆盖`,
+		`未定价`,
+		`同步中`,
+		`同步失败`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing exact-cost/pricing contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`costFor(name,input,output)`,
+		`costFor(`,
+		`localStorage`,
+		`sessionStorage`,
+		`fetch('https://models.dev`,
+		`fetch("https://models.dev`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard contains forbidden pricing pattern %q", forbidden)
 		}
 	}
 }

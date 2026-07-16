@@ -31,11 +31,14 @@ type registrationCapabilities struct {
 }
 
 type pluginRuntime struct {
-	lifecycleMu sync.Mutex
-	mu          sync.RWMutex
-	store       *Store
-	config      Config
-	routes      registeredRoutes
+	lifecycleMu      sync.Mutex
+	priceSyncMu      sync.Mutex
+	mu               sync.RWMutex
+	store            *Store
+	config           Config
+	routes           registeredRoutes
+	modelsDevFetcher *modelsDevFetcher
+	priceSyncing     bool
 }
 
 var runtimeState = &pluginRuntime{}
