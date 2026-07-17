@@ -38,6 +38,7 @@ type pluginRuntime struct {
 	config           Config
 	routes           registeredRoutes
 	modelsDevFetcher *modelsDevFetcher
+	exchangeRates    *exchangeRateService
 	priceSyncing     bool
 }
 
@@ -135,6 +136,7 @@ func (r *pluginRuntime) shutdown() error {
 	r.store = nil
 	r.config = Config{}
 	r.routes = registeredRoutes{}
+	r.exchangeRates = nil
 	r.mu.Unlock()
 	if store == nil {
 		return nil

@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -75,7 +76,7 @@ type modelsDevMatchResult struct {
 	Unmatched int
 }
 
-func (r *pluginRuntime) syncModelsDev(settings *PriceSyncSettings) (ModelPricesResponse, error) {
+func (r *pluginRuntime) syncModelsDev(settings *PriceSyncSettings, sourceModels []string) (ModelPricesResponse, error) {
 	r.priceSyncMu.Lock()
 	if r.priceSyncing {
 		r.priceSyncMu.Unlock()
@@ -107,9 +108,9 @@ func (r *pluginRuntime) syncModelsDev(settings *PriceSyncSettings) (ModelPricesR
 			return ModelPricesResponse{}, withStatus(http.StatusBadRequest, "%v", err)
 		}
 	}
-	observed, err := store.ObservedModels()
+	models, err := normalizeSyncModels(sourceModels)
 	if err != nil {
-		return ModelPricesResponse{}, err
+		return ModelPricesResponse{}, withStatus(http.StatusBadRequest, "%v", err)
 	}
 	if fetcher == nil {
 		fetcher = newModelsDevFetcher()
@@ -121,7 +122,7 @@ func (r *pluginRuntime) syncModelsDev(settings *PriceSyncSettings) (ModelPricesR
 		return ModelPricesResponse{}, publicModelsDevError(err)
 	}
 	now := time.Now().UTC()
-	matched, err := matchModelsDevPrices(catalog, observed, activeSettings, now)
+	matched, err := matchModelsDevPrices(catalog, models, activeSettings, now)
 	if err != nil {
 		return ModelPricesResponse{}, withStatus(http.StatusBadGateway, "models.dev returned an invalid price catalog")
 	}
@@ -133,6 +134,33 @@ func (r *pluginRuntime) syncModelsDev(settings *PriceSyncSettings) (ModelPricesR
 		Unmatched:   matched.Unmatched,
 	}
 	return store.ApplyModelPriceSync(matched.Prices, activeSettings, metadata, priceBook.Revision)
+}
+
+func normalizeSyncModels(input []string) ([]string, error) {
+	if len(input) > maxModelPriceEntries {
+		return nil, fmt.Errorf("model synchronization must contain at most %d models", maxModelPriceEntries)
+	}
+	seen := make(map[string]struct{}, len(input))
+	models := make([]string, 0, len(input))
+	for _, raw := range input {
+		model := strings.TrimSpace(raw)
+		if model == "" {
+			continue
+		}
+		if !utf8.ValidString(model) || utf8.RuneCountInString(model) > maxDimensionRunes {
+			return nil, fmt.Errorf("synchronized model name %q is invalid or too long", model)
+		}
+		if _, exists := seen[model]; exists {
+			continue
+		}
+		seen[model] = struct{}{}
+		models = append(models, model)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("model synchronization requires at least one CLIProxyAPI model")
+	}
+	sort.Strings(models)
+	return models, nil
 }
 
 func publicModelsDevError(err error) error {

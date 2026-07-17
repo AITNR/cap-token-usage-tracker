@@ -42,6 +42,22 @@ func TestMatchModelsDevPricesUsesPrioritySuffixAndContextTiers(t *testing.T) {
 	}
 }
 
+func TestNormalizeSyncModelsValidatesCLIProxyAPIList(t *testing.T) {
+	models, err := normalizeSyncModels([]string{" model-b ", "model-a", "model-b", ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 2 || models[0] != "model-a" || models[1] != "model-b" {
+		t.Fatalf("normalized models = %#v", models)
+	}
+	if _, err := normalizeSyncModels(nil); err == nil {
+		t.Fatal("accepted empty CLIProxyAPI model list")
+	}
+	if _, err := normalizeSyncModels([]string{strings.Repeat("m", maxDimensionRunes+1)}); err == nil {
+		t.Fatal("accepted overlong CLIProxyAPI model name")
+	}
+}
+
 func TestMatchModelsDevPricesAppliesExplicitMapping(t *testing.T) {
 	cost := modelsDevCost{Input: 2}
 	catalog := map[string]modelsDevProvider{

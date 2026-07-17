@@ -32,7 +32,7 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registration.Routes) != 4 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || registration.Routes[3].Path != "/plugins/custom-id/prices/sync" || len(registration.Resources) != 5 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/costs" || registration.Resources[4].Path != "/prices" {
+	if len(registration.Routes) != 4 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || registration.Routes[3].Path != "/plugins/custom-id/prices/sync" || len(registration.Resources) != 6 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/costs" || registration.Resources[4].Path != "/exchange-rate" || registration.Resources[5].Path != "/prices" {
 		t.Fatalf("unexpected registration: %+v", registration)
 	}
 	if registration.Routes[0].Menu != "" {
@@ -47,7 +47,7 @@ func TestManagementStatsAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
-		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests", resourceCostsPath: "/v0/resource/plugins/test/costs", pricesPath: "/v0/management/plugins/test/prices", priceSyncPath: "/v0/management/plugins/test/prices/sync", resourcePricesPath: "/v0/resource/plugins/test/prices",
+		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests", resourceCostsPath: "/v0/resource/plugins/test/costs", resourceExchangeRatePath: "/v0/resource/plugins/test/exchange-rate", pricesPath: "/v0/management/plugins/test/prices", priceSyncPath: "/v0/management/plugins/test/prices/sync", resourcePricesPath: "/v0/resource/plugins/test/prices",
 	}}
 	defer runtime.shutdown()
 	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "m"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 3}}); err != nil {
@@ -103,7 +103,7 @@ func TestManagementStatsAndReset(t *testing.T) {
 	}))
 	defer catalogServer.Close()
 	runtime.modelsDevFetcher = &modelsDevFetcher{client: catalogServer.Client(), url: catalogServer.URL}
-	syncRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.priceSyncPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"source":"models.dev"}`)})
+	syncRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.priceSyncPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"source":"models.dev","models":["m"]}`)})
 	response, err = runtime.handleManagement(syncRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"skipped_manual":1`) {
 		t.Fatalf("price sync response: %+v, %v", response, err)
@@ -131,6 +131,12 @@ func TestManagementStatsAndReset(t *testing.T) {
 		t.Fatalf("unknown sync field status = %d body=%s", response.StatusCode, response.Body)
 	}
 
+	emptyModelsSyncRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.priceSyncPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"source":"models.dev","models":[]}`)})
+	response, _ = runtime.handleManagement(emptyModelsSyncRequest)
+	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(response.Body), "at least one CLIProxyAPI model") {
+		t.Fatalf("empty sync models status = %d body=%s", response.StatusCode, response.Body)
+	}
+
 	badRequestsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: url.Values{"offset": []string{"bad"}}})
 	response, _ = runtime.handleManagement(badRequestsRequest)
 	if response.StatusCode != http.StatusBadRequest {
@@ -152,6 +158,35 @@ func TestManagementStatsAndReset(t *testing.T) {
 	response, _ = runtime.handleManagement(goodReset)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("good reset status = %d body=%s", response.StatusCode, response.Body)
+	}
+}
+
+func TestSyncModelsDevUsesProvidedCLIModels(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config}
+	defer runtime.shutdown()
+	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "usage-only"}, RequestedAt: time.Now().UTC(), Counters: Counters{Requests: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"openai":{"models":{"cli-only":{"cost":{"input":1,"output":2}},"usage-only":{"cost":{"input":9,"output":9}}}}}`))
+	}))
+	defer server.Close()
+	runtime.modelsDevFetcher = &modelsDevFetcher{client: server.Client(), url: server.URL}
+	response, err := runtime.syncModelsDev(nil, []string{"cli-only"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := response.Prices["cli-only"]; !ok {
+		t.Fatalf("CLIProxyAPI model was not synchronized: %+v", response.Prices)
+	}
+	if _, ok := response.Prices["usage-only"]; ok {
+		t.Fatalf("usage-only model was synchronized: %+v", response.Prices)
 	}
 }
 
@@ -178,7 +213,7 @@ func TestConcurrentPriceSyncReturnsConflict(t *testing.T) {
 	}))
 	defer server.Close()
 	runtime.modelsDevFetcher = &modelsDevFetcher{client: server.Client(), url: server.URL}
-	raw, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.priceSyncPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"source":"models.dev"}`)})
+	raw, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPost, Path: runtime.routes.priceSyncPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"source":"models.dev","models":["m"]}`)})
 	firstDone := make(chan pluginapi.ManagementResponse, 1)
 	go func() {
 		response, _ := runtime.handleManagement(raw)
@@ -224,7 +259,7 @@ func TestStalePriceSyncDoesNotOverwriteNewSettings(t *testing.T) {
 	runtime.modelsDevFetcher = &modelsDevFetcher{client: server.Client(), url: server.URL}
 	done := make(chan error, 1)
 	go func() {
-		_, err := runtime.syncModelsDev(nil)
+		_, err := runtime.syncModelsDev(nil, []string{"m"})
 		done <- err
 	}()
 	<-started

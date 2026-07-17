@@ -18,8 +18,8 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 支持最近 24 小时、7 天、30 天或全部保留数据，趋势图可按分钟/小时/日/周/月聚合
 - 自包含中文仪表盘，无第三方前端依赖，包含指标卡片、堆叠 Token 趋势、模型环形占比、精确费用趋势、模型效率散点图和逐请求明细
 - 支持 Input、Output、Cache Read、Cache Creation 四类模型价格、逐请求 Context Tier、免费模型、价格覆盖率和缺价提示
-- 支持从 models.dev 手动同步当前保留数据中出现的模型价格，可配置提供商优先级、忽略后缀和显式模型映射；手工价格优先
-- 支持模型下钻联动、趋势图滚轮缩放/平移、当前筛选数据 CSV 和 Dashboard PNG 导出
+- 支持从 models.dev 手动同步 CLIProxyAPI `/v1/models` 当前返回的模型价格，可配置提供商优先级、忽略后缀和显式模型映射；手工价格优先
+- 支持模型下钻联动、趋势图滚轮缩放/平移、移动端自适应坐标轴、总 Token 完整/k/m 切换、全页面 USD/CNY 最新汇率显示、当前筛选数据 CSV 和 Dashboard PNG 导出
 - 主题由 CLIProxyAPI Management Center 统一控制，自动同步跟随系统、纯白、羊毛纸和暗色模式
 - 数据重置需 CLIProxyAPI 管理鉴权和显式 `reset` 确认
 - Linux ARM64 `c-shared` 构建
@@ -81,6 +81,7 @@ plugins:
 - 仪表盘只读统计（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
 - 逐请求明细与当前价格下的 `estimated_cost`（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=24h&offset=0&limit=100&model=gpt-4.1`
 - 逐请求精确汇总费用（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/costs?range=24h`
+- 最新 USD/CNY 显示汇率（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/exchange-rate`
 - 模型价格、同步设置和最近同步结果读取（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/prices`
 - 受保护统计：`GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
 - 模型价格完整替换保存（需要 management key）：`PUT /v0/management/plugins/cap-token-usage-tracker/prices`
@@ -89,7 +90,7 @@ plugins:
 
 统计范围：`24h`、`7d`、`30d`、`retention`。逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
 
-Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。保存模型价格、同步 models.dev 或重置数据时会要求输入 Management Key；密钥仅用于当次请求，关闭对话框后会清空，不会写入插件数据库、浏览器存储或 URL。模型价格、同步设置和同步来源元数据保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除价格簿。
+Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。价格弹窗使用临时 CLIProxyAPI API Key 从同源 `/v1/models` 加载当前模型目录；保存价格、同步 models.dev 或重置数据时仍要求 Management Key。两种密钥都只保存在当前 DOM/内存中，关闭对话框后清空，不会写入插件数据库、浏览器存储或 URL。模型价格、同步设置和同步来源元数据保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除价格簿。
 
 ## 价格、Context Tier 与费用估算
 
@@ -106,7 +107,9 @@ Context Tier 按**单次请求**选择，而不是按模型或时间段聚合总
 
 所有费用都是使用**当前价格簿**对保留的逐请求数据重新估算。修改或同步价格后，历史请求的预估费用会随之变化；这些值不是供应商账单，也不是请求发生时的价格快照。显式保存四类价格均为 0 的模型表示免费模型，仍计入“已定价”覆盖率。`PUT /prices` 是完整替换：省略某个已有模型即删除该价格；未修改的 models.dev 条目保留同步来源，编辑后转为手工覆盖。
 
-models.dev 同步只导入当前 retention 中实际出现的模型，不保存整个目录。默认提供商优先级为 `openai, google, anthropic`，并支持忽略模型后缀及 `source=target` 显式映射。手工价格不会被后续同步覆盖。同步使用固定的 `https://models.dev/api.json`、标准 Go HTTP 代理环境变量、约 15 秒超时和 16 MiB 响应上限；并发同步或同步期间价格簿被修改会返回 HTTP 409，远端超时返回 504，其他目录/网络错误返回 502。
+models.dev 同步只导入同步操作前从 CLIProxyAPI `/v1/models` 重新获取的当前模型，不再使用 retention 中的历史用量模型，也不保存整个 models.dev 目录。默认提供商优先级为 `openai, google, anthropic`，并支持忽略模型后缀及 `source=target` 显式映射。手工价格不会被后续同步覆盖。同步使用固定的 `https://models.dev/api.json`、标准 Go HTTP 代理环境变量、约 15 秒超时和 16 MiB 响应上限；并发同步或同步期间价格簿被修改会返回 HTTP 409，远端超时返回 504，其他目录/网络错误返回 502。
+
+USD/CNY 切换只改变页面与 PNG 的显示：价格簿、后端 `*_usd` 字段和 CSV 始终保持 USD。插件通过固定 HTTPS 汇率源获取最新 USD/CNY，进程内缓存 1 小时；刷新失败时最多使用 24 小时内的缓存汇率并在页面标记，完全无可用汇率时保持 USD。价格删除在弹窗中先显示为可撤销的“待保存删除”，保存完整价格簿后才会重新计算历史费用。
 
 当上游 `TotalTokens <= 0` 时，新接收记录按 `max(input,0) + max(output,0) + max(reasoning,0)` 饱和求和；若结果仍为 0，再使用正数 `CachedTokens`。`CacheReadTokens` 和 `CacheCreationTokens` 不参与该 fallback，已有历史记录不会被重写。
 
@@ -205,8 +208,8 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 - Supports the last 24 hours, 7 days, 30 days, or all retained data, with minute/hour/day/week/month trend granularity
 - Self-contained Chinese dashboard with no third-party frontend dependencies, including stat cards, stacked Token trends, a model doughnut chart, exact cost trends, a model-efficiency scatter plot, and per-request details
 - Supports Input, Output, Cache Read, and Cache Creation prices, per-request context tiers, free models, pricing coverage, and missing-price reporting
-- Supports manual synchronization of observed models from models.dev with configurable provider priority, ignored suffixes, and explicit model mappings; manual prices take precedence
-- Supports linked model drill-down, wheel zoom/pan for trends, filtered CSV export, and Dashboard PNG export
+- Supports manual synchronization from models.dev for the current models returned by CLIProxyAPI `/v1/models`, with configurable provider priority, ignored suffixes, and explicit model mappings; manual prices take precedence
+- Supports linked model drill-down, wheel zoom/pan, responsive mobile chart axes, full/k/m total-Token display, dashboard-wide USD/CNY latest-rate display, filtered CSV export, and Dashboard PNG export
 - Theme is controlled by the CLIProxyAPI Management Center and automatically syncs Follow System, Pure White, Wool Paper, and Dark modes
 - Data reset requires CLIProxyAPI management authentication and explicit `reset` confirmation
 - Linux ARM64 `c-shared` build
@@ -268,6 +271,7 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 - Dashboard read-only statistics (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=24h`
 - Per-request details with current-price `estimated_cost` (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=24h&offset=0&limit=100&model=gpt-4.1`
 - Exact per-request-derived cost summary (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/costs?range=24h`
+- Latest USD/CNY display exchange rate (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/exchange-rate`
 - Model prices, synchronization settings, and last synchronization result (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/prices`
 - Protected statistics: `GET /v0/management/plugins/cap-token-usage-tracker/stats?range=24h`
 - Full-replacement model-price save (management key required): `PUT /v0/management/plugins/cap-token-usage-tracker/prices`
@@ -276,7 +280,7 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 
 Statistics ranges: `24h`, `7d`, `30d`, `retention`. Request details are returned newest first; `offset` must be a non-negative integer, `limit` defaults to 100 and is capped at 500, and optional `model` applies an exact model filter.
 
-The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. A Management Key is requested when saving prices, synchronizing models.dev, or resetting data; it is used only for that request, cleared when the dialog closes, and never written to the plugin database, browser storage, or URL. Prices, synchronization settings, and provenance are stored in bbolt, survive page refreshes and service restarts, and are not removed by statistics reset.
+The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. The pricing dialog uses a temporary CLIProxyAPI API Key to load the current model directory from same-origin `/v1/models`; a Management Key is still required to save prices, synchronize models.dev, or reset data. Both keys exist only in the current DOM/memory, are cleared when the dialog closes, and are never written to the plugin database, browser storage, or URL. Prices, synchronization settings, and provenance are stored in bbolt, survive page refreshes and service restarts, and are not removed by statistics reset.
 
 ### Pricing, Context Tiers, and Cost Estimation
 
@@ -293,7 +297,9 @@ Cost calculation prefers `CacheReadTokens` and falls back to the compatibility `
 
 All costs are **current-price estimates** over retained per-request records. Changing or synchronizing prices reprices historical requests; the result is neither a provider invoice nor a request-time price snapshot. An explicitly saved model with all four rates set to zero is a valid free model and still counts as priced coverage. `PUT /prices` is a full replacement: omitting an existing model deletes it. An unchanged models.dev entry retains its provenance; editing it creates a manual override.
 
-models.dev synchronization imports only models observed within the current retention window, not the full catalog. The default provider priority is `openai, google, anthropic`; ignored model suffixes and explicit `source=target` mappings are configurable. Manual prices are never overwritten by synchronization. Runtime synchronization uses the fixed `https://models.dev/api.json` endpoint, standard Go HTTP proxy environment variables, an approximately 15-second timeout, and a 16 MiB response limit. Concurrent synchronization or a price-book change during an in-flight synchronization returns HTTP 409; remote timeout returns 504 and other catalog/network failures return 502.
+models.dev synchronization imports only the current model list freshly loaded from CLIProxyAPI `/v1/models` before the synchronization request; it no longer uses historical models observed in the retention window and never stores the full models.dev catalog. The default provider priority is `openai, google, anthropic`; ignored model suffixes and explicit `source=target` mappings are configurable. Manual prices are never overwritten by synchronization. Runtime synchronization uses the fixed `https://models.dev/api.json` endpoint, standard Go HTTP proxy environment variables, an approximately 15-second timeout, and a 16 MiB response limit. Concurrent synchronization or a price-book change during an in-flight synchronization returns HTTP 409; remote timeout returns 504 and other catalog/network failures return 502.
+
+USD/CNY switching affects only dashboard and PNG display. The price book, backend `*_usd` fields, and CSV always remain in USD. The plugin fetches the latest USD/CNY rate from a fixed HTTPS provider, caches it in-process for one hour, and may use a cache no older than 24 hours after refresh failure while marking it as stale. If no rate is available, display remains in USD. Deleting a price first creates a reversible pending-delete draft in the dialog; retained-request costs are recalculated only after the complete price book is saved.
 
 For newly received records where upstream `TotalTokens <= 0`, the plugin uses a saturating positive sum of Input + Output + Reasoning. If that sum is still zero, it falls back to positive `CachedTokens`. Cache Read and Cache Creation do not enter this fallback, and existing historical records are not rewritten.
 
