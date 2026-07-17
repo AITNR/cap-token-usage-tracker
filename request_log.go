@@ -17,21 +17,23 @@ type RequestDetail struct {
 	Time     time.Time `json:"time"`
 	Dimensions
 	Counters
-	Result       string  `json:"result"`
-	LatencyNS    uint64  `json:"latency_ns"`
-	TTFTNS       uint64  `json:"ttft_ns"`
-	GenerationNS uint64  `json:"generation_ns"`
-	TPS          float64 `json:"tps"`
-	CacheHit     bool    `json:"cache_hit"`
+	Result        string         `json:"result"`
+	LatencyNS     uint64         `json:"latency_ns"`
+	TTFTNS        uint64         `json:"ttft_ns"`
+	GenerationNS  uint64         `json:"generation_ns"`
+	TPS           float64        `json:"tps"`
+	CacheHit      bool           `json:"cache_hit"`
+	EstimatedCost *EstimatedCost `json:"estimated_cost,omitempty"`
 }
 
 type RequestPage struct {
-	GeneratedAt time.Time       `json:"generated_at"`
-	Range       string          `json:"range"`
-	Total       int             `json:"total"`
-	Offset      int             `json:"offset"`
-	Limit       int             `json:"limit"`
-	Items       []RequestDetail `json:"items"`
+	GeneratedAt       time.Time       `json:"generated_at"`
+	Range             string          `json:"range"`
+	PriceBookRevision uint64          `json:"price_book_revision"`
+	Total             int             `json:"total"`
+	Offset            int             `json:"offset"`
+	Limit             int             `json:"limit"`
+	Items             []RequestDetail `json:"items"`
 }
 
 func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail {

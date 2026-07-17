@@ -31,11 +31,15 @@ type registrationCapabilities struct {
 }
 
 type pluginRuntime struct {
-	lifecycleMu sync.Mutex
-	mu          sync.RWMutex
-	store       *Store
-	config      Config
-	routes      registeredRoutes
+	lifecycleMu      sync.Mutex
+	priceSyncMu      sync.Mutex
+	mu               sync.RWMutex
+	store            *Store
+	config           Config
+	routes           registeredRoutes
+	modelsDevFetcher *modelsDevFetcher
+	exchangeRates    *exchangeRateService
+	priceSyncing     bool
 }
 
 var runtimeState = &pluginRuntime{}
@@ -132,6 +136,7 @@ func (r *pluginRuntime) shutdown() error {
 	r.store = nil
 	r.config = Config{}
 	r.routes = registeredRoutes{}
+	r.exchangeRates = nil
 	r.mu.Unlock()
 	if store == nil {
 		return nil

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"regexp"
@@ -20,14 +22,17 @@ type managementRegistrationResponse struct {
 }
 
 type registeredRoutes struct {
-	pluginID             string
-	statsPath            string
-	resetPath            string
-	dashboardPath        string
-	resourceStatsPath    string
-	resourceRequestsPath string
-	pricesPath           string
-	resourcePricesPath   string
+	pluginID                 string
+	statsPath                string
+	resetPath                string
+	dashboardPath            string
+	resourceStatsPath        string
+	resourceRequestsPath     string
+	resourceCostsPath        string
+	resourceExchangeRatePath string
+	pricesPath               string
+	priceSyncPath            string
+	resourcePricesPath       string
 }
 
 func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationResponse, error) {
@@ -41,14 +46,17 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 	}
 
 	routes := registeredRoutes{
-		pluginID:             pluginID,
-		statsPath:            "/v0/management/plugins/" + pluginID + "/stats",
-		resetPath:            "/v0/management/plugins/" + pluginID + "/reset",
-		dashboardPath:        "/v0/resource/plugins/" + pluginID + "/dashboard",
-		resourceStatsPath:    "/v0/resource/plugins/" + pluginID + "/stats",
-		resourceRequestsPath: "/v0/resource/plugins/" + pluginID + "/requests",
-		pricesPath:           "/v0/management/plugins/" + pluginID + "/prices",
-		resourcePricesPath:   "/v0/resource/plugins/" + pluginID + "/prices",
+		pluginID:                 pluginID,
+		statsPath:                "/v0/management/plugins/" + pluginID + "/stats",
+		resetPath:                "/v0/management/plugins/" + pluginID + "/reset",
+		dashboardPath:            "/v0/resource/plugins/" + pluginID + "/dashboard",
+		resourceStatsPath:        "/v0/resource/plugins/" + pluginID + "/stats",
+		resourceRequestsPath:     "/v0/resource/plugins/" + pluginID + "/requests",
+		resourceCostsPath:        "/v0/resource/plugins/" + pluginID + "/costs",
+		resourceExchangeRatePath: "/v0/resource/plugins/" + pluginID + "/exchange-rate",
+		pricesPath:               "/v0/management/plugins/" + pluginID + "/prices",
+		priceSyncPath:            "/v0/management/plugins/" + pluginID + "/prices/sync",
+		resourcePricesPath:       "/v0/resource/plugins/" + pluginID + "/prices",
 	}
 	r.mu.Lock()
 	r.routes = routes
@@ -69,7 +77,12 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Method:      http.MethodPut,
 				Path:        "/plugins/" + pluginID + "/prices",
-				Description: "Persist per-model input and output token prices.",
+				Description: "Persist per-model input, output, cache, and context-tier token prices.",
+			},
+			{
+				Method:      http.MethodPost,
+				Path:        "/plugins/" + pluginID + "/prices/sync",
+				Description: "Synchronize CLIProxyAPI model prices from models.dev.",
 			},
 		},
 		Resources: []pluginapi.ResourceRoute{
@@ -85,6 +98,14 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Path:        "/requests",
 				Description: "Read paginated per-request token usage details.",
+			},
+			{
+				Path:        "/costs",
+				Description: "Read exact per-request-derived estimated cost statistics.",
+			},
+			{
+				Path:        "/exchange-rate",
+				Description: "Read the cached latest USD to CNY exchange rate for dashboard display.",
 			},
 			{
 				Path:        "/prices",
@@ -123,6 +144,16 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return r.requestsResponse(request)
+	case routes.resourceCostsPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.costsResponse(request)
+	case routes.resourceExchangeRatePath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.exchangeRateResponse()
 	case routes.resourcePricesPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
@@ -133,6 +164,11 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodPut), nil
 		}
 		return r.savePricesResponse(request)
+	case routes.priceSyncPath:
+		if !strings.EqualFold(request.Method, http.MethodPost) {
+			return methodNotAllowed(http.MethodPost), nil
+		}
+		return r.syncPricesResponse(request)
 	case routes.resetPath:
 		if !strings.EqualFold(request.Method, http.MethodPost) {
 			return methodNotAllowed(http.MethodPost), nil
@@ -178,17 +214,47 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 	return jsonResponse(http.StatusOK, page), nil
 }
 
-func (r *pluginRuntime) pricesResponse() (pluginapi.ManagementResponse, error) {
+func (r *pluginRuntime) costsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.store == nil {
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	prices, err := r.store.QueryModelPrices()
+	costs, err := store.QueryCosts(request.Query.Get("range"))
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
-	return jsonResponse(http.StatusOK, ModelPricesResponse{Prices: prices}), nil
+	return jsonResponse(http.StatusOK, costs), nil
+}
+
+func (r *pluginRuntime) exchangeRateResponse() (pluginapi.ManagementResponse, error) {
+	r.mu.Lock()
+	service := r.exchangeRates
+	if service == nil {
+		service = newExchangeRateService()
+		r.exchangeRates = service
+	}
+	r.mu.Unlock()
+	rate, err := service.latest()
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, rate), nil
+}
+
+func (r *pluginRuntime) pricesResponse() (pluginapi.ManagementResponse, error) {
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	priceBook, err := store.QueryPriceBook()
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, priceBook), nil
 }
 
 func (r *pluginRuntime) savePricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
@@ -196,20 +262,69 @@ func (r *pluginRuntime) savePricesResponse(request pluginapi.ManagementRequest) 
 	if err != nil || !strings.EqualFold(contentType, "application/json") {
 		return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/json"}), nil
 	}
-	var input ModelPricesResponse
-	if err := json.Unmarshal(request.Body, &input); err != nil {
+	if len(request.Body) > 2<<20 {
+		return jsonResponse(http.StatusRequestEntityTooLarge, map[string]any{"error": "model prices JSON is too large"}), nil
+	}
+	var input struct {
+		Prices       map[string]ModelPrice `json:"prices"`
+		SyncSettings *PriceSyncSettings    `json:"sync_settings,omitempty"`
+	}
+	if err := decodeStrictJSON(request.Body, &input); err != nil || input.Prices == nil {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid model prices JSON"}), nil
 	}
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-	if r.store == nil {
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	prices, err := r.store.SaveModelPrices(input.Prices)
+	priceBook, err := store.SavePriceBook(input.Prices, input.SyncSettings)
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
-	return jsonResponse(http.StatusOK, ModelPricesResponse{Prices: prices}), nil
+	return jsonResponse(http.StatusOK, priceBook), nil
+}
+
+func (r *pluginRuntime) syncPricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	contentType, _, err := mime.ParseMediaType(request.Headers.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/json"}), nil
+	}
+	if len(request.Body) > 2<<20 {
+		return jsonResponse(http.StatusRequestEntityTooLarge, map[string]any{"error": "model price synchronization JSON is too large"}), nil
+	}
+	var input struct {
+		Source       string             `json:"source"`
+		Models       []string           `json:"models"`
+		SyncSettings *PriceSyncSettings `json:"sync_settings,omitempty"`
+	}
+	if err := decodeStrictJSON(request.Body, &input); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "invalid model price synchronization JSON"}), nil
+	}
+	if input.Source != "" && input.Source != priceSourceModelsDev {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": `source must be "models.dev"`}), nil
+	}
+	priceBook, err := r.syncModelsDev(input.SyncSettings, input.Models)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, priceBook), nil
+}
+
+func decodeStrictJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple JSON values are not allowed")
+		}
+		return err
+	}
+	return nil
 }
 
 func parseNonNegativeQueryInt(raw string, fallback int, name string) (int, error) {

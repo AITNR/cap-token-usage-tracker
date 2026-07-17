@@ -85,7 +85,7 @@ func TestModelPricesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(saved) != 1 || saved["gpt-test"].Output != 10 {
+	if len(saved) != 2 || saved["gpt-test"].Output != 10 || saved["zero"].Source != priceSourceManual {
 		t.Fatalf("saved prices = %+v", saved)
 	}
 	if err := store.Close(); err != nil {
@@ -98,14 +98,14 @@ func TestModelPricesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	}
 	defer store.Close()
 	prices, err := store.QueryModelPrices()
-	if err != nil || len(prices) != 1 || prices["gpt-test"].Input != 2.5 {
+	if err != nil || len(prices) != 2 || prices["gpt-test"].Input != 2.5 || prices["zero"].Source != priceSourceManual {
 		t.Fatalf("prices after restart = %+v, %v", prices, err)
 	}
 	if err := store.Reset(); err != nil {
 		t.Fatal(err)
 	}
 	prices, err = store.QueryModelPrices()
-	if err != nil || len(prices) != 1 || prices["gpt-test"].Output != 10 {
+	if err != nil || len(prices) != 2 || prices["gpt-test"].Output != 10 || prices["zero"].Source != priceSourceManual {
 		t.Fatalf("stats reset removed model prices: %+v, %v", prices, err)
 	}
 }
@@ -460,6 +460,33 @@ func TestRequestDetailsRespectRetention(t *testing.T) {
 	}
 }
 
+func TestObservedModelsRespectRetention(t *testing.T) {
+	config := testConfig(t)
+	config.RetentionDays = 1
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	for model, requestedAt := range map[string]time.Time{
+		"expired": now.Add(-48 * time.Hour),
+		"current": now.Add(-time.Hour),
+	} {
+		if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: model}, RequestedAt: requestedAt, Counters: Counters{Requests: 1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	models, err := store.ObservedModels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0] != "current" {
+		t.Fatalf("observed models = %+v", models)
+	}
+}
+
 func TestSchemaOneDatabaseMigratesRequestBucket(t *testing.T) {
 	config := testConfig(t)
 	db, err := bolt.Open(config.DataPath, 0o600, nil)
@@ -507,6 +534,118 @@ func TestSchemaOneDatabaseMigratesRequestBucket(t *testing.T) {
 		}
 		if version := decodeUint64(tx.Bucket(metaBucket).Get(schemaKey)); version != persistenceSchemaVersion {
 			return fmt.Errorf("schema version = %d", version)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSchemaThreePricesMigrateAtomically(t *testing.T) {
+	config := testConfig(t)
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPrices, _ := json.Marshal(map[string]any{
+		"paid": map[string]any{"input": 2.5, "output": 10.0},
+		"free": map[string]any{"input": 0.0, "output": 0.0},
+	})
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta, err := tx.CreateBucket(metaBucket)
+		if err != nil {
+			return err
+		}
+		if err := meta.Put(schemaKey, encodeUint64(3)); err != nil {
+			return err
+		}
+		if err := meta.Put(modelPricesKey, legacyPrices); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucket(hoursBucket); err != nil {
+			return err
+		}
+		_, err = tx.CreateBucket(requestsBucket)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := store.QueryPriceBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if book.Revision != 1 || book.Prices["paid"].Source != priceSourceManual || book.Prices["free"].Source != priceSourceManual {
+		t.Fatalf("migrated price book = %+v", book)
+	}
+	if len(book.SyncSettings.ProviderPriority) == 0 {
+		t.Fatalf("migrated sync settings = %+v", book.SyncSettings)
+	}
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	book, err = store.QueryPriceBook()
+	if err != nil || len(book.Prices) != 2 || book.Prices["free"].Source != priceSourceManual {
+		t.Fatalf("migrated prices after reset/restart = %+v, %v", book, err)
+	}
+}
+
+func TestFailedSchemaThreePriceMigrationKeepsSchema(t *testing.T) {
+	config := testConfig(t)
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta, err := tx.CreateBucket(metaBucket)
+		if err != nil {
+			return err
+		}
+		if err := meta.Put(schemaKey, encodeUint64(3)); err != nil {
+			return err
+		}
+		if err := meta.Put(modelPricesKey, []byte(`{"bad":{"input":-1}}`)); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucket(hoursBucket); err != nil {
+			return err
+		}
+		_, err = tx.CreateBucket(requestsBucket)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if store, err := openStore(config); err == nil {
+		_ = store.Close()
+		t.Fatal("invalid schema-three prices migrated successfully")
+	}
+	db, err = bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bolt.Tx) error {
+		version := decodeUint64(tx.Bucket(metaBucket).Get(schemaKey))
+		if version != 3 {
+			return fmt.Errorf("schema version changed to %d after failed migration", version)
 		}
 		return nil
 	}); err != nil {

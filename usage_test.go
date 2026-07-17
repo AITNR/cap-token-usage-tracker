@@ -71,9 +71,11 @@ func TestDecodeUsageDerivesExplicitZeroTotal(t *testing.T) {
 	record := pluginapi.UsageRecord{
 		RequestedAt: now,
 		Detail: pluginapi.UsageDetail{
-			InputTokens:  17,
-			OutputTokens: 9,
-			TotalTokens:  0,
+			InputTokens:     17,
+			OutputTokens:    9,
+			ReasoningTokens: 4,
+			CachedTokens:    50,
+			TotalTokens:     0,
 		},
 	}
 	raw, err := json.Marshal(record)
@@ -84,8 +86,60 @@ func TestDecodeUsageDerivesExplicitZeroTotal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usage.Counters.TotalTokens != 26 {
-		t.Fatalf("total tokens = %d, want 26", usage.Counters.TotalTokens)
+	if usage.Counters.TotalTokens != 30 {
+		t.Fatalf("total tokens = %d, want 30", usage.Counters.TotalTokens)
+	}
+}
+
+func TestDecodeUsageFallsBackToCachedTokens(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	record := pluginapi.UsageRecord{
+		RequestedAt: now,
+		Detail: pluginapi.UsageDetail{
+			InputTokens:         -1,
+			OutputTokens:        0,
+			ReasoningTokens:     -2,
+			CachedTokens:        41,
+			CacheReadTokens:     99,
+			CacheCreationTokens: 100,
+			TotalTokens:         0,
+		},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := decodeUsage(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Counters.TotalTokens != 41 {
+		t.Fatalf("total tokens = %d, want cached fallback 41", usage.Counters.TotalTokens)
+	}
+}
+
+func TestDecodeUsagePreservesExplicitPositiveTotal(t *testing.T) {
+	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
+	record := pluginapi.UsageRecord{
+		RequestedAt: now,
+		Detail: pluginapi.UsageDetail{
+			InputTokens:     17,
+			OutputTokens:    9,
+			ReasoningTokens: 4,
+			CachedTokens:    50,
+			TotalTokens:     7,
+		},
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := decodeUsage(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Counters.TotalTokens != 7 {
+		t.Fatalf("total tokens = %d, want explicit total 7", usage.Counters.TotalTokens)
 	}
 }
 
