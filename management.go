@@ -58,6 +58,11 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		priceSyncPath:            "/v0/management/plugins/" + pluginID + "/prices/sync",
 		resourcePricesPath:       "/v0/resource/plugins/" + pluginID + "/prices",
 	}
+	r.mu.RLock()
+	configuredLanguage := r.config.Language
+	r.mu.RUnlock()
+	menuLang := effectiveLanguage(configuredLanguage)
+
 	r.mu.Lock()
 	r.routes = routes
 	r.mu.Unlock()
@@ -88,8 +93,8 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		Resources: []pluginapi.ResourceRoute{
 			{
 				Path:        "/dashboard",
-				Menu:        "Token 用量",
-				Description: "查看持久化的 Token 用量、请求和延迟统计。",
+				Menu:        T(menuLang, "menu.token_usage"),
+				Description: T(menuLang, "menu.token_usage_desc"),
 			},
 			{
 				Path:        "/stats",
@@ -133,7 +138,7 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 		if request.Method != "" && !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
-		return dashboardResponse(), nil
+		return r.dashboardResponse(request), nil
 	case routes.statsPath, routes.resourceStatsPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil

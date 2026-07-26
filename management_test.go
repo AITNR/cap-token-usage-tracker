@@ -38,6 +38,84 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if registration.Routes[0].Menu != "" {
 		t.Fatal("authenticated stats route must not declare a legacy menu")
 	}
+	if registration.Resources[0].Menu != "Token Usage" {
+		t.Fatalf("default menu label = %q, want English Token Usage", registration.Resources[0].Menu)
+	}
+	if registration.Resources[0].Description != "View persisted token usage, request, and latency statistics." {
+		t.Fatalf("default menu description = %q", registration.Resources[0].Description)
+	}
+	if strings.Contains(registration.Resources[0].Menu, "用量") || strings.Contains(registration.Resources[0].Description, "查看") {
+		t.Fatal("default registration must not expose Chinese host-menu labels")
+	}
+}
+
+func TestManagementMenuLocalization(t *testing.T) {
+	raw, _ := json.Marshal(pluginapi.ManagementRegistrationRequest{ResourceBasePath: "/v0/resource/plugins/menu-id"})
+
+	autoRuntime := &pluginRuntime{config: Config{Language: LanguageAuto}}
+	autoReg, err := autoRuntime.registerManagement(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if autoReg.Resources[0].Menu != "Token Usage" || autoReg.Resources[0].Description != messages[LanguageEnglish]["menu.token_usage_desc"] {
+		t.Fatalf("auto language menu = %+v", autoReg.Resources[0])
+	}
+
+	enRuntime := &pluginRuntime{config: Config{Language: LanguageEnglish}}
+	enReg, err := enRuntime.registerManagement(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enReg.Resources[0].Menu != "Token Usage" {
+		t.Fatalf("english menu = %q", enReg.Resources[0].Menu)
+	}
+
+	zhRuntime := &pluginRuntime{config: Config{Language: LanguageChinese}}
+	zhReg, err := zhRuntime.registerManagement(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zhReg.Resources[0].Menu != "Token 用量" {
+		t.Fatalf("chinese menu = %q, want Token 用量", zhReg.Resources[0].Menu)
+	}
+	if zhReg.Resources[0].Description != messages[LanguageChinese]["menu.token_usage_desc"] {
+		t.Fatalf("chinese menu description = %q", zhReg.Resources[0].Description)
+	}
+
+	if autoReg.Resources[0].Menu == zhReg.Resources[0].Menu {
+		t.Fatal("auto menu must not equal pinned Chinese menu")
+	}
+}
+
+func TestPluginMetadataUsesEnglishHostLabels(t *testing.T) {
+	reg := pluginRegistration()
+	if reg.Metadata.Name != "CAP Token Usage Tracker" {
+		t.Fatalf("metadata name = %q", reg.Metadata.Name)
+	}
+	if strings.Contains(reg.Metadata.Name, "用量") {
+		t.Fatal("plugin metadata name must remain English")
+	}
+	foundLanguage := false
+	for _, field := range reg.Metadata.ConfigFields {
+		if field.Name == "language" {
+			foundLanguage = true
+			if field.Type != pluginapi.ConfigFieldTypeEnum {
+				t.Fatalf("language field type = %q", field.Type)
+			}
+			if len(field.EnumValues) != 3 || field.EnumValues[0] != "auto" || field.EnumValues[1] != "en" || field.EnumValues[2] != "zh-CN" {
+				t.Fatalf("language enum values = %#v", field.EnumValues)
+			}
+			if strings.TrimSpace(field.Description) == "" || strings.Contains(field.Description, "用量") {
+				t.Fatalf("language field description should be English prose, got %q", field.Description)
+			}
+		}
+		if strings.Contains(field.Description, "查看") || strings.Contains(field.Description, "用量") {
+			t.Fatalf("config field %q description must be English host metadata, got %q", field.Name, field.Description)
+		}
+	}
+	if !foundLanguage {
+		t.Fatal("metadata ConfigFields must advertise language")
+	}
 }
 
 func TestManagementStatsAndReset(t *testing.T) {
