@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"time"
 )
 
@@ -45,13 +44,7 @@ func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail
 	if generationNS > 0 {
 		tps = float64(usage.Counters.OutputTokens) / (float64(generationNS) / float64(time.Second))
 	}
-	result := "成功"
-	if usage.Dimensions.Failed {
-		result = "失败"
-		if usage.Dimensions.FailureStatus > 0 {
-			result = fmt.Sprintf("失败 (HTTP %d)", usage.Dimensions.FailureStatus)
-		}
-	}
+	result := formatResultLabel(usage.Dimensions.Failed, usage.Dimensions.FailureStatus)
 	return RequestDetail{
 		Sequence:     sequence,
 		Time:         usage.RequestedAt.UTC(),
