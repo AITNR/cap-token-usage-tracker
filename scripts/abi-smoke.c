@@ -62,7 +62,7 @@ int main(int argc, char **argv) {
         return 5;
     }
 
-    const char request[] = "{\"config_yaml\":\"ZGF0YV9wYXRoOiAvdG1wL2NhcC10b2tlbi11c2FnZS1zbW9rZS5kYgo=\",\"schema_version\":1}";
+    const char request[] = "{\"config_yaml\":\"ZGF0YV9wYXRoOiAvdG1wL2NhcC10b2tlbi11c2FnZS1zbW9rZS5kYgo=\",\"schema_version\":2}";
     cliproxy_buffer response = {0};
     if (plugin.call("plugin.register", (const uint8_t *)request, strlen(request), &response) != 0 || response.ptr == NULL || response.len == 0) {
         fprintf(stderr, "plugin.register transport call failed\n");
@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
     json[response.len] = '\0';
     plugin.free_buffer(response.ptr, response.len);
 
-    if (strstr(json, "\"ok\":true") == NULL || strstr(json, "\"usage_plugin\":true") == NULL || strstr(json, "\"management_api\":true") == NULL) {
+    if (strstr(json, "\"ok\":true") == NULL || strstr(json, "\"schema_version\":2") == NULL || strstr(json, "\"usage_plugin\":true") == NULL || strstr(json, "\"management_api\":true") == NULL) {
         fprintf(stderr, "unexpected registration response: %s\n", json);
         free(json);
         plugin.shutdown();
