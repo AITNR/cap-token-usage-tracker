@@ -202,7 +202,6 @@ func pluginRegistration() registration {
 				{Name: "flush_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Maximum delay before batched statistics are flushed, for example 5s."},
 				{Name: "flush_max_records", Type: pluginapi.ConfigFieldTypeInteger, Description: "Flush after this many accepted usage records."},
 				{Name: "sync_on_record", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Commit every usage record before acknowledging it."},
-				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: supportedLanguageValues(true), Description: "Default UI language for the host Management menu (fixed at registration) and the dashboard. auto uses English host-menu labels and Accept-Language for the dashboard; pin en or zh-CN for both. In-page dashboard language changes do not update the host sidebar."},
 			},
 		},
 		Capabilities: registrationCapabilities{UsagePlugin: true, ManagementAPI: true},

@@ -149,7 +149,10 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		point.add(counters)
 		series[key.Hour] = point
 
-		model := displayModelName(key.Dimensions.Model)
+		model := key.Dimensions.Model
+		if model == "" {
+			model = "未标记模型"
+		}
 		modelKey := struct {
 			Hour  int64
 			Model string
