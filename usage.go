@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -53,14 +54,17 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 	}
 
 	failed := firstBool(root, "Failed", "failed")
+	provider := normalizeDimension(firstString(root, "Provider", "provider"))
+	executorType := normalizeDimension(firstString(root, "ExecutorType", "executor_type"))
+	authType := normalizeDimension(firstString(root, "AuthType", "auth_type"))
 	return normalizedUsage{
 		Dimensions: Dimensions{
-			Provider:        normalizeDimension(firstString(root, "Provider", "provider")),
-			ExecutorType:    normalizeDimension(firstString(root, "ExecutorType", "executor_type")),
+			Provider:        provider,
+			ExecutorType:    executorType,
 			Model:           normalizeDimension(firstString(root, "Model", "model")),
 			Alias:           normalizeDimension(firstString(root, "Alias", "alias")),
-			Source:          normalizeDimension(firstString(root, "Source", "source")),
-			AuthType:        normalizeDimension(firstString(root, "AuthType", "auth_type")),
+			Source:          safeUsageSource(firstString(root, "Source", "source"), firstString(root, "APIKey", "api_key"), provider, executorType, authType),
+			AuthType:        authType,
 			ServiceTier:     normalizeDimension(firstString(root, "ServiceTier", "service_tier")),
 			ReasoningEffort: normalizeDimension(firstString(root, "ReasoningEffort", "reasoning_effort")),
 			Failed:          failed,
@@ -81,6 +85,130 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 			TotalTokens:         positiveUint(total),
 		},
 	}, nil
+}
+
+func safeUsageSource(rawSource, apiKey, provider, executorType, authType string) string {
+	source := strings.TrimSpace(rawSource)
+	if safeURL := sanitizeServiceURL(source); safeURL != "" {
+		return normalizeDimension(safeURL)
+	}
+
+	// CLIProxyAPI currently uses the selected upstream API key itself as Source
+	// for API-key credentials. Never persist that value. UsageRecord does not
+	// expose the configured base_url, so use the provider's public service URL
+	// when it is known and a non-secret provider identifier otherwise.
+	if isAPIKeyAuth(authType) || sameSecret(source, apiKey) || looksLikeCredential(source) {
+		return normalizeDimension(providerServiceAddress(provider, executorType))
+	}
+	return normalizeDimension(source)
+}
+
+func sanitizeDimensionsSource(dimensions Dimensions) Dimensions {
+	dimensions.Source = safeUsageSource(dimensions.Source, "", dimensions.Provider, dimensions.ExecutorType, dimensions.AuthType)
+	return dimensions
+}
+
+func sanitizeServiceURL(value string) string {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
+}
+
+func isAPIKeyAuth(value string) bool {
+	normalized := strings.NewReplacer("_", "", "-", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(value)))
+	return normalized == "apikey"
+}
+
+func sameSecret(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	return left != "" && right != "" && left == right
+}
+
+func looksLikeCredential(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	lower := strings.ToLower(value)
+	for _, prefix := range []string{
+		"bearer ", "basic ", "token ", "apikey ", "api-key ", "api_key ",
+		"sk-", "sk_", "xai-", "gsk_", "AIza", "key-", "sess-",
+	} {
+		if strings.HasPrefix(lower, strings.ToLower(prefix)) {
+			return true
+		}
+	}
+	if len(value) < 24 || strings.ContainsAny(value, " /\\:@") {
+		return false
+	}
+	var letters, digits int
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+			letters++
+		case r >= '0' && r <= '9':
+			digits++
+		case r == '-' || r == '_' || r == '.':
+		default:
+			return false
+		}
+	}
+	return letters > 0 && digits > 0
+}
+
+func providerServiceAddress(provider, executorType string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	executorType = strings.ToLower(strings.TrimSpace(executorType))
+	candidate := provider
+	if candidate == "" {
+		candidate = executorType
+	}
+	switch {
+	case candidate == "openai", candidate == "codex", candidate == "openai-api":
+		return "https://api.openai.com/v1"
+	case candidate == "anthropic", candidate == "claude", candidate == "anthropic-api":
+		return "https://api.anthropic.com"
+	case candidate == "gemini", candidate == "gemini-interactions", candidate == "aistudio", candidate == "google":
+		return "https://generativelanguage.googleapis.com"
+	case candidate == "vertex", candidate == "gemini-vertex":
+		return "https://aiplatform.googleapis.com"
+	case candidate == "xai", candidate == "x-ai", candidate == "grok":
+		return "https://api.x.ai/v1"
+	case candidate == "kimi", candidate == "moonshot":
+		return "https://api.kimi.com/coding"
+	case candidate == "deepseek":
+		return "https://api.deepseek.com"
+	case candidate == "groq":
+		return "https://api.groq.com/openai/v1"
+	case candidate == "mistral":
+		return "https://api.mistral.ai/v1"
+	case candidate == "openrouter":
+		return "https://openrouter.ai/api/v1"
+	case candidate == "qwen", candidate == "dashscope", candidate == "alibaba":
+		return "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	case candidate == "cohere":
+		return "https://api.cohere.com"
+	case candidate == "cerebras":
+		return "https://api.cerebras.ai/v1"
+	case candidate == "together", candidate == "togetherai":
+		return "https://api.together.xyz/v1"
+	case candidate == "siliconflow":
+		return "https://api.siliconflow.cn/v1"
+	}
+	if provider != "" {
+		return provider
+	}
+	if executorType != "" {
+		return executorType
+	}
+	return ""
 }
 
 func firstObject(root map[string]json.RawMessage, keys ...string) map[string]json.RawMessage {

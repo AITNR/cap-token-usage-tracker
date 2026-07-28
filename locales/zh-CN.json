@@ -107,7 +107,7 @@
   "chart.totalTokens": "总 Tokens",
   "chart.requests": "请求次数",
   "table.requests.title": "请求明细",
-  "table.requests.subtitle": "逐请求记录，最新请求优先",
+  "table.requests.subtitle": "逐请求记录，支持当前页排序和列显示设置，默认最新优先",
   "table.dimensions.title": "维度明细",
   "table.dimensions.subtitle": "当前筛选视图",
   "table.time": "时间",
@@ -247,5 +247,11 @@
   "error.missingManualModel": "请输入模型名称。",
   "error.longManualModel": "模型名称不能超过 160 个字符。",
   "error.duplicateManualModel": "模型“{model}”已存在。",
-  "error.tooManyManualModels": "模型价格条目已达到上限。"
+  "error.tooManyManualModels": "模型价格条目已达到上限。",
+  "requestColumns.button": "列设置",
+  "requestColumns.title": "显示或隐藏列",
+  "requestColumns.showAll": "全部显示",
+  "requestColumns.hide": "隐藏“{column}”列",
+  "sort.ascending": "按“{column}”升序排列",
+  "sort.descending": "按“{column}”降序排列"
 }

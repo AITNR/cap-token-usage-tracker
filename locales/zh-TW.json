@@ -107,7 +107,7 @@
   "chart.totalTokens": "總 Tokens",
   "chart.requests": "請求次數",
   "table.requests.title": "請求明細",
-  "table.requests.subtitle": "逐請求记錄，最新請求优先",
+  "table.requests.subtitle": "逐請求記錄，支援目前頁面排序與欄位顯示設定，預設最新優先",
   "table.dimensions.title": "維度明細",
   "table.dimensions.subtitle": "當前篩選视图",
   "table.time": "時間",
@@ -247,5 +247,11 @@
   "error.missingManualModel": "請輸入模型名稱。",
   "error.longManualModel": "模型名稱不可超過 160 個字元。",
   "error.duplicateManualModel": "模型「{model}」已存在。",
-  "error.tooManyManualModels": "模型價格項目已達上限。"
+  "error.tooManyManualModels": "模型價格項目已達上限。",
+  "requestColumns.button": "欄位設定",
+  "requestColumns.title": "顯示或隱藏欄位",
+  "requestColumns.showAll": "全部顯示",
+  "requestColumns.hide": "隱藏「{column}」欄",
+  "sort.ascending": "按「{column}」升冪排列",
+  "sort.descending": "按「{column}」降冪排列"
 }

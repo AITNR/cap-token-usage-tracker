@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -534,6 +535,118 @@ func TestSchemaOneDatabaseMigratesRequestBucket(t *testing.T) {
 		}
 		if version := decodeUint64(tx.Bucket(metaBucket).Get(schemaKey)); version != persistenceSchemaVersion {
 			return fmt.Errorf("schema version = %d", version)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSchemaFourUsageSourcesMigrateWithoutAPIKeys(t *testing.T) {
+	config := testConfig(t)
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Add(-time.Minute)
+	apiKey := "sk-persisted-secret-1234567890"
+	dimensions := Dimensions{Provider: "openai", Model: "gpt-test", Source: apiKey, AuthType: "apikey"}
+	counters := Counters{Requests: 1, InputTokens: 3, TotalTokens: 3}
+	dimensionKey, _ := json.Marshal(dimensions)
+	counterValue, _ := json.Marshal(counters)
+	requestValue, _ := json.Marshal(RequestDetail{Sequence: 1, Time: now, Dimensions: dimensions, Counters: counters})
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta, err := tx.CreateBucket(metaBucket)
+		if err != nil {
+			return err
+		}
+		if err := meta.Put(schemaKey, encodeUint64(4)); err != nil {
+			return err
+		}
+		if err := meta.Put(sinceKey, encodeInt64(now.Add(-time.Hour).UnixNano())); err != nil {
+			return err
+		}
+		if err := meta.Put(requestSequenceKey, encodeUint64(1)); err != nil {
+			return err
+		}
+		hours, err := tx.CreateBucket(hoursBucket)
+		if err != nil {
+			return err
+		}
+		hour, err := hours.CreateBucket(encodeInt64(now.Truncate(time.Minute).Unix()))
+		if err != nil {
+			return err
+		}
+		if err := hour.Put(dimensionKey, counterValue); err != nil {
+			return err
+		}
+		requests, err := tx.CreateBucket(requestsBucket)
+		if err != nil {
+			return err
+		}
+		return requests.Put(encodeRequestKey(now.UnixNano(), 1), requestValue)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Groups) != 1 || stats.Groups[0].Source != "https://api.openai.com/v1" {
+		t.Fatalf("migrated groups = %+v", stats.Groups)
+	}
+	page, err := store.QueryRequests("retention", 0, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Source != "https://api.openai.com/v1" {
+		t.Fatalf("migrated requests = %+v", page.Items)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bolt.Tx) error {
+		if version := decodeUint64(tx.Bucket(metaBucket).Get(schemaKey)); version != persistenceSchemaVersion {
+			return fmt.Errorf("schema version = %d", version)
+		}
+		for _, bucketName := range [][]byte{hoursBucket, requestsBucket} {
+			bucket := tx.Bucket(bucketName)
+			if bucket == nil {
+				continue
+			}
+			if err := bucket.ForEach(func(key, value []byte) error {
+				if bytes.Contains(key, []byte(apiKey)) || bytes.Contains(value, []byte(apiKey)) {
+					return fmt.Errorf("API key remains in %s bucket", bucketName)
+				}
+				if value == nil {
+					nested := bucket.Bucket(key)
+					if nested != nil {
+						return nested.ForEach(func(nestedKey, nestedValue []byte) error {
+							if bytes.Contains(nestedKey, []byte(apiKey)) || bytes.Contains(nestedValue, []byte(apiKey)) {
+								return fmt.Errorf("API key remains in nested %s bucket", bucketName)
+							}
+							return nil
+						})
+					}
+				}
+				return nil
+			}); err != nil {
+				return err
+			}
 		}
 		return nil
 	}); err != nil {

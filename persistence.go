@@ -29,7 +29,7 @@ var (
 	modelPriceLastSyncKey = []byte("model_price_last_sync")
 )
 
-const persistenceSchemaVersion uint64 = 4
+const persistenceSchemaVersion uint64 = 5
 
 type recordCommand struct {
 	usage normalizedUsage
@@ -431,6 +431,9 @@ func (a *storeActor) initialize() error {
 		if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano()); err != nil {
 			return err
 		}
+		if err := migrateUsageSources(hours, requests, version); err != nil {
+			return err
+		}
 		return meta.Put(schemaKey, encodeUint64(persistenceSchemaVersion))
 	}); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
@@ -508,6 +511,110 @@ func (a *storeActor) initialize() error {
 	})
 }
 
+func migrateUsageSources(hours, requests *bolt.Bucket, version uint64) error {
+	if version >= 5 {
+		return nil
+	}
+	if hours != nil {
+		var hourKeys [][]byte
+		if err := hours.ForEach(func(key, value []byte) error {
+			if value == nil {
+				hourKeys = append(hourKeys, append([]byte(nil), key...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, hourKey := range hourKeys {
+			hour := hours.Bucket(hourKey)
+			if hour == nil {
+				continue
+			}
+			merged := make(map[Dimensions]Counters)
+			var oldKeys [][]byte
+			changed := false
+			if err := hour.ForEach(func(key, value []byte) error {
+				if value == nil {
+					return nil
+				}
+				var dimensions Dimensions
+				if err := json.Unmarshal(key, &dimensions); err != nil {
+					return fmt.Errorf("decode dimensions for source migration: %w", err)
+				}
+				var counters Counters
+				if err := json.Unmarshal(value, &counters); err != nil {
+					return fmt.Errorf("decode counters for source migration: %w", err)
+				}
+				sanitized := sanitizeDimensionsSource(dimensions)
+				changed = changed || sanitized != dimensions
+				combined := merged[sanitized]
+				combined.add(counters)
+				merged[sanitized] = combined
+				oldKeys = append(oldKeys, append([]byte(nil), key...))
+				return nil
+			}); err != nil {
+				return err
+			}
+			if !changed {
+				continue
+			}
+			for _, key := range oldKeys {
+				if err := hour.Delete(key); err != nil {
+					return err
+				}
+			}
+			for dimensions, counters := range merged {
+				key, err := json.Marshal(dimensions)
+				if err != nil {
+					return err
+				}
+				value, err := json.Marshal(counters)
+				if err != nil {
+					return err
+				}
+				if err := hour.Put(key, value); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if requests != nil {
+		type requestUpdate struct {
+			key   []byte
+			value []byte
+		}
+		var updates []requestUpdate
+		if err := requests.ForEach(func(key, value []byte) error {
+			if value == nil {
+				return nil
+			}
+			var request RequestDetail
+			if err := json.Unmarshal(value, &request); err != nil {
+				return fmt.Errorf("decode request for source migration: %w", err)
+			}
+			sanitized := sanitizeDimensionsSource(request.Dimensions)
+			if sanitized == request.Dimensions {
+				return nil
+			}
+			request.Dimensions = sanitized
+			encoded, err := json.Marshal(request)
+			if err != nil {
+				return err
+			}
+			updates = append(updates, requestUpdate{key: append([]byte(nil), key...), value: encoded})
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, update := range updates {
+			if err := requests.Put(update.key, update.value); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func migratePriceMetadata(meta *bolt.Bucket, version uint64) error {
 	prices := make(map[string]ModelPrice)
 	if raw := meta.Get(modelPricesKey); len(raw) > 0 {
@@ -571,6 +678,7 @@ func migratePriceMetadata(meta *bolt.Bucket, version uint64) error {
 }
 
 func (a *storeActor) record(usage normalizedUsage) error {
+	usage.Dimensions = sanitizeDimensionsSource(usage.Dimensions)
 	key := aggregateKey{
 		Hour:       usage.RequestedAt.UTC().Truncate(time.Minute).Unix(),
 		Dimensions: usage.Dimensions,
@@ -953,6 +1061,7 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 			if page.Total <= offset || len(page.Items) >= limit {
 				continue
 			}
+			item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
 			cost := estimateRequestCostWithResolver(item, resolver)
 			item.EstimatedCost = &cost
 			page.Items = append(page.Items, item)

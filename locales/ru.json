@@ -107,7 +107,7 @@
   "chart.totalTokens": "Всего токенов",
   "chart.requests": "Запросы",
   "table.requests.title": "Детали запросов",
-  "table.requests.subtitle": "Записи запросов, сначала новые",
+  "table.requests.subtitle": "Записи запросов; сортировка применяется к текущей странице, по умолчанию сначала новые",
   "table.dimensions.title": "Детали измерений",
   "table.dimensions.subtitle": "Текущий отфильтрованный вид",
   "table.time": "Время",
@@ -247,5 +247,11 @@
   "error.missingManualModel": "Введите имя модели.",
   "error.longManualModel": "Имя модели должно содержать не более 160 символов.",
   "error.duplicateManualModel": "Модель «{model}» уже существует.",
-  "error.tooManyManualModels": "В книге цен уже достигнуто максимальное количество моделей."
+  "error.tooManyManualModels": "В книге цен уже достигнуто максимальное количество моделей.",
+  "requestColumns.button": "Столбцы",
+  "requestColumns.title": "Показать или скрыть столбцы",
+  "requestColumns.showAll": "Показать все",
+  "requestColumns.hide": "Скрыть столбец «{column}»",
+  "sort.ascending": "Сортировать «{column}» по возрастанию",
+  "sort.descending": "Сортировать «{column}» по убыванию"
 }
