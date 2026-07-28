@@ -109,7 +109,7 @@
   "table.requests.title": "Request details",
   "table.requests.subtitle": "Per-request records; sorting applies to the current page, newest first by default",
   "table.dimensions.title": "Dimension details",
-  "table.dimensions.subtitle": "Current filtered view",
+  "table.dimensions.subtitle": "Current filtered view; supports sorting, column visibility, and pagination",
   "table.time": "Time",
   "table.model": "Model",
   "table.source": "Source",
@@ -253,5 +253,6 @@
   "requestColumns.showAll": "Show all",
   "requestColumns.hide": "Hide {column}",
   "sort.ascending": "Sort {column} ascending",
-  "sort.descending": "Sort {column} descending"
+  "sort.descending": "Sort {column} descending",
+  "pagination.rowsPerPage": "Rows per page"
 }

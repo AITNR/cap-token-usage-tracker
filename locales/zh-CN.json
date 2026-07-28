@@ -109,7 +109,7 @@
   "table.requests.title": "请求明细",
   "table.requests.subtitle": "逐请求记录，支持当前页排序和列显示设置，默认最新优先",
   "table.dimensions.title": "维度明细",
-  "table.dimensions.subtitle": "当前筛选视图",
+  "table.dimensions.subtitle": "当前筛选视图，支持排序、列显示设置和分页",
   "table.time": "时间",
   "table.model": "模型名称",
   "table.source": "来源",
@@ -253,5 +253,6 @@
   "requestColumns.showAll": "全部显示",
   "requestColumns.hide": "隐藏“{column}”列",
   "sort.ascending": "按“{column}”升序排列",
-  "sort.descending": "按“{column}”降序排列"
+  "sort.descending": "按“{column}”降序排列",
+  "pagination.rowsPerPage": "每页行数"
 }

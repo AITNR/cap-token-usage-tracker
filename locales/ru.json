@@ -109,7 +109,7 @@
   "table.requests.title": "Детали запросов",
   "table.requests.subtitle": "Записи запросов; сортировка применяется к текущей странице, по умолчанию сначала новые",
   "table.dimensions.title": "Детали измерений",
-  "table.dimensions.subtitle": "Текущий отфильтрованный вид",
+  "table.dimensions.subtitle": "Текущий отфильтрованный вид; поддерживаются сортировка, настройка столбцов и пагинация",
   "table.time": "Время",
   "table.model": "Модель",
   "table.source": "Источник",
@@ -253,5 +253,6 @@
   "requestColumns.showAll": "Показать все",
   "requestColumns.hide": "Скрыть столбец «{column}»",
   "sort.ascending": "Сортировать «{column}» по возрастанию",
-  "sort.descending": "Сортировать «{column}» по убыванию"
+  "sort.descending": "Сортировать «{column}» по убыванию",
+  "pagination.rowsPerPage": "Строк на странице"
 }

@@ -109,7 +109,7 @@
   "table.requests.title": "請求明細",
   "table.requests.subtitle": "逐請求記錄，支援目前頁面排序與欄位顯示設定，預設最新優先",
   "table.dimensions.title": "維度明細",
-  "table.dimensions.subtitle": "當前篩選视图",
+  "table.dimensions.subtitle": "目前篩選視圖，支援排序、欄位顯示設定和分頁",
   "table.time": "時間",
   "table.model": "模型名稱",
   "table.source": "來源",
@@ -253,5 +253,6 @@
   "requestColumns.showAll": "全部顯示",
   "requestColumns.hide": "隱藏「{column}」欄",
   "sort.ascending": "按「{column}」升冪排列",
-  "sort.descending": "按「{column}」降冪排列"
+  "sort.descending": "按「{column}」降冪排列",
+  "pagination.rowsPerPage": "每頁行數"
 }
