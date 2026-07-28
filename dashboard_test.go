@@ -82,7 +82,7 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`bar-input`,
 		`bar-output`,
 		`model_series`,
-		`function selectModel(name)`,
+		`function selectModel(name,options)`,
 		`function toggleModel(name)`,
 		`addEventListener('wheel'`,
 		`id="pricingDialog"`,
@@ -272,5 +272,215 @@ func TestDashboardDoesNotServerRenderUsageValues(t *testing.T) {
 	}
 	if !strings.Contains(dashboardHTML, "td.textContent=value") {
 		t.Fatal("usage cells are not rendered with textContent")
+	}
+}
+
+func TestDashboardHeaderKeepsHostClearanceAndControlGroups(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.heading{min-width:0;padding:2px clamp(96px,10vw,152px) 0 0}`,
+		`class="control-group control-filters"`,
+		`class="control-group control-actions"`,
+		`flex-wrap:nowrap`,
+		`.control-actions{flex:0 0 auto;margin-left:auto}`,
+		`button.control{display:inline-flex;align-items:center;justify-content:center;gap:7px;padding:8px 12px;font-weight:650;white-space:nowrap}`,
+		`@media(max-width:820px){.heading{padding-right:clamp(72px,12vw,112px)}`,
+		`.control-filters{flex-basis:100%}`,
+		`.control-actions{margin-left:0}`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing header layout contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`--host-overlay-safe-inset`,
+		`<label class="language-control">`,
+		`id="languageSelect"`,
+		`__MSG_`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard unexpectedly contains forbidden header markup %q", forbidden)
+		}
+	}
+}
+
+func TestDashboardExportControlKeepsAccessibleName(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="exportButton"`,
+		`aria-label="导出"`,
+		`title="导出"`,
+		`.button-label{display:none}`,
+		`<span class="button-label">导出</span>`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing export accessible-name contract %q", required)
+		}
+	}
+	exportIdx := strings.Index(html, `id="exportButton"`)
+	if exportIdx < 0 {
+		t.Fatal("export button missing")
+	}
+	snippet := html[exportIdx : exportIdx+280]
+	if !strings.Contains(snippet, `aria-label="导出"`) || !strings.Contains(snippet, `title="导出"`) {
+		t.Fatalf("export button must keep aria-label/title near control markup: %s", snippet)
+	}
+}
+
+func TestDashboardModelShareLegendScalesWithoutClipping(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.visual-grid{display:grid;grid-template-columns:minmax(0,1.85fr) minmax(0,.85fr)`,
+		`.panel{overflow:hidden;min-width:0}`,
+		`.donut-layout{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr)`,
+		`.donut-wrap{position:relative;min-width:0`,
+		`.donut-wrap svg{display:block;width:100%;max-width:280px;height:auto;aspect-ratio:1`,
+		`.legend{min-width:0;max-height:292px;overflow:auto;overflow-x:hidden`,
+		`.legend-item{display:grid;grid-template-columns:24px minmax(0,1fr) minmax(4.25em,max-content)`,
+		`.legend-share{min-width:4.25em`,
+		`text-align:right;white-space:nowrap`,
+		`.donut-layout{grid-template-columns:1fr;min-height:0`,
+		`.legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))`,
+		`.legend{grid-template-columns:1fr}`,
+		`share.className='legend-share'`,
+		`share.textContent=percent.toFixed(1)+'%'`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing model-share responsive contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`.donut-layout{display:grid;grid-template-columns:minmax(210px,.95fr) minmax(150px,1fr)`,
+		`.donut-layout{grid-template-columns:minmax(220px,.8fr) minmax(220px,1.2fr)}`,
+		`minmax(300px,.75fr)`,
+		`.legend-item{display:grid;grid-template-columns:24px minmax(0,1fr) auto`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard retained clipping-prone layout %q", forbidden)
+		}
+	}
+}
+
+func TestDashboardLegendLabelRecoversFullModelDetails(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`var nameText=modelName(item.model)`,
+		`var detailText=fmt(item.requests)+' 次 · '+compact(item.total_tokens)+' Tokens'`,
+		`var legendTip=nameText+' · '+detailText`,
+		`label.title=legendTip`,
+		`label.setAttribute('aria-label',legendTip)`,
+		`share.className='legend-share'`,
+		`share.textContent=percent.toFixed(1)+'%'`,
+		`.legend-name{display:block;overflow:hidden`,
+		`text-overflow:ellipsis;white-space:nowrap`,
+		`label.addEventListener('click',function(){selectModel(item.model);})`,
+		`toggle.addEventListener('click',function(event){event.stopPropagation();toggleModel(item.model);})`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing legend tooltip/a11y contract %q", required)
+		}
+	}
+	if !strings.Contains(html, `minmax(4.25em,max-content)`) {
+		t.Fatal("legend share column geometry missing")
+	}
+}
+
+func TestDashboardTokenTrendZoomHelpDoesNotOverlapAxis(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.chart-wrap{position:relative;display:grid;grid-template-rows:minmax(0,1fr) auto`,
+		`.chart-footer{display:flex;justify-content:flex-end;align-items:center;min-height:22px`,
+		`class="chart-footer" aria-hidden="true"`,
+		`.zoom-tip{color:var(--text-quaternary);font-size:10px;line-height:1.3;pointer-events:none`,
+		`.chart-wrap{min-height:300px}.chart-wrap svg{min-height:270px;height:100%}`,
+		`.chart-footer{display:none}`,
+		`document.getElementById('barWrap').addEventListener('wheel'`,
+		`<div class="zoom-tip">滚轮缩放 · Shift + 滚轮平移</div>`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing zoom-help geometry contract %q", required)
+		}
+	}
+	if !strings.Contains(html, `<div class="chart-footer" aria-hidden="true"><div class="zoom-tip">滚轮缩放 · Shift + 滚轮平移</div></div>`) {
+		t.Fatal("zoom tip must be placed in chart-footer below the svg")
+	}
+	for _, forbidden := range []string{
+		`.zoom-tip{position:absolute;right:6px;bottom:2px`,
+		`.chart-wrap,.chart-wrap svg{min-height:300px;height:300px}`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard retained overlapping zoom-help layout %q", forbidden)
+		}
+	}
+	if strings.Contains(html, `<svg id="chart" viewBox="0 0 900 330" role="img" aria-label="Token 消耗堆叠柱状图"></svg><div class="zoom-tip">`) {
+		t.Fatal("zoom tip still overlays the svg plot area")
+	}
+}
+
+func TestDashboardChartAccessibilityIsKeyboardOperable(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		"class:'donut-segment'",
+		"tabindex:0,role:'button'",
+		"segment.addEventListener('focus'",
+		"activateOnKeyboard(segment,function(){selectModel(item.model,{restoreDonutFocus:true});})",
+		"if(event.key==='Enter'||event.key===' ')",
+		"event.preventDefault();action()",
+		"'aria-label':point.item.label+' 费用 '+money(point.item.total_usd)",
+		`aria-label="缩小" title="缩小"`,
+		`aria-label="放大" title="放大"`,
+		`.donut-segment:focus-visible{outline:none;stroke-width:34;filter:drop-shadow(0 0 3px var(--primary-color))}`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing interactive chart accessibility behavior %q", required)
+		}
+	}
+}
+
+func TestDashboardDonutKeyboardSelectionRestoresFocus(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		"'data-model':item.model",
+		"function selectModel(name,options)",
+		"if(options&&options.restoreDonutFocus)",
+		"var segments=document.querySelectorAll('#donut .donut-segment')",
+		"if(segments[i].getAttribute('data-model')===name)",
+		"segments[i].focus()",
+		"segment.addEventListener('click',function(){selectModel(item.model);})",
+		"activateOnKeyboard(segment,function(){selectModel(item.model,{restoreDonutFocus:true});})",
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing donut keyboard focus restore behavior %q", required)
+		}
+	}
+	if strings.Contains(html, "segment.addEventListener('click',function(){selectModel(item.model,{restoreDonutFocus:true});})") {
+		t.Fatal("mouse click path must not restore donut focus")
+	}
+	if !strings.Contains(html, "segment.addEventListener('mouseenter',function(event){showModelTooltip(event,item,percent);})") {
+		t.Fatal("donut tooltip mouseenter behavior must remain intact")
+	}
+	if !strings.Contains(html, "segment.addEventListener('focus',function(event){showModelTooltip(event,item,percent);})") {
+		t.Fatal("donut tooltip focus behavior must remain intact")
+	}
+}
+
+func TestDashboardSummaryCardsShareUniformVerticalRhythm(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.card{position:relative;display:grid;grid-template-rows:auto minmax(2.4em,1fr) auto`,
+		`.card .label{display:flex;align-items:center;gap:7px;min-height:28px`,
+		`.card .value{position:relative;z-index:1;display:flex;align-items:center;margin-top:10px;min-height:2.4em`,
+		`.card .value.model-value{display:flex;align-items:center;gap:9px;min-height:2.4em`,
+		`.card .detail{position:relative;z-index:1;margin-top:8px;min-height:1.35em`,
+		`.card-switch{position:relative;z-index:2;margin-left:auto;min-height:28px`,
+		`class="value model-value"`,
+		`id="modelBadge" class="model-badge"`,
+		`id="tokenUnitButton" class="card-switch"`,
+		`id="currencyButton" class="card-switch"`,
+		`.card::after{content:"";position:absolute;right:-29px;bottom:-36px;width:90px;height:90px`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing summary-card rhythm contract %q", required)
+		}
 	}
 }
