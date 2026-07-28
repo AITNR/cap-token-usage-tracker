@@ -356,6 +356,7 @@ func (s *Store) run(actor *storeActor) {
 					Cutoff:        cutoff,
 					GeneratedAt:   now,
 					Prices:        cloneModelPrices(actor.modelPrices),
+					PriceSettings: clonePriceSyncSettings(actor.priceSyncSettings),
 					PriceRevision: actor.priceRevision,
 					HighWater:     actor.nextRequestSeq,
 					Generation:    actor.costGeneration,
@@ -914,6 +915,7 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 		return RequestPage{}, withStatus(400, "limit must be between 1 and %d", maxRequestPageSize)
 	}
 
+	resolver := newModelPriceResolver(a.modelPrices, a.priceSyncSettings)
 	page := RequestPage{
 		GeneratedAt:       now.UTC(),
 		Range:             rangeName,
@@ -951,7 +953,7 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 			if page.Total <= offset || len(page.Items) >= limit {
 				continue
 			}
-			cost := estimateRequestCost(item, a.modelPrices)
+			cost := estimateRequestCostWithResolver(item, resolver)
 			item.EstimatedCost = &cost
 			page.Items = append(page.Items, item)
 		}
