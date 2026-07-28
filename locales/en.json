@@ -66,7 +66,11 @@
   "confirm.typeReset": "Type reset to confirm:",
   "card.metrics": "Key metrics",
   "card.totalTokens": "Total Tokens",
-  "card.tokenDetail": "Input + Output + other Tokens",
+  "card.tokenDetail": "Input · Output · Cache Read",
+  "card.tokenDetailValues": "{inputLabel} {input} · {outputLabel} {output} · {cacheReadLabel} {cacheRead}",
+  "card.input": "Input",
+  "card.output": "Output",
+  "card.cacheRead": "Cache Read",
   "card.totalCost": "Estimated total cost",
   "card.costWaiting": "Waiting for exact cost data",
   "card.requests": "Total requests",
@@ -254,5 +258,9 @@
   "requestColumns.hide": "Hide {column}",
   "sort.ascending": "Sort {column} ascending",
   "sort.descending": "Sort {column} descending",
-  "pagination.rowsPerPage": "Rows per page"
+  "pagination.rowsPerPage": "Rows per page",
+  "trend.series.aria": "Token usage series visibility",
+  "trend.series.hide": "Hide {series}",
+  "trend.series.show": "Show {series}",
+  "trend.series.allHidden": "All series hidden"
 }

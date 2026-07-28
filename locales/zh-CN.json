@@ -66,7 +66,11 @@
   "confirm.typeReset": "请输入 reset 确认：",
   "card.metrics": "关键指标",
   "card.totalTokens": "总消耗 Token",
-  "card.tokenDetail": "Input + Output + 其他 Token",
+  "card.tokenDetail": "输入 · 输出 · 缓存读取",
+  "card.tokenDetailValues": "{inputLabel} {input} · {outputLabel} {output} · {cacheReadLabel} {cacheRead}",
+  "card.input": "输入",
+  "card.output": "输出",
+  "card.cacheRead": "缓存读取",
   "card.totalCost": "预估总费用",
   "card.costWaiting": "等待精确费用数据",
   "card.requests": "总请求次数",
@@ -254,5 +258,9 @@
   "requestColumns.hide": "隐藏“{column}”列",
   "sort.ascending": "按“{column}”升序排列",
   "sort.descending": "按“{column}”降序排列",
-  "pagination.rowsPerPage": "每页行数"
+  "pagination.rowsPerPage": "每页行数",
+  "trend.series.aria": "Token 用量序列显示",
+  "trend.series.hide": "隐藏{series}",
+  "trend.series.show": "显示{series}",
+  "trend.series.allHidden": "已隐藏全部序列"
 }
