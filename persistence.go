@@ -940,11 +940,7 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 			if err := json.Unmarshal(value, &item); err != nil {
 				return fmt.Errorf("decode request detail: %w", err)
 			}
-			itemModel := item.Model
-			if itemModel == "" {
-				itemModel = "未标记模型"
-			}
-			if model != "" && itemModel != model {
+			if !matchesModelFilter(item.Model, model) {
 				continue
 			}
 			page.Total++
