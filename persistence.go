@@ -112,6 +112,7 @@ type closeCommand struct{ resp chan error }
 
 type Store struct {
 	db           *bolt.DB
+	lease        *storeLease
 	commands     chan any
 	done         chan struct{}
 	closeOnce    sync.Once
@@ -149,7 +150,7 @@ func openStore(config Config) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(config.DataPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	db, err := bolt.Open(config.DataPath, 0o600, &bolt.Options{Timeout: 2 * time.Second})
+	db, lease, err := openStoreDatabase(config.DataPath)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
@@ -163,17 +164,20 @@ func openStore(config Config) (*Store, error) {
 	}
 	if err := actor.initialize(); err != nil {
 		_ = db.Close()
+		lease.release()
 		return nil, err
 	}
 
 	store := &Store{
 		db:          db,
+		lease:       lease,
 		commands:    make(chan any, 256),
 		done:        make(chan struct{}),
 		costCache:   make(map[costCacheKey]CostResponse),
 		costFlights: make(map[costCacheKey]*costFlight),
 	}
 	go store.run(actor)
+	go lease.monitor(store)
 	return store, nil
 }
 
@@ -319,6 +323,9 @@ func (s *Store) Close() error {
 		s.stateMu.Unlock()
 		s.closeErr = <-resp
 		<-s.done
+		if s.lease != nil {
+			s.lease.release()
+		}
 	})
 	return s.closeErr
 }
