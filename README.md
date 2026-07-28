@@ -16,7 +16,7 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 按模型、提供商、执行器、别名、来源、认证类型、服务层级、推理强度和失败状态分组
 - 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟、TTFT、生成时间、TPS 和缓存命中
 - 支持最近 24 小时、7 天、30 天或全部保留数据，趋势图可按分钟/小时/日/周/月聚合
-- 自包含多语言仪表盘（默认跟随浏览器语言，可配置或在页面内切换英文/中文），无第三方前端依赖，包含指标卡片、堆叠 Token 趋势、模型环形占比、精确费用趋势、模型效率散点图和逐请求明细
+- 自包含中文仪表盘，无第三方前端依赖，包含指标卡片、堆叠 Token 趋势、模型环形占比、精确费用趋势、模型效率散点图和逐请求明细
 - 支持 Input、Output、Cache Read、Cache Creation 四类模型价格、逐请求 Context Tier、免费模型、价格覆盖率和缺价提示
 - 支持从 models.dev 手动同步 CLIProxyAPI `/v1/models` 当前返回的模型价格，可配置提供商优先级、忽略后缀和显式模型映射；手工价格优先
 - 支持模型下钻联动、趋势图滚轮缩放/平移、移动端自适应坐标轴、总 Token 完整/k/m 切换、全页面 USD/CNY 最新汇率显示、当前筛选数据 CSV 和 Dashboard PNG 导出
@@ -59,7 +59,6 @@ plugins:
       flush_interval: 5s
       flush_max_records: 100
       sync_on_record: true
-      language: auto
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -69,7 +68,6 @@ plugins:
 | `flush_interval` | `5s` | 批量刷盘最长间隔，范围 1 秒–1 小时 |
 | `flush_max_records` | `100` | 接收指定数量记录后立即刷盘 |
 | `sync_on_record` | `true` | 默认每条记录提交数据库后才确认；设为 `false` 可启用批量模式以提高吞吐 |
-| `language` | `auto` | 管理菜单与仪表盘默认语言：`auto`（侧栏菜单固定英文，仪表盘跟随 `Accept-Language`/浏览器）、`en`、`zh-CN`；页面查询参数和语言选择器可覆盖该配置 |
 
 默认同步模式会在 `usage.handle` 返回前提交每条统计，避免正常记录停留在未刷盘窗口。仅当显式设置 `sync_on_record: false` 时启用批量模式；进程被强制终止时，批量模式最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。
 
@@ -192,38 +190,6 @@ go test ./...
 
 `main_cgo.go` 只在 cgo 开启时参与编译。发布前必须实际执行 Linux ARM64 `c-shared` 构建；仅通过 `CGO_ENABLED=0` 测试不能证明 ABI 可以链接。
 
-## 国际化
-
-插件 UI（管理菜单、仪表盘、导出文案）通过内置消息目录提供多语言支持，当前内置：
-
-- `en` 英文（默认回退语言）
-- `zh-CN` 简体中文
-
-语言选择优先级：
-
-1. 仪表盘查询参数 `?lang=en` / `?lang=zh-CN` / `?lang=auto` 或页面语言选择器（选择后保留显式 `lang` 参数并重新加载）
-2. `lang=en` / `lang=zh-CN` 直接选择页面语言；`lang=auto` 明确覆盖固定的插件语言配置并按本次请求的 `Accept-Language` 协商
-3. 没有有效页面覆盖时使用插件配置 `language`（`auto` / `en` / `zh-CN`）
-4. 配置为 `auto` 时按请求 `Accept-Language` 协商，最终回退到英文
-
-**主机侧栏限制：** Management Center 侧栏菜单文案在 `management.register` 时一次性写入，主机注册请求只提供 `ResourceBasePath`，不携带 `Accept-Language`，也无法在仪表盘内切换语言后刷新侧栏。因此：
-
-- `language: auto` / 默认：侧栏固定英文（`Token Usage`），避免英文仪表盘仍显示 `Token 用量`
-- `language: en`：侧栏与仪表盘默认英文
-- `language: zh-CN`：侧栏与仪表盘默认中文
-- 仪表盘仍可按 `Accept-Language` / `?lang` / 页面选择器即时切换；侧栏需改配置并重新注册/重载插件后才会变化
-
-新增语言：
-
-1. 在 `i18n.go` 的 `languageDefinitions` 中加入语言代码、客户端 locale 和语言选择器标签 key；仪表盘选项、客户端 locale 元数据、消息目录输出与主机配置枚举会据此自动生成
-2. 在 `messages` 中复制 `en` 目录并翻译全部 key（key 必须与英文一致）
-3. 在 `normalizeLanguage` 中加入该语言确实适用的标准标签或别名
-4. 补充 `i18n_test.go` 中的目录一致性与协商测试覆盖
-
-`zh-CN` 目录仅用于明确的简体中文标签（`zh-CN`、`zh-SG`、`zh-Hans`）；未指定文字体系的 `zh` 与 `zh-TW`、`zh-HK`、`zh-MO` 和 `zh-Hant` 不会映射到简体目录，在加入繁体目录前回退英文。
-
-为保持现有 API 和数据库兼容，新记录的 `result` 继续保存并返回既有中文值 `成功` / `失败 (HTTP n)`，未标记模型在合成的统计和费用 API 中继续表示为 `未标记模型`。仪表盘依据稳定的 `failed` / `failure_status` 字段本地化结果，并把空模型、`未标记模型` 和兼容键 `unlabeled` 归并为同一筛选项；不会重写已有数据。
-
 ## 协议
 
 [MIT License](LICENSE)
@@ -240,7 +206,7 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 - Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
 - Counts requests, failures, input/output/reasoning/cached tokens, latency, TTFT, generation time, TPS, and cache hits
 - Supports the last 24 hours, 7 days, 30 days, or all retained data, with minute/hour/day/week/month trend granularity
-- Self-contained multilingual dashboard (auto language with English/Chinese catalogs, page-level override) with no third-party frontend dependencies, including stat cards, stacked Token trends, a model doughnut chart, exact cost trends, a model-efficiency scatter plot, and per-request details
+- Self-contained Chinese dashboard with no third-party frontend dependencies, including stat cards, stacked Token trends, a model doughnut chart, exact cost trends, a model-efficiency scatter plot, and per-request details
 - Supports Input, Output, Cache Read, and Cache Creation prices, per-request context tiers, free models, pricing coverage, and missing-price reporting
 - Supports manual synchronization from models.dev for the current models returned by CLIProxyAPI `/v1/models`, with configurable provider priority, ignored suffixes, and explicit model mappings; manual prices take precedence
 - Supports linked model drill-down, wheel zoom/pan, responsive mobile chart axes, full/k/m total-Token display, dashboard-wide USD/CNY latest-rate display, filtered CSV export, and Dashboard PNG export
@@ -283,7 +249,6 @@ plugins:
       flush_interval: 5s
       flush_max_records: 100
       sync_on_record: true
-      language: auto
 ```
 
 | Field | Default | Description |
@@ -293,7 +258,6 @@ plugins:
 | `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
 | `flush_max_records` | `100` | Flush immediately after receiving this many records |
 | `sync_on_record` | `true` | Commits each record before acknowledgement by default; set to `false` to enable higher-throughput batching |
-| `language` | `auto` | Default Management menu and dashboard language: `auto` (English host-menu labels; dashboard follows `Accept-Language`/browser), `en`, or `zh-CN`; dashboard query and selector choices override this config |
 
 The default synchronous mode commits each statistic before `usage.handle` returns, avoiding an unflushed normal-operation window. Batching is enabled only when `sync_on_record: false` is set explicitly; if the process is forcefully terminated in batch mode, up to one `flush_interval` or unflushed `flush_max_records` window may be lost.
 
@@ -415,38 +379,6 @@ go test ./...
 ```
 
 `main_cgo.go` only participates in compilation when cgo is enabled. Before release, an actual Linux ARM64 `c-shared` build must be performed; passing `CGO_ENABLED=0` tests alone does not prove the ABI can link.
-
-### Internationalization
-
-Plugin UI copy (management menu, dashboard, export labels) is served from built-in message catalogs. Bundled languages:
-
-- `en` English (fallback)
-- `zh-CN` Simplified Chinese
-
-Language selection order:
-
-1. Dashboard query `?lang=en` / `?lang=zh-CN` / `?lang=auto`, or the in-page selector, which retains an explicit `lang` value and reloads the page
-2. `lang=en` / `lang=zh-CN` selects that page language; `lang=auto` explicitly overrides a pinned plugin language and negotiates from that request's `Accept-Language`
-3. Without a valid page override, plugin config `language` applies (`auto` / `en` / `zh-CN`)
-4. Configured `auto` negotiates from `Accept-Language`, then falls back to English
-
-**Host sidebar limitation:** Management Center sidebar labels are static strings captured during `management.register`. The host registration request only provides `ResourceBasePath`—no `Accept-Language`—and the host does not refresh the sidebar when the dashboard language changes. Consequently:
-
-- `language: auto` / default: host menu is fixed English (`Token Usage`) so an English dashboard never shows `Token 用量` in the sidebar
-- `language: en`: English host menu and English dashboard default
-- `language: zh-CN`: Chinese host menu and Chinese dashboard default
-- The dashboard still negotiates `Accept-Language` / `?lang` / the in-page selector per request; the sidebar changes only after config update and plugin re-registration/reload
-
-Adding a language:
-
-1. Add the language code, client locale, and selector-label key to `languageDefinitions` in `i18n.go`; dashboard options, client locale metadata, catalog output, and host config enum values are generated from that definition
-2. Copy the `en` map in `messages` and translate every key (keys must match English)
-3. Add only genuinely applicable standard tags or aliases to `normalizeLanguage`
-4. Extend the catalog-parity and negotiation coverage in `i18n_test.go`
-
-The `zh-CN` catalog is selected only for explicit Simplified Chinese tags (`zh-CN`, `zh-SG`, and `zh-Hans`). Unscripted `zh`, `zh-TW`, `zh-HK`, `zh-MO`, and `zh-Hant` fall back to English until a Traditional Chinese catalog exists.
-
-For API and database compatibility, new request records continue to persist and return the established Chinese `result` values `成功` / `失败 (HTTP n)`, and synthesized unlabeled models in statistics and cost APIs remain `未标记模型`. The dashboard localizes result presentation from the stable `failed` / `failure_status` facts and treats empty models, `未标记模型`, and the compatibility key `unlabeled` as one filter item; existing data is not rewritten.
 
 ### License
 

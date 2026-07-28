@@ -56,20 +56,6 @@ func TestBuildStatsIncludesModelSeries(t *testing.T) {
 	}
 }
 
-func TestBuildStatsPreservesUnlabeledAPIRepresentation(t *testing.T) {
-	now := time.Date(2026, 7, 14, 12, 30, 0, 0, time.UTC)
-	data := map[aggregateKey]Counters{
-		{Hour: now.Add(-time.Hour).Truncate(time.Minute).Unix(), Dimensions: Dimensions{}}: {Requests: 1},
-	}
-	stats, err := buildStats(data, now.Add(-24*time.Hour), now, "24h", now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(stats.ModelSeries) != 1 || stats.ModelSeries[0].Model != legacyUnlabeledModel {
-		t.Fatalf("unlabeled model API representation = %+v", stats.ModelSeries)
-	}
-}
-
 func TestSaturatingAdd(t *testing.T) {
 	if got := saturatingAdd(math.MaxUint64-2, 5); got != math.MaxUint64 {
 		t.Fatalf("saturatingAdd = %d", got)

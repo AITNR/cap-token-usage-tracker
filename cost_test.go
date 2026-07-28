@@ -85,35 +85,6 @@ func TestEstimateRequestCostMissingPrice(t *testing.T) {
 	}
 }
 
-func TestUnlabeledCostCompatibility(t *testing.T) {
-	request := RequestDetail{Counters: Counters{InputTokens: 1_000_000}}
-	cost := estimateRequestCost(request, map[string]ModelPrice{
-		legacyUnlabeledModel: {Input: 2},
-		unlabeledModel:       {Input: 9},
-	})
-	if !cost.Priced || cost.InputUSD != 2 {
-		t.Fatalf("legacy unlabeled price lookup = %+v", cost)
-	}
-
-	config := testConfig(t)
-	config.SyncOnRecord = true
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.Record(normalizedUsage{RequestedAt: time.Now().UTC(), Counters: Counters{Requests: 1}}); err != nil {
-		t.Fatal(err)
-	}
-	costs, err := store.QueryCosts("24h")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(costs.Models) != 1 || costs.Models[0].Model != legacyUnlabeledModel {
-		t.Fatalf("unlabeled cost API representation = %+v", costs.Models)
-	}
-}
-
 func TestStoreQueryCostsAndRequestPageUseCurrentPriceBook(t *testing.T) {
 	config := testConfig(t)
 	config.SyncOnRecord = true

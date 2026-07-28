@@ -110,28 +110,6 @@ func TestModelPricesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	}
 }
 
-func TestUnlabeledRequestFilterCompatibility(t *testing.T) {
-	config := testConfig(t)
-	config.SyncOnRecord = true
-	store, err := openStore(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if err := store.Record(normalizedUsage{RequestedAt: time.Now().UTC(), Counters: Counters{Requests: 1}}); err != nil {
-		t.Fatal(err)
-	}
-	for _, filter := range []string{legacyUnlabeledModel, unlabeledModel} {
-		page, err := store.QueryRequests("24h", 0, 10, filter)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if page.Total != 1 || len(page.Items) != 1 || page.Items[0].Model != "" {
-			t.Fatalf("filter %q returned %+v", filter, page)
-		}
-	}
-}
-
 func TestModelPriceValidation(t *testing.T) {
 	config := testConfig(t)
 	store, err := openStore(config)

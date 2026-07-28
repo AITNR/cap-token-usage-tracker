@@ -22,7 +22,6 @@ type Config struct {
 	FlushInterval   time.Duration
 	FlushMaxRecords int
 	SyncOnRecord    bool
-	Language        Language
 }
 
 type configYAML struct {
@@ -31,7 +30,6 @@ type configYAML struct {
 	FlushInterval   string `yaml:"flush_interval"`
 	FlushMaxRecords *int   `yaml:"flush_max_records"`
 	SyncOnRecord    *bool  `yaml:"sync_on_record"`
-	Language        string `yaml:"language"`
 }
 
 func defaultConfig() Config {
@@ -41,7 +39,6 @@ func defaultConfig() Config {
 		FlushInterval:   defaultFlushInterval,
 		FlushMaxRecords: defaultFlushMaxRecords,
 		SyncOnRecord:    true,
-		Language:        LanguageAuto,
 	}
 }
 
@@ -74,9 +71,6 @@ func parseConfig(raw []byte) (Config, error) {
 	if input.SyncOnRecord != nil {
 		cfg.SyncOnRecord = *input.SyncOnRecord
 	}
-	if strings.TrimSpace(input.Language) != "" {
-		cfg.Language = Language(strings.TrimSpace(input.Language))
-	}
 	return normalizeConfig(cfg)
 }
 
@@ -92,15 +86,6 @@ func normalizeConfig(cfg Config) (Config, error) {
 	}
 	if cfg.FlushMaxRecords < 1 || cfg.FlushMaxRecords > 1_000_000 {
 		return Config{}, fmt.Errorf("flush_max_records must be between 1 and 1000000")
-	}
-	if strings.TrimSpace(string(cfg.Language)) == "" {
-		cfg.Language = LanguageAuto
-	} else {
-		normalized := normalizeLanguage(string(cfg.Language))
-		if normalized == "" {
-			return Config{}, fmt.Errorf("language must be one of %s", strings.Join(supportedLanguageValues(true), ", "))
-		}
-		cfg.Language = normalized
 	}
 	absolute, err := filepath.Abs(filepath.Clean(cfg.DataPath))
 	if err != nil {

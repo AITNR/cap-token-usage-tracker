@@ -210,7 +210,10 @@ func (s *Store) scanCosts(snapshot costQuerySnapshot) (CostResponse, error) {
 			request.EstimatedCost = nil
 			cost := estimateRequestCost(request, snapshot.Prices)
 			provider := request.Provider
-			model := displayModelName(request.Model)
+			model := request.Model
+			if model == "" {
+				model = "未标记模型"
+			}
 			mKey := modelKey{Provider: provider, Model: model}
 			sKey := seriesKey{Hour: requestedAt.Truncate(time.Minute).Unix(), Provider: provider, Model: model}
 			modelAmounts := models[mKey]
@@ -294,15 +297,11 @@ func addEstimatedCost(amounts *CostAmounts, cost EstimatedCost) {
 }
 
 func estimateRequestCost(request RequestDetail, prices map[string]ModelPrice) EstimatedCost {
-	var price ModelPrice
-	var ok bool
-	for _, key := range priceLookupKeys(request.Model) {
-		if candidate, found := prices[key]; found {
-			price = candidate
-			ok = true
-			break
-		}
+	model := request.Model
+	if model == "" {
+		model = "未标记模型"
 	}
+	price, ok := prices[model]
 	if !ok {
 		return EstimatedCost{}
 	}
