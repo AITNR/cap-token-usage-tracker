@@ -114,6 +114,96 @@ jobs:
           name: release-linux-amd64
           path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_amd64.zip
 
+  build-macos-amd64:
+    name: macOS amd64 (.dylib)
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            v="${{ github.event.inputs.version }}"
+            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build .dylib
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: amd64
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          go build -buildmode=c-shared -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o "${{ env.PLUGIN_ID }}.dylib" .
+
+      - name: Create zip
+        run: |
+          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_darwin_amd64.zip"
+          zip "$zipName" "${{ env.PLUGIN_ID }}.dylib"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-amd64
+          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_darwin_amd64.zip
+
+  build-macos-arm64:
+    name: macOS arm64 (.dylib)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
+            v="${{ github.event.inputs.version }}"
+            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build .dylib
+        env:
+          CGO_ENABLED: "1"
+          GOOS: darwin
+          GOARCH: arm64
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          go build -buildmode=c-shared -trimpath -buildvcs=false \
+            -ldflags="-s -w -X main.version=${VERSION}" \
+            -o "${{ env.PLUGIN_ID }}.dylib" .
+
+      - name: Create zip
+        run: |
+          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_darwin_arm64.zip"
+          zip "$zipName" "${{ env.PLUGIN_ID }}.dylib"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-arm64
+          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_darwin_arm64.zip
+
   build-linux-arm64:
     name: Linux arm64 (.so)
     runs-on: ubuntu-latest
@@ -167,7 +257,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [ build-windows-amd64, build-linux-amd64, build-linux-arm64 ]
+    needs: [ build-windows-amd64, build-linux-amd64, build-linux-arm64, build-macos-amd64, build-macos-arm64 ]
     runs-on: ubuntu-latest
     if: >
       startsWith(github.ref, 'refs/tags/v') ||
