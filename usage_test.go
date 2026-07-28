@@ -66,6 +66,63 @@ func TestDecodeUsageSDKJSON(t *testing.T) {
 	}
 }
 
+func TestDecodeUsageReplacesAPIKeySourceWithProviderServiceAddress(t *testing.T) {
+	now := time.Date(2026, 7, 28, 12, 34, 56, 0, time.UTC)
+	apiKey := "sk-user-secret-1234567890"
+	record := pluginapi.UsageRecord{
+		Provider:     "openai",
+		ExecutorType: "OpenAICompatExecutor",
+		APIKey:       apiKey,
+		AuthType:     "apikey",
+		Source:       apiKey,
+		RequestedAt:  now,
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := decodeUsage(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Dimensions.Source != "https://api.openai.com/v1" {
+		t.Fatalf("source = %q, want OpenAI service address", usage.Dimensions.Source)
+	}
+	encoded, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), apiKey) {
+		t.Fatalf("API key leaked in normalized usage: %s", encoded)
+	}
+}
+
+func TestSafeUsageSourceSanitizesURLAndCredentials(t *testing.T) {
+	tests := []struct {
+		name         string
+		source       string
+		apiKey       string
+		provider     string
+		executorType string
+		authType     string
+		want         string
+	}{
+		{name: "url removes credentials and request metadata", source: "https://user:secret@example.com/v1/?api_key=secret#fragment", want: "https://example.com/v1"},
+		{name: "api key auth replaces arbitrary key", source: "plain-secret-without-known-prefix", provider: "anthropic", authType: "api_key", want: "https://api.anthropic.com"},
+		{name: "record api key match", source: "opaque", apiKey: "opaque", provider: "gemini", want: "https://generativelanguage.googleapis.com"},
+		{name: "known credential prefix", source: "gsk_secret01234567890123456789", provider: "groq", want: "https://api.groq.com/openai/v1"},
+		{name: "safe integration source", source: "cli", provider: "openai", authType: "oauth", want: "cli"},
+		{name: "unknown provider fallback", source: "secret", provider: "custom-provider", authType: "apikey", want: "custom-provider"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := safeUsageSource(test.source, test.apiKey, test.provider, test.executorType, test.authType); got != test.want {
+				t.Fatalf("safeUsageSource() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestDecodeUsageDerivesExplicitZeroTotal(t *testing.T) {
 	now := time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)
 	record := pluginapi.UsageRecord{

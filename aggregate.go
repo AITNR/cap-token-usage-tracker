@@ -141,9 +141,10 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 		if !cutoff.IsZero() && key.Hour < cutoff.Unix() {
 			continue
 		}
-		group := groups[key.Dimensions]
+		dimensions := sanitizeDimensionsSource(key.Dimensions)
+		group := groups[dimensions]
 		group.add(counters)
-		groups[key.Dimensions] = group
+		groups[dimensions] = group
 
 		point := series[key.Hour]
 		point.add(counters)
