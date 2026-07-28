@@ -51,6 +51,7 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		`updated_at:base.updated_at||''`,
 		"replaceChildren.apply",
 		"Math.max.apply",
 		"localStorage",
@@ -106,6 +107,7 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`function addManualModel()`,
 		`function rerenderPricingEditor(excludedName)`,
 		`manualDraftModels.has(name)||input>0`,
+		`if(base.updated_at)value.updated_at=base.updated_at`,
 		`manualDraftModels.clear()`,
 		`var modelsURL='/v1/models'`,
 		`function normalizeCLIModels(payload)`,
