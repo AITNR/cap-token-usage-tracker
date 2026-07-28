@@ -16,7 +16,8 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 按模型、提供商、执行器、别名、来源、认证类型、服务层级、推理强度和失败状态分组
 - 统计请求数、失败数、输入/输出/推理/缓存 Token、延迟、TTFT、生成时间、TPS 和缓存命中
 - 支持最近 24 小时、7 天、30 天或全部保留数据，趋势图可按分钟/小时/日/周/月聚合
-- 自包含中文仪表盘，无第三方前端依赖，包含指标卡片、堆叠 Token 趋势、模型环形占比、精确费用趋势、模型效率散点图和逐请求明细
+- 自包含仪表盘，无第三方前端依赖，包含指标卡片、堆叠 Token 趋势、模型环形占比、精确费用趋势、模型效率散点图和逐请求明细
+- 仪表盘界面自动跟随浏览器语言无感切换，支持英文（en）、简体中文（zh-CN）、繁体中文（zh-TW）和俄文（ru），无需手动选择；每种语言对应一个独立语言文件，可按需扩展
 - 支持 Input、Output、Cache Read、Cache Creation 四类模型价格、逐请求 Context Tier、免费模型、价格覆盖率和缺价提示
 - 支持从 models.dev 手动同步 CLIProxyAPI `/v1/models` 当前返回的模型价格，可配置提供商优先级、忽略后缀和显式模型映射；手工价格优先
 - 支持模型下钻联动、趋势图滚轮缩放/平移、移动端自适应坐标轴、总 Token 完整/k/m 切换、全页面 USD/CNY 最新汇率显示、当前筛选数据 CSV 和 Dashboard PNG 导出
@@ -206,7 +207,8 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 - Grouped by model, provider, executor, alias, source, auth type, service tier, reasoning intensity, and failure status
 - Counts requests, failures, input/output/reasoning/cached tokens, latency, TTFT, generation time, TPS, and cache hits
 - Supports the last 24 hours, 7 days, 30 days, or all retained data, with minute/hour/day/week/month trend granularity
-- Self-contained Chinese dashboard with no third-party frontend dependencies, including stat cards, stacked Token trends, a model doughnut chart, exact cost trends, a model-efficiency scatter plot, and per-request details
+- Self-contained dashboard with no third-party frontend dependencies, including stat cards, stacked Token trends, a model doughnut chart, exact cost trends, a model-efficiency scatter plot, and per-request details
+- Dashboard UI automatically follows the browser language with no button or page reload, supporting English (en), Simplified Chinese (zh-CN), Traditional Chinese (zh-TW), and Russian (ru); each language has its own locale file and additional languages can be added by extending the `locales/` directory
 - Supports Input, Output, Cache Read, and Cache Creation prices, per-request context tiers, free models, pricing coverage, and missing-price reporting
 - Supports manual synchronization from models.dev for the current models returned by CLIProxyAPI `/v1/models`, with configurable provider priority, ignored suffixes, and explicit model mappings; manual prices take precedence
 - Supports linked model drill-down, wheel zoom/pan, responsive mobile chart axes, full/k/m total-Token display, dashboard-wide USD/CNY latest-rate display, filtered CSV export, and Dashboard PNG export

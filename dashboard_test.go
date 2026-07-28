@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -21,9 +22,19 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"resetDialog.showModal()",
 		"window.parent.document.documentElement",
 		"new MutationObserver",
-		"attributeFilter:['data-theme','style','class']",
+		"attributeFilter:['data-theme','style','class','lang']",
 		"initializeThemeSync()",
 		"window.matchMedia",
+		"supportedLocales=['en','zh-CN','zh-TW','ru']",
+		"function detectLocale()",
+		"function normalizeLocale(value)",
+		"navigator.languages",
+		"window.addEventListener('languagechange'",
+		"document.documentElement.lang=locale",
+		"formatterLocale=locale==='zh-CN'?'zh-CN':locale==='zh-TW'?'zh-TW':locale==='ru'?'ru-RU':'en-US'",
+		"function translateStatic()",
+		"function localeNumber(value,options)",
+		"function localeDate(value,options)",
 		"<html lang=\"zh-CN\" data-theme=\"dark\" style=\"background:#151412;color-scheme:dark\">",
 		"<meta name=\"color-scheme\" content=\"dark light\">",
 		"<style id=\"initial-theme\">",
@@ -137,8 +148,8 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`该时间段内暂无调用记录`,
 		`grid-template-columns:repeat(4`,
 		`grid-template-columns:repeat(2`,
-		`<option value="minute">按分钟</option>`,
-		`<option value="hour" selected>按小时</option>`,
+		`<option value="minute" data-i18n="granularity.minute">`,
+		`<option value="hour" selected data-i18n="granularity.hour">`,
 		`id="costChart"`,
 		`function renderCostTrend()`,
 		`id="efficiencyChart"`,
@@ -272,5 +283,55 @@ func TestDashboardDoesNotServerRenderUsageValues(t *testing.T) {
 	}
 	if !strings.Contains(dashboardHTML, "td.textContent=value") {
 		t.Fatal("usage cells are not rendered with textContent")
+	}
+}
+
+func TestDashboardLocalesCatalog(t *testing.T) {
+	// All four locale codes must be embedded in the HTML.
+	for _, code := range []string{"en", "zh-CN", "zh-TW", "ru"} {
+		if !strings.Contains(dashboardHTML, `"`+code+`"`) {
+			t.Fatalf("dashboardHTML missing locale code %q", code)
+		}
+	}
+
+	// The embedded JSON blob must decode to a map containing all four locales
+	// with the required base keys.
+	const marker = "/*LOCALE_PLACEHOLDER*/"
+	if strings.Contains(dashboardHTML, marker) {
+		t.Fatal("dashboardHTML still contains unresolved locale placeholder")
+	}
+
+	// Verify each locale file individually via the embed FS.
+	requiredKeys := []string{
+		"app.title",
+		"button.refresh",
+		"button.reset",
+		"status.loading",
+		"chart.noCalls",
+		"empty.calls",
+		"model.untitled",
+		"pricing.title",
+	}
+	for _, code := range []string{"en", "zh-CN", "zh-TW", "ru"} {
+		data, err := localeFS.ReadFile("locales/" + code + ".json")
+		if err != nil {
+			t.Fatalf("locale %s: %v", code, err)
+		}
+		var m map[string]string
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("locale %s invalid JSON: %v", code, err)
+		}
+		for _, key := range requiredKeys {
+			if _, ok := m[key]; !ok {
+				t.Fatalf("locale %s missing required key %q", code, key)
+			}
+		}
+	}
+
+	// Verify the locale runtime is wired: translateStatic must be called
+	// during initialisation (after theme and chart resize setup).
+	initSeq := "initializeThemeSync();initializeChartResize();translateStatic();"
+	if !strings.Contains(dashboardHTML, initSeq) {
+		t.Fatalf("dashboardHTML missing init sequence %q", initSeq)
 	}
 }
