@@ -254,13 +254,20 @@ func TestStoreSyncOnRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	lockedConfig := config
-	lockedConfig.DataPath = config.DataPath
-	if _, err := openStore(lockedConfig); err == nil {
-		t.Fatal("expected locked database open to fail")
+	replacement, err := openStore(config)
+	if err != nil {
+		t.Fatalf("open replacement store: %v", err)
 	}
-	if err := store.Close(); err != nil {
+	defer replacement.Close()
+	if _, err := store.Query("retention"); err == nil || err.Error() != "store is closed" {
+		t.Fatalf("retired store query error = %v, want store is closed", err)
+	}
+	stats, err := replacement.Query("retention")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if stats.Summary.Requests != 1 || stats.Summary.TotalTokens != 7 {
+		t.Fatalf("synchronous record was not preserved across handover: %+v", stats.Summary)
 	}
 }
 

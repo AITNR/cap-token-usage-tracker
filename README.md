@@ -72,6 +72,8 @@ plugins:
 
 默认同步模式会在 `usage.handle` 返回前提交每条统计，避免正常记录停留在未刷盘窗口。仅当显式设置 `sync_on_record: false` 时启用批量模式；进程被强制终止时，批量模式最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。
 
+插件会在数据库旁创建 `<data_path>.handover` 协调同一 CLIProxyAPI 进程中的热更新。新版实例注册时，旧版实例会先刷盘并释放 bbolt 独占锁，再由新版实例接管数据库，从而避免 `open database: timeout`。从不支持此交接机制的旧版本首次升级时，需要先重启 CLIProxyAPI 或删除后重装一次；之后的版本更新可以直接热更新。
+
 修改 `data_path` 会切换到一个独立数据库，不会自动迁移或删除旧文件。
 
 ## 页面与接口
@@ -262,6 +264,8 @@ plugins:
 | `sync_on_record` | `true` | Commits each record before acknowledgement by default; set to `false` to enable higher-throughput batching |
 
 The default synchronous mode commits each statistic before `usage.handle` returns, avoiding an unflushed normal-operation window. Batching is enabled only when `sync_on_record: false` is set explicitly; if the process is forcefully terminated in batch mode, up to one `flush_interval` or unflushed `flush_max_records` window may be lost.
+
+The plugin creates `<data_path>.handover` next to the database to coordinate hot reloads within the same CLIProxyAPI process. When a replacement instance registers, the retired instance flushes and releases bbolt's exclusive lock before the replacement takes ownership, preventing `open database: timeout`. The first upgrade from a version without this handover mechanism still requires one CLIProxyAPI restart or one uninstall/reinstall; later upgrades can be hot reloaded directly.
 
 Changing `data_path` switches to a separate database; the old file is not automatically migrated or deleted.
 
