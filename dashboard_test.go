@@ -22,7 +22,7 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"resetDialog.showModal()",
 		"window.parent.document.documentElement",
 		"new MutationObserver",
-		"attributeFilter:['data-theme','style','class']",
+		"attributeFilter:['data-theme','style','class','lang']",
 		"initializeThemeSync()",
 		"window.matchMedia",
 		"supportedLocales=['en','zh-CN','zh-TW','ru']",
