@@ -237,5 +237,14 @@
   "reset.title": "Подтверждение ключа управления",
   "reset.description": "Для очистки статистики требуется ключ управления CLIProxyAPI. Ключ используется только для этого запроса.",
   "reset.cancel": "Отмена",
-  "reset.confirm": "Подтвердить очистку"
+  "reset.confirm": "Подтвердить очистку",
+  "button.addManualModel": "Добавить модель",
+  "pricing.manualModel": "Добавить модель вручную",
+  "pricing.manualModelPlaceholder": "Введите точное имя модели",
+  "pricing.manualModelHint": "Добавьте модель, которой нет в текущем каталоге CLIProxyAPI, и задайте цены в USD за 1 млн токенов. Изменения вступят в силу после сохранения.",
+  "pricing.manualDraftSource": "Добавлено вручную · не сохранено",
+  "error.missingManualModel": "Введите имя модели.",
+  "error.longManualModel": "Имя модели должно содержать не более 160 символов.",
+  "error.duplicateManualModel": "Модель «{model}» уже существует.",
+  "error.tooManyManualModels": "В книге цен уже достигнуто максимальное количество моделей."
 }

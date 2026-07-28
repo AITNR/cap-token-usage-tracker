@@ -237,5 +237,14 @@
   "reset.title": "Management Key Confirmation",
   "reset.description": "Clearing statistics requires a CLIProxyAPI management key. The key is only used for this request.",
   "reset.cancel": "Cancel",
-  "reset.confirm": "Confirm Clear"
+  "reset.confirm": "Confirm Clear",
+  "button.addManualModel": "Add model",
+  "pricing.manualModel": "Manual model",
+  "pricing.manualModelPlaceholder": "Enter exact model name",
+  "pricing.manualModelHint": "Add a model that is not in the current CLIProxyAPI catalog, then set its USD / 1M Token prices. Changes take effect after saving.",
+  "pricing.manualDraftSource": "Manual addition · not saved",
+  "error.missingManualModel": "Enter a model name.",
+  "error.longManualModel": "Model names must contain at most 160 characters.",
+  "error.duplicateManualModel": "Model “{model}” already exists.",
+  "error.tooManyManualModels": "The price book already contains the maximum number of models."
 }
