@@ -32,7 +32,7 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registration.Routes) != 4 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || registration.Routes[3].Path != "/plugins/custom-id/prices/sync" || len(registration.Resources) != 6 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/costs" || registration.Resources[4].Path != "/exchange-rate" || registration.Resources[5].Path != "/prices" {
+	if len(registration.Routes) != 4 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || registration.Routes[3].Path != "/plugins/custom-id/prices/sync" || len(registration.Resources) != 7 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/costs" || registration.Resources[4].Path != "/exchange-rate" || registration.Resources[5].Path != "/prices" || registration.Resources[6].Path != "/preferences" {
 		t.Fatalf("unexpected registration: %+v", registration)
 	}
 	if registration.Routes[0].Menu != "" {
@@ -47,7 +47,7 @@ func TestManagementStatsAndReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
-		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests", resourceCostsPath: "/v0/resource/plugins/test/costs", resourceExchangeRatePath: "/v0/resource/plugins/test/exchange-rate", pricesPath: "/v0/management/plugins/test/prices", priceSyncPath: "/v0/management/plugins/test/prices/sync", resourcePricesPath: "/v0/resource/plugins/test/prices",
+		pluginID: "test", statsPath: "/v0/management/plugins/test/stats", resetPath: "/v0/management/plugins/test/reset", dashboardPath: "/v0/resource/plugins/test/dashboard", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests", resourceCostsPath: "/v0/resource/plugins/test/costs", resourceExchangeRatePath: "/v0/resource/plugins/test/exchange-rate", pricesPath: "/v0/management/plugins/test/prices", priceSyncPath: "/v0/management/plugins/test/prices/sync", resourcePricesPath: "/v0/resource/plugins/test/prices", resourcePreferencesPath: "/v0/resource/plugins/test/preferences",
 	}}
 	defer runtime.shutdown()
 	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "m"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 3}}); err != nil {
@@ -83,6 +83,21 @@ func TestManagementStatsAndReset(t *testing.T) {
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"prices":{}`) {
 		t.Fatalf("empty prices response: %+v, %v", response, err)
 	}
+	preferencesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePreferencesPath})
+	response, err = runtime.handleManagement(preferencesRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"request_page_size":100`) || !strings.Contains(string(response.Body), `"hidden_request_columns":[]`) {
+		t.Fatalf("default preferences response: %+v, %v", response, err)
+	}
+	savePreferencesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePreferencesPath, Query: url.Values{"save": []string{"1"}, "request_page_size": []string{"50"}, "dimension_page_size": []string{"200"}, "hidden_request_column": []string{"source"}, "hidden_dimension_column": []string{"provider"}}})
+	response, err = runtime.handleManagement(savePreferencesRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"request_page_size":50`) || !strings.Contains(string(response.Body), `"hidden_dimension_columns":["provider"]`) {
+		t.Fatalf("save preferences response: %+v, %v", response, err)
+	}
+	response, err = runtime.handleManagement(preferencesRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"dimension_page_size":200`) || !strings.Contains(string(response.Body), `"hidden_request_columns":["source"]`) {
+		t.Fatalf("persisted preferences response: %+v, %v", response, err)
+	}
+
 	savePricesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodPut, Path: runtime.routes.pricesPath, Headers: http.Header{"Content-Type": []string{"application/json"}}, Body: []byte(`{"prices":{"m":{"input":2.5,"output":10}}}`)})
 	response, err = runtime.handleManagement(savePricesRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"input":2.5`) {
@@ -187,6 +202,40 @@ func TestSyncModelsDevUsesProvidedCLIModels(t *testing.T) {
 	}
 	if _, ok := response.Prices["usage-only"]; ok {
 		t.Fatalf("usage-only model was synchronized: %+v", response.Prices)
+	}
+}
+
+func TestDashboardPreferencesResourceValidation(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{pluginID: "test", resourcePreferencesPath: "/v0/resource/plugins/test/preferences"}}
+	defer runtime.shutdown()
+
+	request := func(method string, query url.Values) pluginapi.ManagementResponse {
+		raw, _ := json.Marshal(pluginapi.ManagementRequest{Method: method, Path: runtime.routes.resourcePreferencesPath, Query: query})
+		response, handleErr := runtime.handleManagement(raw)
+		if handleErr != nil {
+			t.Fatal(handleErr)
+		}
+		return response
+	}
+	if response := request(http.MethodGet, url.Values{"request_page_size": []string{"100"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("save flag omission status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"0"}, "dimension_page_size": []string{"100"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid page size status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "hidden_request_column": []string{"api_key"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid column status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "unknown": []string{"value"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown query status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if response := request(http.MethodPost, nil); response.StatusCode != http.StatusMethodNotAllowed || response.Headers.Get("Allow") != "GET" {
+		t.Fatalf("wrong method response = %+v", response)
 	}
 }
 

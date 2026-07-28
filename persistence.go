@@ -16,17 +16,18 @@ import (
 )
 
 var (
-	metaBucket            = []byte("meta")
-	hoursBucket           = []byte("hours")
-	requestsBucket        = []byte("requests")
-	schemaKey             = []byte("schema_version")
-	sinceKey              = []byte("since_unix_nano")
-	lastUsedKey           = []byte("last_used_unix_nano")
-	requestSequenceKey    = []byte("request_sequence")
-	modelPricesKey        = []byte("model_prices")
-	modelPriceRevisionKey = []byte("model_price_revision")
-	modelPriceSettingsKey = []byte("model_price_sync_settings")
-	modelPriceLastSyncKey = []byte("model_price_last_sync")
+	metaBucket              = []byte("meta")
+	hoursBucket             = []byte("hours")
+	requestsBucket          = []byte("requests")
+	schemaKey               = []byte("schema_version")
+	sinceKey                = []byte("since_unix_nano")
+	lastUsedKey             = []byte("last_used_unix_nano")
+	requestSequenceKey      = []byte("request_sequence")
+	modelPricesKey          = []byte("model_prices")
+	modelPriceRevisionKey   = []byte("model_price_revision")
+	modelPriceSettingsKey   = []byte("model_price_sync_settings")
+	modelPriceLastSyncKey   = []byte("model_price_last_sync")
+	dashboardPreferencesKey = []byte("dashboard_preferences")
 )
 
 const persistenceSchemaVersion uint64 = 5
@@ -92,6 +93,15 @@ type costSnapshotResult struct {
 	snapshot costQuerySnapshot
 	err      error
 }
+type preferencesQueryCommand struct{ resp chan preferencesResult }
+type savePreferencesCommand struct {
+	preferences DashboardPreferences
+	resp        chan preferencesResult
+}
+type preferencesResult struct {
+	preferences DashboardPreferences
+	err         error
+}
 
 type resetCommand struct{ resp chan error }
 type configCommand struct {
@@ -116,22 +126,23 @@ type Store struct {
 }
 
 type storeActor struct {
-	db                *bolt.DB
-	config            Config
-	data              map[aggregateKey]Counters
-	dirty             map[aggregateKey]struct{}
-	since             time.Time
-	lastUsed          time.Time
-	pending           int
-	lastPruneAt       time.Time
-	lastFlushErr      error
-	pendingRequests   []RequestDetail
-	nextRequestSeq    uint64
-	modelPrices       map[string]ModelPrice
-	priceRevision     uint64
-	priceSyncSettings PriceSyncSettings
-	lastPriceSync     *PriceSyncMetadata
-	costGeneration    uint64
+	db                   *bolt.DB
+	config               Config
+	data                 map[aggregateKey]Counters
+	dirty                map[aggregateKey]struct{}
+	since                time.Time
+	lastUsed             time.Time
+	pending              int
+	lastPruneAt          time.Time
+	lastFlushErr         error
+	pendingRequests      []RequestDetail
+	nextRequestSeq       uint64
+	modelPrices          map[string]ModelPrice
+	priceRevision        uint64
+	priceSyncSettings    PriceSyncSettings
+	lastPriceSync        *PriceSyncMetadata
+	costGeneration       uint64
+	dashboardPreferences DashboardPreferences
 }
 
 func openStore(config Config) (*Store, error) {
@@ -144,10 +155,11 @@ func openStore(config Config) (*Store, error) {
 	}
 
 	actor := &storeActor{
-		db:     db,
-		config: config,
-		data:   make(map[aggregateKey]Counters),
-		dirty:  make(map[aggregateKey]struct{}),
+		db:                   db,
+		config:               config,
+		data:                 make(map[aggregateKey]Counters),
+		dirty:                make(map[aggregateKey]struct{}),
+		dashboardPreferences: defaultDashboardPreferences(),
 	}
 	if err := actor.initialize(); err != nil {
 		_ = db.Close()
@@ -189,6 +201,28 @@ func (s *Store) QueryRequests(rangeName string, offset, limit int, model string)
 	}
 	result := <-resp
 	return result.page, result.err
+}
+
+func (s *Store) QueryDashboardPreferences() (DashboardPreferences, error) {
+	resp := make(chan preferencesResult, 1)
+	if err := s.send(preferencesQueryCommand{resp: resp}); err != nil {
+		return DashboardPreferences{}, err
+	}
+	result := <-resp
+	return result.preferences, result.err
+}
+
+func (s *Store) SaveDashboardPreferences(preferences DashboardPreferences) (DashboardPreferences, error) {
+	normalized, err := normalizeDashboardPreferences(preferences)
+	if err != nil {
+		return DashboardPreferences{}, withStatus(400, "%v", err)
+	}
+	resp := make(chan preferencesResult, 1)
+	if err := s.send(savePreferencesCommand{preferences: normalized, resp: resp}); err != nil {
+		return DashboardPreferences{}, err
+	}
+	result := <-resp
+	return result.preferences, result.err
 }
 
 func (s *Store) QueryModelPrices() (map[string]ModelPrice, error) {
@@ -328,6 +362,11 @@ func (s *Store) run(actor *storeActor) {
 				}
 				page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
 				item.resp <- requestQueryResult{page: page, err: err}
+			case preferencesQueryCommand:
+				item.resp <- preferencesResult{preferences: cloneDashboardPreferences(actor.dashboardPreferences)}
+			case savePreferencesCommand:
+				preferences, err := actor.saveDashboardPreferences(item.preferences)
+				item.resp <- preferencesResult{preferences: preferences, err: err}
 			case priceQueryCommand:
 				item.resp <- priceQueryResult{response: actor.priceBookResponse()}
 			case savePricesCommand:
@@ -459,6 +498,17 @@ func (a *storeActor) initialize() error {
 				return fmt.Errorf("validate model prices: %w", err)
 			}
 			a.modelPrices = normalized
+		}
+		if raw := meta.Get(dashboardPreferencesKey); len(raw) > 0 {
+			var stored DashboardPreferences
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode dashboard preferences: %w", err)
+			}
+			normalized, err := normalizeDashboardPreferences(stored)
+			if err != nil {
+				return fmt.Errorf("validate dashboard preferences: %w", err)
+			}
+			a.dashboardPreferences = normalized
 		}
 		a.priceRevision = decodeUint64(meta.Get(modelPriceRevisionKey))
 		if a.priceRevision == 0 && len(a.modelPrices) > 0 {
@@ -818,6 +868,24 @@ func (a *storeActor) reconfigure(config Config) error {
 	a.lastFlushErr = nil
 	a.costGeneration++
 	return nil
+}
+
+func (a *storeActor) saveDashboardPreferences(preferences DashboardPreferences) (DashboardPreferences, error) {
+	encoded, err := json.Marshal(preferences)
+	if err != nil {
+		return DashboardPreferences{}, fmt.Errorf("encode dashboard preferences: %w", err)
+	}
+	if err := a.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metaBucket)
+		if meta == nil {
+			return errors.New("metadata bucket is missing")
+		}
+		return meta.Put(dashboardPreferencesKey, encoded)
+	}); err != nil {
+		return DashboardPreferences{}, fmt.Errorf("persist dashboard preferences: %w", err)
+	}
+	a.dashboardPreferences = cloneDashboardPreferences(preferences)
+	return cloneDashboardPreferences(a.dashboardPreferences), nil
 }
 
 func (a *storeActor) priceBookResponse() ModelPricesResponse {

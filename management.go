@@ -33,6 +33,7 @@ type registeredRoutes struct {
 	pricesPath               string
 	priceSyncPath            string
 	resourcePricesPath       string
+	resourcePreferencesPath  string
 }
 
 func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationResponse, error) {
@@ -57,6 +58,7 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		pricesPath:               "/v0/management/plugins/" + pluginID + "/prices",
 		priceSyncPath:            "/v0/management/plugins/" + pluginID + "/prices/sync",
 		resourcePricesPath:       "/v0/resource/plugins/" + pluginID + "/prices",
+		resourcePreferencesPath:  "/v0/resource/plugins/" + pluginID + "/preferences",
 	}
 	r.mu.Lock()
 	r.routes = routes
@@ -111,6 +113,10 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 				Path:        "/prices",
 				Description: "Read persisted model token prices for the plugin dashboard.",
 			},
+			{
+				Path:        "/preferences",
+				Description: "Read and persist dashboard table preferences.",
+			},
 		},
 	}, nil
 }
@@ -159,6 +165,11 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return r.pricesResponse()
+	case routes.resourcePreferencesPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.preferencesResponse(request)
 	case routes.pricesPath:
 		if !strings.EqualFold(request.Method, http.MethodPut) {
 			return methodNotAllowed(http.MethodPut), nil
@@ -255,6 +266,77 @@ func (r *pluginRuntime) pricesResponse() (pluginapi.ManagementResponse, error) {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
 	return jsonResponse(http.StatusOK, priceBook), nil
+}
+
+// Plugin resource routes are dispatched by the host as GET-only. The save=1
+// query form persists this small, non-sensitive dashboard preference payload.
+func (r *pluginRuntime) preferencesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	if request.Query.Get("save") == "" {
+		if len(request.Query) != 0 {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"error": "save must be 1 when preference values are supplied"}), nil
+		}
+		preferences, err := store.QueryDashboardPreferences()
+		if err != nil {
+			return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+		}
+		return jsonResponse(http.StatusOK, preferences), nil
+	}
+	preferences, err := dashboardPreferencesFromQuery(request.Query)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	preferences, err = store.SaveDashboardPreferences(preferences)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, preferences), nil
+}
+
+func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferences, error) {
+	allowed := map[string]struct{}{
+		"save": {}, "request_page_size": {}, "dimension_page_size": {},
+		"hidden_request_column": {}, "hidden_dimension_column": {},
+	}
+	for key := range query {
+		if _, ok := allowed[key]; !ok {
+			return DashboardPreferences{}, withStatus(http.StatusBadRequest, "unsupported dashboard preference query parameter %q", key)
+		}
+	}
+	if values := query["save"]; len(values) != 1 || values[0] != "1" {
+		return DashboardPreferences{}, withStatus(http.StatusBadRequest, "save must be 1")
+	}
+	requestPageSize, err := parseDashboardPageSize(query, "request_page_size")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
+	dimensionPageSize, err := parseDashboardPageSize(query, "dimension_page_size")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
+	return DashboardPreferences{
+		RequestPageSize:        requestPageSize,
+		DimensionPageSize:      dimensionPageSize,
+		HiddenRequestColumns:   append([]string{}, query["hidden_request_column"]...),
+		HiddenDimensionColumns: append([]string{}, query["hidden_dimension_column"]...),
+	}, nil
+}
+
+func parseDashboardPageSize(query map[string][]string, name string) (int, error) {
+	values := query[name]
+	if len(values) != 1 {
+		return 0, withStatus(http.StatusBadRequest, "%s must be supplied exactly once", name)
+	}
+	value, err := strconv.Atoi(values[0])
+	if err != nil || value < 1 || value > maxDashboardPageSize {
+		return 0, withStatus(http.StatusBadRequest, "%s must be an integer between 1 and %d", name, maxDashboardPageSize)
+	}
+	return value, nil
 }
 
 func (r *pluginRuntime) savePricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {

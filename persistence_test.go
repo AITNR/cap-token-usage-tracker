@@ -73,6 +73,78 @@ func TestStorePersistsAcrossRestartAndReset(t *testing.T) {
 	}
 }
 
+func TestDashboardPreferencesPersistAcrossRestartAndStatsReset(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := store.QueryDashboardPreferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.RequestPageSize != 100 || defaults.DimensionPageSize != 100 || len(defaults.HiddenRequestColumns) != 0 || len(defaults.HiddenDimensionColumns) != 0 {
+		t.Fatalf("default preferences = %+v", defaults)
+	}
+	want := DashboardPreferences{
+		RequestPageSize:        50,
+		DimensionPageSize:      200,
+		HiddenRequestColumns:   []string{"source", "model", "source"},
+		HiddenDimensionColumns: []string{"provider"},
+	}
+	saved, err := store.SaveDashboardPreferences(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.RequestPageSize != 50 || saved.DimensionPageSize != 200 || len(saved.HiddenRequestColumns) != 2 || saved.HiddenRequestColumns[0] != "model" || saved.HiddenRequestColumns[1] != "source" {
+		t.Fatalf("normalized preferences = %+v", saved)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	loaded, err := store.QueryDashboardPreferences()
+	if err != nil || loaded.RequestPageSize != 50 || loaded.DimensionPageSize != 200 || len(loaded.HiddenDimensionColumns) != 1 || loaded.HiddenDimensionColumns[0] != "provider" {
+		t.Fatalf("preferences after restart = %+v, %v", loaded, err)
+	}
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = store.QueryDashboardPreferences()
+	if err != nil || loaded.RequestPageSize != 50 || len(loaded.HiddenRequestColumns) != 2 {
+		t.Fatalf("stats reset removed dashboard preferences: %+v, %v", loaded, err)
+	}
+}
+
+func TestDashboardPreferencesValidation(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	valid := defaultDashboardPreferences()
+	for _, mutate := range []func(*DashboardPreferences){
+		func(value *DashboardPreferences) { value.RequestPageSize = 0 },
+		func(value *DashboardPreferences) { value.DimensionPageSize = 501 },
+		func(value *DashboardPreferences) { value.HiddenRequestColumns = []string{"api_key"} },
+		func(value *DashboardPreferences) {
+			value.HiddenDimensionColumns = append([]string(nil), dimensionColumnKeys...)
+		},
+	} {
+		value := cloneDashboardPreferences(valid)
+		mutate(&value)
+		if _, err := store.SaveDashboardPreferences(value); err == nil || errorHTTPStatus(err) != 400 {
+			t.Fatalf("invalid preferences accepted: %+v, %v", value, err)
+		}
+	}
+}
+
 func TestModelPricesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	config := testConfig(t)
 	store, err := openStore(config)
