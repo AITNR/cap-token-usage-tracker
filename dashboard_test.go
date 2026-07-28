@@ -80,6 +80,20 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 	}
 }
 
+func TestDashboardColumnMenusCanOverflowShortTables(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.panel{overflow:hidden}`,
+		`.table-panel{overflow:visible}`,
+		`.table-wrap{max-height:540px;overflow:auto;border-radius:0 0 12px 12px;scrollbar-gutter:stable}`,
+		`.request-columns-menu{position:absolute`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing short-table column menu fix %q", required)
+		}
+	}
+}
+
 func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
