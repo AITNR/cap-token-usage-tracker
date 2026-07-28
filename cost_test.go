@@ -85,6 +85,135 @@ func TestEstimateRequestCostMissingPrice(t *testing.T) {
 	}
 }
 
+func TestEstimateRequestCostUsesIgnoredSuffixFallback(t *testing.T) {
+	resolver := newModelPriceResolver(map[string]ModelPrice{
+		"gemini-3.1-pro-preview-gg": {Input: 2, Output: 12, CacheRead: 0.2},
+	}, PriceSyncSettings{IgnoredSuffixes: []string{"-gg"}})
+	request := RequestDetail{
+		Dimensions: Dimensions{Provider: "google", Model: "gemini-3.1-pro-preview"},
+		Counters:   Counters{InputTokens: 1_000, OutputTokens: 100},
+	}
+	cost := estimateRequestCostWithResolver(request, resolver)
+	if !cost.Priced {
+		t.Fatalf("normalized suffix price was not resolved: %+v", cost)
+	}
+	want := 1_000.0*2/1_000_000 + 100.0*12/1_000_000
+	if math.Abs(cost.TotalUSD-want) > 1e-12 {
+		t.Fatalf("normalized suffix cost = %.12f, want %.12f", cost.TotalUSD, want)
+	}
+}
+
+func TestEstimateRequestCostExactPriceWinsOverNormalizedCandidate(t *testing.T) {
+	resolver := newModelPriceResolver(map[string]ModelPrice{
+		"model":    {Input: 1},
+		"model-gg": {Input: 2},
+	}, PriceSyncSettings{IgnoredSuffixes: []string{"-gg"}})
+	cost := estimateRequestCostWithResolver(RequestDetail{
+		Dimensions: Dimensions{Model: "model"},
+		Counters:   Counters{InputTokens: 1_000},
+	}, resolver)
+	if !cost.Priced || math.Abs(cost.InputUSD-0.001) > 1e-12 {
+		t.Fatalf("exact price did not win: %+v", cost)
+	}
+}
+
+func TestEstimateRequestCostRejectsAmbiguousNormalizedPrices(t *testing.T) {
+	resolver := newModelPriceResolver(map[string]ModelPrice{
+		"model-gg":      {Input: 1},
+		"model-preview": {Input: 2},
+	}, PriceSyncSettings{IgnoredSuffixes: []string{"-gg", "-preview", "-local"}})
+	cost := estimateRequestCostWithResolver(RequestDetail{
+		Dimensions: Dimensions{Model: "model-local"},
+		Counters:   Counters{InputTokens: 1_000},
+	}, resolver)
+	if cost.Priced || cost.TotalUSD != 0 {
+		t.Fatalf("ambiguous normalized price was selected: %+v", cost)
+	}
+}
+
+func TestEstimateRequestCostAllowsEquivalentNormalizedPrices(t *testing.T) {
+	resolver := newModelPriceResolver(map[string]ModelPrice{
+		"model-gg":      {Input: 2, Output: 4},
+		"model-preview": {Input: 2, Output: 4},
+	}, PriceSyncSettings{IgnoredSuffixes: []string{"-gg", "-preview", "-local"}})
+	cost := estimateRequestCostWithResolver(RequestDetail{
+		Dimensions: Dimensions{Model: "model-local"},
+		Counters:   Counters{InputTokens: 1_000, OutputTokens: 100},
+	}, resolver)
+	if !cost.Priced || math.Abs(cost.TotalUSD-0.0024) > 1e-12 {
+		t.Fatalf("equivalent normalized prices were not resolved: %+v", cost)
+	}
+}
+
+func TestEstimateRequestCostUsesExplicitMappingFallback(t *testing.T) {
+	resolver := newModelPriceResolver(map[string]ModelPrice{
+		"local-model": {Input: 3},
+	}, PriceSyncSettings{Mappings: []PriceSyncMapping{{Source: "local-model", Target: "catalog-model"}}})
+	cost := estimateRequestCostWithResolver(RequestDetail{
+		Dimensions: Dimensions{Model: "catalog-model"},
+		Counters:   Counters{InputTokens: 1_000},
+	}, resolver)
+	if !cost.Priced || math.Abs(cost.InputUSD-0.003) > 1e-12 {
+		t.Fatalf("mapped price was not resolved: %+v", cost)
+	}
+}
+
+func TestStoreCostsResolveSynchronizedIgnoredSuffix(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	settings := PriceSyncSettings{IgnoredSuffixes: []string{"-gg"}}
+	if _, err := store.ApplyModelPriceSync(map[string]ModelPrice{
+		"gemini-3.1-pro-preview-gg": {
+			Input: 2, Output: 12, CacheRead: 0.2, Source: priceSourceModelsDev,
+			CatalogProvider: "google", CatalogModel: "gemini-3.1-pro-preview",
+		},
+	}, settings, PriceSyncMetadata{Observed: 1, Matched: 1, CompletedAt: time.Now().UTC()}, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	for index := 0; index < 16; index++ {
+		if err := store.Record(normalizedUsage{
+			Dimensions:  Dimensions{Provider: "google", Model: "gemini-3.1-pro-preview"},
+			RequestedAt: now.Add(time.Duration(index) * time.Millisecond),
+			Counters:    Counters{Requests: 1, InputTokens: 1_000, OutputTokens: 100, TotalTokens: 1_100},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	costs, err := store.QueryCosts("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if costs.Summary.Requests != 16 || costs.Summary.PricedRequests != 16 || costs.Summary.UnpricedRequests != 0 || len(costs.MissingPrices) != 0 {
+		t.Fatalf("normalized cost coverage = %+v, missing=%+v", costs.Summary, costs.MissingPrices)
+	}
+	want := 16 * (1_000.0*2/1_000_000 + 100.0*12/1_000_000)
+	if math.Abs(costs.Summary.TotalUSD-want) > 1e-12 {
+		t.Fatalf("normalized total cost = %.12f, want %.12f", costs.Summary.TotalUSD, want)
+	}
+
+	page, err := store.QueryRequests("24h", 0, 100, "gemini-3.1-pro-preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 16 || len(page.Items) != 16 {
+		t.Fatalf("normalized request page = %+v", page)
+	}
+	for _, item := range page.Items {
+		if item.EstimatedCost == nil || !item.EstimatedCost.Priced {
+			t.Fatalf("request was not priced through normalized lookup: %+v", item)
+		}
+	}
+}
+
 func TestStoreQueryCostsAndRequestPageUseCurrentPriceBook(t *testing.T) {
 	config := testConfig(t)
 	config.SyncOnRecord = true
@@ -136,6 +265,51 @@ func TestStoreQueryCostsAndRequestPageUseCurrentPriceBook(t *testing.T) {
 	}
 	if page.PriceBookRevision == 0 || len(page.Items) != 1 || page.Items[0].EstimatedCost == nil || !page.Items[0].EstimatedCost.Priced || page.Items[0].EstimatedCost.TierThreshold != 100 {
 		t.Fatalf("request page = %+v", page)
+	}
+}
+
+func TestCostCacheInvalidatesWhenSuffixSettingsChange(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	prices := map[string]ModelPrice{"model-gg": {Input: 2}}
+	before, err := store.SavePriceBook(prices, &PriceSyncSettings{IgnoredSuffixes: []string{"-unused"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(normalizedUsage{
+		Dimensions: Dimensions{Model: "model"}, RequestedAt: time.Now().UTC(),
+		Counters: Counters{Requests: 1, InputTokens: 1_000, TotalTokens: 1_000},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.QueryCosts("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Summary.PricedRequests != 0 || first.Summary.UnpricedRequests != 1 {
+		t.Fatalf("cost before suffix setting = %+v", first.Summary)
+	}
+
+	after, err := store.SavePriceBook(prices, &PriceSyncSettings{IgnoredSuffixes: []string{"-gg"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Revision <= before.Revision {
+		t.Fatalf("price revision did not advance: before=%d after=%d", before.Revision, after.Revision)
+	}
+	second, err := store.QueryCosts("24h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Summary.PricedRequests != 1 || second.Summary.UnpricedRequests != 0 || math.Abs(second.Summary.TotalUSD-0.002) > 1e-12 {
+		t.Fatalf("cost after suffix setting = %+v", second.Summary)
 	}
 }
 

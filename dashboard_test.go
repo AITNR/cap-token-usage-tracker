@@ -51,6 +51,7 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		}
 	}
 	for _, forbidden := range []string{
+		`updated_at:base.updated_at||''`,
 		"replaceChildren.apply",
 		"Math.max.apply",
 		"localStorage",
@@ -100,6 +101,14 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`id="pricingKeyInput"`,
 		`id="cliModelsKeyInput"`,
 		`id="loadCLIModels"`,
+		`id="manualModelInput"`,
+		`id="addManualModel"`,
+		`manualDraftModels=new Set()`,
+		`function addManualModel()`,
+		`function rerenderPricingEditor(excludedName)`,
+		`manualDraftModels.has(name)||input>0`,
+		`if(base.updated_at)value.updated_at=base.updated_at`,
+		`manualDraftModels.clear()`,
 		`var modelsURL='/v1/models'`,
 		`function normalizeCLIModels(payload)`,
 		`async function fetchCLIModels(renderEditor)`,
@@ -311,6 +320,15 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"empty.calls",
 		"model.untitled",
 		"pricing.title",
+		"button.addManualModel",
+		"pricing.manualModel",
+		"pricing.manualModelPlaceholder",
+		"pricing.manualModelHint",
+		"pricing.manualDraftSource",
+		"error.missingManualModel",
+		"error.longManualModel",
+		"error.duplicateManualModel",
+		"error.tooManyManualModels",
 	}
 	for _, code := range []string{"en", "zh-CN", "zh-TW", "ru"} {
 		data, err := localeFS.ReadFile("locales/" + code + ".json")

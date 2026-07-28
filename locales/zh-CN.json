@@ -237,5 +237,14 @@
   "reset.title": "管理密钥确认",
   "reset.description": "清空统计需要 CLIProxyAPI 管理密钥。密钥只用于本次请求。",
   "reset.cancel": "取消",
-  "reset.confirm": "确认清空"
+  "reset.confirm": "确认清空",
+  "button.addManualModel": "添加模型",
+  "pricing.manualModel": "手动添加模型",
+  "pricing.manualModelPlaceholder": "输入完整模型名称",
+  "pricing.manualModelHint": "可添加当前 CLIProxyAPI 模型目录中不存在的模型并设置 USD / 1M Token 价格；保存价格与设置后生效。",
+  "pricing.manualDraftSource": "手动添加 · 尚未保存",
+  "error.missingManualModel": "请输入模型名称。",
+  "error.longManualModel": "模型名称不能超过 160 个字符。",
+  "error.duplicateManualModel": "模型“{model}”已存在。",
+  "error.tooManyManualModels": "模型价格条目已达到上限。"
 }

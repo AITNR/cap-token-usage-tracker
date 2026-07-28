@@ -77,6 +77,7 @@ type costQuerySnapshot struct {
 	Cutoff        time.Time
 	GeneratedAt   time.Time
 	Prices        map[string]ModelPrice
+	PriceSettings PriceSyncSettings
 	PriceRevision uint64
 	HighWater     uint64
 	Generation    uint64
@@ -94,6 +95,68 @@ type costFlight struct {
 	done     chan struct{}
 	response CostResponse
 	err      error
+}
+
+type resolvedModelPrice struct {
+	price     ModelPrice
+	ambiguous bool
+}
+
+type modelPriceResolver struct {
+	exact      map[string]ModelPrice
+	settings   PriceSyncSettings
+	normalized map[string]resolvedModelPrice
+}
+
+// newModelPriceResolver builds the normalized fallback index once per price-book snapshot.
+func newModelPriceResolver(prices map[string]ModelPrice, settings PriceSyncSettings) modelPriceResolver {
+	resolver := modelPriceResolver{exact: prices}
+	normalizedSettings, err := normalizePriceSyncSettings(settings)
+	if err != nil {
+		return resolver
+	}
+	resolver.settings = normalizedSettings
+	resolver.normalized = make(map[string]resolvedModelPrice, len(prices))
+
+	keys := make([]string, 0, len(prices))
+	for key := range prices {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		comparison := comparisonModelName(key, normalizedSettings)
+		if comparison == "" {
+			continue
+		}
+		price := prices[key]
+		current, exists := resolver.normalized[comparison]
+		if !exists {
+			resolver.normalized[comparison] = resolvedModelPrice{price: price}
+			continue
+		}
+		// Never choose arbitrarily when equivalent model names carry different billable rates.
+		if !sameEditableModelPrice(current.price, price) {
+			current.ambiguous = true
+			resolver.normalized[comparison] = current
+		}
+	}
+	return resolver
+}
+
+func (r modelPriceResolver) resolve(model string) (ModelPrice, bool) {
+	// An explicit price key always wins over suffix or mapping fallback candidates.
+	if price, ok := r.exact[model]; ok {
+		return price, true
+	}
+	if len(r.normalized) == 0 {
+		return ModelPrice{}, false
+	}
+	comparison := comparisonModelName(model, r.settings)
+	match, ok := r.normalized[comparison]
+	if !ok || match.ambiguous {
+		return ModelPrice{}, false
+	}
+	return match.price, true
 }
 
 func (s *Store) QueryCosts(rangeName string) (CostResponse, error) {
@@ -181,6 +244,7 @@ func (s *Store) scanCosts(snapshot costQuerySnapshot) (CostResponse, error) {
 	models := make(map[modelKey]CostAmounts)
 	series := make(map[seriesKey]CostAmounts)
 	missing := make(map[modelKey]uint64)
+	resolver := newModelPriceResolver(snapshot.Prices, snapshot.PriceSettings)
 
 	err := s.db.View(func(tx *bolt.Tx) error {
 		requests := tx.Bucket(requestsBucket)
@@ -208,7 +272,7 @@ func (s *Store) scanCosts(snapshot costQuerySnapshot) (CostResponse, error) {
 				continue
 			}
 			request.EstimatedCost = nil
-			cost := estimateRequestCost(request, snapshot.Prices)
+			cost := estimateRequestCostWithResolver(request, resolver)
 			provider := request.Provider
 			model := request.Model
 			if model == "" {
@@ -297,11 +361,15 @@ func addEstimatedCost(amounts *CostAmounts, cost EstimatedCost) {
 }
 
 func estimateRequestCost(request RequestDetail, prices map[string]ModelPrice) EstimatedCost {
+	return estimateRequestCostWithResolver(request, newModelPriceResolver(prices, defaultPriceSyncSettings()))
+}
+
+func estimateRequestCostWithResolver(request RequestDetail, resolver modelPriceResolver) EstimatedCost {
 	model := request.Model
 	if model == "" {
 		model = "未标记模型"
 	}
-	price, ok := prices[model]
+	price, ok := resolver.resolve(model)
 	if !ok {
 		return EstimatedCost{}
 	}
