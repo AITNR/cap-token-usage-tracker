@@ -10,7 +10,6 @@ import (
 )
 
 const (
-	defaultDataPath        = "./data/token-usage-tracker.db"
 	defaultRetentionDays   = 30
 	defaultFlushInterval   = 5 * time.Second
 	defaultFlushMaxRecords = 100
@@ -34,7 +33,7 @@ type configYAML struct {
 
 func defaultConfig() Config {
 	return Config{
-		DataPath:        defaultDataPath,
+		DataPath:        resolvedDefaultDataPath(),
 		RetentionDays:   defaultRetentionDays,
 		FlushInterval:   defaultFlushInterval,
 		FlushMaxRecords: defaultFlushMaxRecords,

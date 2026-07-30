@@ -173,6 +173,9 @@ jobs:
             -ldflags="-s -w -X main.version=${VERSION}" \
             -o "${{ env.PLUGIN_ID }}.dylib" .
 
+      - name: Verify .dylib and default data path
+        run: bash scripts/verify-darwin-arm64.sh "${{ env.PLUGIN_ID }}.dylib"
+
       - name: Create zip
         run: |
           zipName="${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_darwin_arm64.zip"
