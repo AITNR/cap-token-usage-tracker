@@ -23,7 +23,7 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 - 支持模型下钻联动、趋势图滚轮缩放/平移、移动端自适应坐标轴、总 Token 完整/k/m 切换、全页面 USD/CNY 最新汇率显示、当前筛选数据 CSV 和 Dashboard PNG 导出
 - 主题由 CLIProxyAPI Management Center 统一控制，自动同步跟随系统、纯白、羊毛纸和暗色模式
 - 数据重置需 CLIProxyAPI 管理鉴权和显式 `reset` 确认
-- Linux ARM64 `c-shared` 构建
+- 支持 Linux amd64/arm64、Windows amd64 和 macOS arm64 的 `c-shared` 构建
 
 ## 隐私
 
@@ -39,10 +39,18 @@ CLIProxyAPI 的持久化 Token 用量统计插件。插件通过官方 `usage_pl
 
 ## 配置
 
-将共享库放在 CLIProxyAPI 的平台插件目录：
+将对应平台的共享库放在 CLIProxyAPI 的平台插件目录。文件名必须保持为 `cap-token-usage-tracker`，因为 CLIProxyAPI 会根据共享库文件名派生 plugin ID：
 
 ```text
 plugins/linux/arm64/cap-token-usage-tracker.so
+```
+
+其他平台的目录和文件名为：
+
+```text
+plugins/linux/amd64/cap-token-usage-tracker.so
+plugins/windows/amd64/cap-token-usage-tracker.dll
+plugins/darwin/arm64/cap-token-usage-tracker.dylib
 ```
 
 CLIProxyAPI 配置示例：
@@ -122,40 +130,51 @@ USD/CNY 切换只改变页面与 PNG 的显示：价格簿、后端 `*_usd` 字�
 {"confirm":"reset"}
 ```
 
-## Linux ARM64 构建
+## 跨平台构建
 
 要求：
 
 - Go 1.26+
-- `aarch64-linux-gnu-gcc`
-- `file`、`readelf`、`nm`、`sha256sum`
-- Clash HTTP 代理监听本机 `7897`
+- 构建共享库时必须启用 CGO（`CGO_ENABLED=1`）
+- Windows 需要 MinGW-w64；Linux ARM64 交叉构建需要 `aarch64-linux-gnu-gcc`
 
-在 Debian/Ubuntu/WSL 中通常需要：
+所有平台都使用 `-buildmode=c-shared`。构建输出必须使用下表中的安装文件名，否则 CLIProxyAPI 无法从文件名识别 plugin ID。
+
+| 平台 | 目标架构 | 文件格式 | 安装文件名 | CLIProxyAPI 目录 |
+|---|---|---|---|---|
+| Linux | amd64 | `.so` | `cap-token-usage-tracker.so` | `plugins/linux/amd64/` |
+| Linux | arm64 | `.so` | `cap-token-usage-tracker.so` | `plugins/linux/arm64/` |
+| Windows | amd64 | `.dll` | `cap-token-usage-tracker.dll` | `plugins/windows/amd64/` |
+| macOS | arm64 | `.dylib` | `cap-token-usage-tracker.dylib` | `plugins/darwin/arm64/` |
+
+### Linux amd64
+
+在 Linux amd64 原生构建：
+
+```bash
+mkdir -p dist
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+  go build -buildmode=c-shared -trimpath -buildvcs=false \
+  -ldflags="-s -w -X main.version=1.0.0" \
+  -o dist/cap-token-usage-tracker.so .
+```
+
+### Linux arm64
+
+Debian/Ubuntu/WSL 通常需要安装：
 
 ```bash
 sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu file curl
 ```
 
-安装包和 Go 模块下载都应通过 Clash `7897`。构建脚本默认先尝试 `http://127.0.0.1:7897`；若 WSL 无法访问 Windows localhost，会尝试 WSL 默认网关的 `7897`。也可以显式指定：
+构建脚本会检查 Clash HTTP 代理 `7897`，并将 Go 模块下载通过代理完成。默认先尝试 `http://127.0.0.1:7897`；WSL 无法访问 Windows localhost 时会尝试默认网关。也可以显式指定：
 
 ```bash
 export CLASH_PROXY_URL=http://<windows-host>:7897
-```
-
-构建：
-
-```bash
-bash scripts/build-linux-arm64.sh
-```
-
-可通过 `VERSION=v1.0.0` 注入插件版本：
-
-```bash
 VERSION=v1.0.0 bash scripts/build-linux-arm64.sh
 ```
 
-产物：
+产物包括：
 
 ```text
 dist/cap-token-usage-tracker-v1.0.0-linux-arm64.so  # 版本化发布文件
@@ -163,24 +182,63 @@ dist/cap-token-usage-tracker-v1.0.0-linux-arm64.h   # CGO 生成的 ABI 头文�
 dist/cap-token-usage-tracker.so                      # 安装文件
 ```
 
-安装时必须使用 `cap-token-usage-tracker.so` 这个文件名，因为 CLIProxyAPI 会根据共享库文件名派生 plugin ID：
+复制安装文件并运行专用验证：
 
 ```bash
 cp dist/cap-token-usage-tracker.so /path/to/CLIProxyAPI/plugins/linux/arm64/
-```
-
-验证并生成可移植的 `dist/SHA256SUMS`：
-
-```bash
 bash scripts/verify-linux-arm64.sh
 ```
 
-验证脚本检查 Go 格式、vet、普通/race 测试、ELF64/AArch64/DYN 类型、安装文件与发布文件字节一致性和以下 ABI 导出：
+验证脚本还会检查 Go 格式、vet、普通/race 测试、ELF64/AArch64/DYN 类型、ABI 导出和共享库一致性，并生成 `dist/SHA256SUMS`。
 
-- `cliproxy_plugin_init`
-- `cliproxyPluginCall`
-- `cliproxyPluginFree`
-- `cliproxyPluginShutdown`
+### Windows amd64
+
+要求 Go 1.26+ 和 MinGW-w64。使用 PowerShell 构建：
+
+```powershell
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+$env:CGO_ENABLED = "1"
+New-Item -ItemType Directory -Force dist | Out-Null
+go build -buildmode=c-shared -trimpath -buildvcs=false `
+  -ldflags="-s -w -X main.version=1.0.0" `
+  -o dist\cap-token-usage-tracker.dll .
+```
+
+如果 MinGW 不在 `PATH`，先将其 `bin` 目录加入环境变量。仓库中的 `build_dll.ps1` 也可用于本地 Windows 构建，但它默认使用 `C:\mingw64\mingw64\bin` 和工作区路径，请按本机安装位置调整。
+
+### macOS arm64
+
+在 Apple Silicon macOS 上安装 Go 1.26+ 后，使用系统 clang 构建：
+
+```bash
+mkdir -p dist
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+  go build -buildmode=c-shared -trimpath -buildvcs=false \
+  -ldflags="-s -w -X main.version=1.0.0" \
+  -o dist/cap-token-usage-tracker.dylib .
+```
+
+macOS amd64 不在当前 CI 发布矩阵中；如需 Intel 版本，应在确认 CLIProxyAPI 支持该目标后再增加对应构建。
+
+### CI 发布
+
+推送分支或执行 `workflow_dispatch` 会构建上述四个平台。推送 `v*` 标签，或手动构建时勾选 `release`，会创建 GitHub Release 并上传：
+
+```text
+cap-token-usage-tracker_<version>_windows_amd64.zip
+cap-token-usage-tracker_<version>_linux_amd64.zip
+cap-token-usage-tracker_<version>_linux_arm64.zip
+cap-token-usage-tracker_<version>_darwin_arm64.zip
+checksums.txt
+```
+
+例如：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ## 本地开发
 
@@ -191,7 +249,7 @@ CGO_ENABLED=0 go test ./...
 go test ./...
 ```
 
-`main_cgo.go` 只在 cgo 开启时参与编译。发布前必须实际执行 Linux ARM64 `c-shared` 构建；仅通过 `CGO_ENABLED=0` 测试不能证明 ABI 可以链接。
+`main_cgo.go` 只在 cgo 开启时参与编译。发布前必须实际执行目标平台的 `c-shared` 构建；仅通过 `CGO_ENABLED=0` 测试不能证明 ABI 可以链接。
 
 ## 协议
 
@@ -216,7 +274,7 @@ A persistent Token usage tracking plugin for CLIProxyAPI. The plugin receives us
 - Supports linked model drill-down, wheel zoom/pan, responsive mobile chart axes, full/k/m total-Token display, dashboard-wide USD/CNY latest-rate display, filtered CSV export, and Dashboard PNG export
 - Theme is controlled by the CLIProxyAPI Management Center and automatically syncs Follow System, Pure White, Wool Paper, and Dark modes
 - Data reset requires CLIProxyAPI management authentication and explicit `reset` confirmation
-- Linux ARM64 `c-shared` build
+- Linux amd64/arm64, Windows amd64, and macOS arm64 `c-shared` builds
 
 ### Privacy
 
@@ -232,10 +290,18 @@ The database contains minute-level aggregation dimensions and counts, per-reques
 
 ### Configuration
 
-Place the shared library in the CLIProxyAPI platform plugin directory:
+Place the platform-specific shared library in the CLIProxyAPI plugin directory. Keep the filename as `cap-token-usage-tracker`, because CLIProxyAPI derives the plugin ID from the shared library filename:
 
 ```text
 plugins/linux/arm64/cap-token-usage-tracker.so
+```
+
+Other platform directories and filenames are:
+
+```text
+plugins/linux/amd64/cap-token-usage-tracker.so
+plugins/windows/amd64/cap-token-usage-tracker.dll
+plugins/darwin/arm64/cap-token-usage-tracker.dylib
 ```
 
 CLIProxyAPI configuration example:
@@ -315,36 +381,47 @@ Reset request body:
 {"confirm":"reset"}
 ```
 
-### Linux ARM64 Build
+### Cross-Platform Builds
 
 Requirements:
 
 - Go 1.26+
-- `aarch64-linux-gnu-gcc`
-- `file`, `readelf`, `nm`, `sha256sum`
-- Clash HTTP proxy listening on local port `7897`
+- CGO must be enabled for shared-library builds (`CGO_ENABLED=1`)
+- MinGW-w64 for Windows; `aarch64-linux-gnu-gcc` for Linux ARM64 cross-compilation
 
-On Debian/Ubuntu/WSL you typically need:
+All platforms use `-buildmode=c-shared`. Keep the install filename from the table below, otherwise CLIProxyAPI cannot derive the plugin ID correctly.
+
+| Platform | Architecture | Format | Install filename | CLIProxyAPI directory |
+|---|---|---|---|---|
+| Linux | amd64 | `.so` | `cap-token-usage-tracker.so` | `plugins/linux/amd64/` |
+| Linux | arm64 | `.so` | `cap-token-usage-tracker.so` | `plugins/linux/arm64/` |
+| Windows | amd64 | `.dll` | `cap-token-usage-tracker.dll` | `plugins/windows/amd64/` |
+| macOS | arm64 | `.dylib` | `cap-token-usage-tracker.dylib` | `plugins/darwin/arm64/` |
+
+#### Linux amd64
+
+Build natively on Linux amd64:
+
+```bash
+mkdir -p dist
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
+  go build -buildmode=c-shared -trimpath -buildvcs=false \
+  -ldflags="-s -w -X main.version=1.0.0" \
+  -o dist/cap-token-usage-tracker.so .
+```
+
+#### Linux arm64
+
+On Debian/Ubuntu/WSL, install the cross-toolchain:
 
 ```bash
 sudo apt install gcc-aarch64-linux-gnu libc6-dev-arm64-cross binutils-aarch64-linux-gnu file curl
 ```
 
-Both package installation and Go module downloads should go through Clash `7897`. The build script first tries `http://127.0.0.1:7897`; if WSL cannot reach Windows localhost it falls back to the WSL default gateway's `7897`. You can also specify explicitly:
+The build script checks for a Clash HTTP proxy on port `7897` and downloads Go modules through it. It first tries `http://127.0.0.1:7897`; when WSL cannot reach Windows localhost, it tries the WSL default gateway. You can also set it explicitly:
 
 ```bash
 export CLASH_PROXY_URL=http://<windows-host>:7897
-```
-
-Build:
-
-```bash
-bash scripts/build-linux-arm64.sh
-```
-
-Inject the plugin version via `VERSION=v1.0.0`:
-
-```bash
 VERSION=v1.0.0 bash scripts/build-linux-arm64.sh
 ```
 
@@ -356,24 +433,63 @@ dist/cap-token-usage-tracker-v1.0.0-linux-arm64.h   # CGO-generated ABI header
 dist/cap-token-usage-tracker.so                      # Install file
 ```
 
-The install filename must be `cap-token-usage-tracker.so` because CLIProxyAPI derives the plugin ID from the shared library filename:
+Install the shared library and run the dedicated verification:
 
 ```bash
 cp dist/cap-token-usage-tracker.so /path/to/CLIProxyAPI/plugins/linux/arm64/
-```
-
-Verify and generate portable `dist/SHA256SUMS`:
-
-```bash
 bash scripts/verify-linux-arm64.sh
 ```
 
-The verification script checks Go format, vet, normal/race tests, ELF64/AArch64/DYN type, byte-level consistency between install and release files, and the following ABI exports:
+The verification script also checks Go formatting, vet, normal/race tests, ELF64/AArch64/DYN type, ABI exports, and byte-level consistency, then generates `dist/SHA256SUMS`.
 
-- `cliproxy_plugin_init`
-- `cliproxyPluginCall`
-- `cliproxyPluginFree`
-- `cliproxyPluginShutdown`
+#### Windows amd64
+
+Install Go 1.26+ and MinGW-w64, then build from PowerShell:
+
+```powershell
+$env:GOOS = "windows"
+$env:GOARCH = "amd64"
+$env:CGO_ENABLED = "1"
+New-Item -ItemType Directory -Force dist | Out-Null
+go build -buildmode=c-shared -trimpath -buildvcs=false `
+  -ldflags="-s -w -X main.version=1.0.0" `
+  -o dist\cap-token-usage-tracker.dll .
+```
+
+If MinGW is not on `PATH`, add its `bin` directory first. The repository's `build_dll.ps1` can also be used for a local Windows build, but it assumes `C:\mingw64\mingw64\bin` and this workspace path; adjust those values for your machine.
+
+#### macOS arm64
+
+On Apple Silicon macOS, install Go 1.26+ and build with the system clang:
+
+```bash
+mkdir -p dist
+CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
+  go build -buildmode=c-shared -trimpath -buildvcs=false \
+  -ldflags="-s -w -X main.version=1.0.0" \
+  -o dist/cap-token-usage-tracker.dylib .
+```
+
+macOS amd64 is not in the current CI release matrix. Add it only after confirming that the target CLIProxyAPI runtime supports that architecture.
+
+#### CI Releases
+
+Pushing a branch or running `workflow_dispatch` builds all four targets. Pushing a `v*` tag, or enabling `release` for a manual run, creates a GitHub Release containing:
+
+```text
+cap-token-usage-tracker_<version>_windows_amd64.zip
+cap-token-usage-tracker_<version>_linux_amd64.zip
+cap-token-usage-tracker_<version>_linux_arm64.zip
+cap-token-usage-tracker_<version>_darwin_arm64.zip
+checksums.txt
+```
+
+For example:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
 
 ### Local Development
 
@@ -384,7 +500,7 @@ CGO_ENABLED=0 go test ./...
 go test ./...
 ```
 
-`main_cgo.go` only participates in compilation when cgo is enabled. Before release, an actual Linux ARM64 `c-shared` build must be performed; passing `CGO_ENABLED=0` tests alone does not prove the ABI can link.
+`main_cgo.go` only participates in compilation when cgo is enabled. Before release, an actual `c-shared` build for the target platform must be performed; passing `CGO_ENABLED=0` tests alone does not prove the ABI can link.
 
 ### License
 
