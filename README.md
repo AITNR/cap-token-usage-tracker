@@ -63,7 +63,6 @@ plugins:
     cap-token-usage-tracker:
       enabled: true
       priority: 0
-      data_path: /var/lib/cliproxyapi/token-usage-tracker.db
       retention_days: 30
       flush_interval: 5s
       flush_max_records: 100
@@ -72,13 +71,15 @@ plugins:
 
 | 字段 | 默认值 | 说明 |
 |---|---:|---|
-| `data_path` | `./data/token-usage-tracker.db` | bbolt 数据库路径；相对路径基于 CLIProxyAPI 进程工作目录，服务部署建议使用绝对路径 |
+| `data_path` | `CLIProxyAPI/data/token-usage-tracker.db` | bbolt 数据库路径；插件根据固定的 `plugins` 目录自动定位同级 `data`，显式相对路径仍基于 CLIProxyAPI 进程工作目录 |
 | `retention_days` | `30` | 保留的 UTC 天数，范围 1–3650 |
 | `flush_interval` | `5s` | 批量刷盘最长间隔，范围 1 秒–1 小时 |
 | `flush_max_records` | `100` | 接收指定数量记录后立即刷盘 |
 | `sync_on_record` | `true` | 默认每条记录提交数据库后才确认；设为 `false` 可启用批量模式以提高吞吐 |
 
 默认同步模式会在 `usage.handle` 返回前提交每条统计，避免正常记录停留在未刷盘窗口。仅当显式设置 `sync_on_record: false` 时启用批量模式；进程被强制终止时，批量模式最多可能损失一个 `flush_interval` 或未达到 `flush_max_records` 的窗口。
+
+未配置 `data_path` 时，macOS/Linux 插件会先从当前共享库路径向上查找固定的 `plugins` 目录，随后还会检查 CLIProxyAPI 主程序目录和当前工作目录。找到后默认数据库稳定为 `CLIProxyAPI/data/token-usage-tracker.db`。非标准目录布局无法识别时会回退到旧版 `./data/token-usage-tracker.db` 规则。已有默认位置数据库会被直接复用，不迁移也不覆盖。
 
 插件会在数据库旁创建 `<data_path>.handover` 协调同一 CLIProxyAPI 进程中的热更新。新版实例注册时，旧版实例会先刷盘并释放 bbolt 独占锁，再由新版实例接管数据库，从而避免 `open database: timeout`。从不支持此交接机制的旧版本首次升级时，需要先重启 CLIProxyAPI 或删除后重装一次；之后的版本更新可以直接热更新。
 
@@ -217,9 +218,11 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
   -ldflags="-s -w -X main.version=1.0.0" \
   -o dist/cap-token-usage-tracker.dylib .
+
+bash scripts/verify-darwin-arm64.sh dist/cap-token-usage-tracker.dylib
 ```
 
-macOS amd64 不在当前 CI 发布矩阵中；如需 Intel 版本，应在确认 CLIProxyAPI 支持该目标后再增加对应构建。
+验证脚本会从 `/` 工作目录加载标准插件目录中的动态库，并确认默认数据库创建在 `CLIProxyAPI/data`。macOS amd64 不在当前 CI 发布矩阵中；如需 Intel 版本，应在确认 CLIProxyAPI 支持该目标后再增加对应构建。
 
 ### CI 发布
 
@@ -322,7 +325,6 @@ plugins:
     cap-token-usage-tracker:
       enabled: true
       priority: 0
-      data_path: /var/lib/cliproxyapi/token-usage-tracker.db
       retention_days: 30
       flush_interval: 5s
       flush_max_records: 100
@@ -331,13 +333,15 @@ plugins:
 
 | Field | Default | Description |
 |---|---:|---|
-| `data_path` | `./data/token-usage-tracker.db` | bbolt database path; relative paths are based on the CLIProxyAPI process working directory. Absolute paths are recommended for service deployments |
+| `data_path` | `CLIProxyAPI/data/token-usage-tracker.db` | bbolt database path; the plugin discovers the fixed `plugins` directory and uses its sibling `data` directory. Explicit relative paths still use the CLIProxyAPI process working directory |
 | `retention_days` | `30` | Retention period in UTC days, range 1–3650 |
 | `flush_interval` | `5s` | Maximum interval for batch flush, range 1 second–1 hour |
 | `flush_max_records` | `100` | Flush immediately after receiving this many records |
 | `sync_on_record` | `true` | Commits each record before acknowledgement by default; set to `false` to enable higher-throughput batching |
 
 The default synchronous mode commits each statistic before `usage.handle` returns, avoiding an unflushed normal-operation window. Batching is enabled only when `sync_on_record: false` is set explicitly; if the process is forcefully terminated in batch mode, up to one `flush_interval` or unflushed `flush_max_records` window may be lost.
+
+When `data_path` is omitted, the macOS/Linux plugin first searches upward from its loaded shared-library path for the fixed `plugins` directory, then also checks the CLIProxyAPI executable directory and current working directory. Once found, the stable default is `CLIProxyAPI/data/token-usage-tracker.db`. Non-standard layouts that cannot be identified retain the legacy `./data/token-usage-tracker.db` fallback. An existing database at the default location is reused without migration or replacement.
 
 The plugin creates `<data_path>.handover` next to the database to coordinate hot reloads within the same CLIProxyAPI process. When a replacement instance registers, the retired instance flushes and releases bbolt's exclusive lock before the replacement takes ownership, preventing `open database: timeout`. The first upgrade from a version without this handover mechanism still requires one CLIProxyAPI restart or one uninstall/reinstall; later upgrades can be hot reloaded directly.
 
@@ -476,9 +480,11 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
   -ldflags="-s -w -X main.version=1.0.0" \
   -o dist/cap-token-usage-tracker.dylib .
+
+bash scripts/verify-darwin-arm64.sh dist/cap-token-usage-tracker.dylib
 ```
 
-macOS amd64 is not in the current CI release matrix. Add it only after confirming that the target CLIProxyAPI runtime supports that architecture.
+The verification script loads the library from the standard plugin layout with `/` as the working directory and confirms that the default database is created under `CLIProxyAPI/data`. macOS amd64 is not in the current CI release matrix. Add it only after confirming that the target CLIProxyAPI runtime supports that architecture.
 
 #### CI Releases
 

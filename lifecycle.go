@@ -197,7 +197,7 @@ func pluginRegistration() registration {
 			Author:           "AITNR",
 			GitHubRepository: "https://github.com/AITNR/cap-token-usage-tracker",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "bbolt database path; relative paths use the CLIProxyAPI working directory."},
+				{Name: "data_path", Type: pluginapi.ConfigFieldTypeString, Description: "bbolt database path; defaults to the data directory next to the discovered plugins directory, while explicit relative paths use the CLIProxyAPI working directory."},
 				{Name: "retention_days", Type: pluginapi.ConfigFieldTypeInteger, Description: "Number of UTC days of minute-level statistics and request details to retain (1-3650)."},
 				{Name: "flush_interval", Type: pluginapi.ConfigFieldTypeString, Description: "Maximum delay before batched statistics are flushed, for example 5s."},
 				{Name: "flush_max_records", Type: pluginapi.ConfigFieldTypeInteger, Description: "Flush after this many accepted usage records."},
