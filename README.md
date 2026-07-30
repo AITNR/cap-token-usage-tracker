@@ -101,7 +101,7 @@ plugins:
 
 统计范围：`24h`、`7d`、`30d`、`retention`。逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
 
-Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。价格弹窗使用临时 CLIProxyAPI API Key 从同源 `/v1/models` 加载当前模型目录；保存价格、同步 models.dev 或重置数据时仍要求 Management Key。两种密钥都只保存在当前 DOM/内存中，关闭对话框后清空，不会写入插件数据库、浏览器存储或 URL。模型价格、同步设置和同步来源元数据保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除价格簿。
+Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。通过反向代理部署在子路径时，仪表盘会从当前 iframe 地址自动保留公网路径前缀；例如 iframe 位于 `/cpa/v0/resource/plugins/cap-token-usage-tracker/dashboard` 时，资源、管理和模型目录请求会分别使用 `/cpa/v0/resource/plugins/...`、`/cpa/v0/management/plugins/...` 和 `/cpa/v1/models`。价格弹窗使用临时 CLIProxyAPI API Key 从同源 `/v1/models`（含反向代理前缀）加载当前模型目录；保存价格、同步 models.dev 或重置数据时仍要求 Management Key。两种密钥都只保存在当前 DOM/内存中，关闭对话框后清空，不会写入插件数据库、浏览器存储或 URL。模型价格、同步设置和同步来源元数据保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除价格簿。
 
 ## 价格、Context Tier 与费用估算
 
@@ -251,6 +251,14 @@ go test ./...
 
 `main_cgo.go` 只在 cgo 开启时参与编译。发布前必须实际执行目标平台的 `c-shared` 构建；仅通过 `CGO_ENABLED=0` 测试不能证明 ABI 可以链接。
 
+## 更新报告
+
+### v1.2.6 - 2026-07-30
+
+- 修复 CLIProxyAPI 通过反向代理部署在子路径时，仪表盘请求丢失公网路径前缀的问题。
+- 仪表盘现在从当前 iframe 地址识别公网前缀，并统一应用于 `/v0/resource/plugins/`、`/v0/management/plugins/` 和 `/v1/models` 请求。
+- 保持域名根路径部署兼容，并覆盖单层、多层以及包含 `plugins` 路径段的反向代理前缀。
+
 ## 协议
 
 [MIT License](LICENSE)
@@ -352,7 +360,7 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 
 Statistics ranges: `24h`, `7d`, `30d`, `retention`. Request details are returned newest first; `offset` must be a non-negative integer, `limit` defaults to 100 and is capped at 500, and optional `model` applies an exact model filter.
 
-The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. The pricing dialog uses a temporary CLIProxyAPI API Key to load the current model directory from same-origin `/v1/models`; a Management Key is still required to save prices, synchronize models.dev, or reset data. Both keys exist only in the current DOM/memory, are cleared when the dialog closes, and are never written to the plugin database, browser storage, or URL. Prices, synchronization settings, and provenance are stored in bbolt, survive page refreshes and service restarts, and are not removed by statistics reset.
+The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. When CLIProxyAPI is exposed below a reverse-proxy subpath, the dashboard preserves the public prefix from its iframe URL. For example, an iframe at `/cpa/v0/resource/plugins/cap-token-usage-tracker/dashboard` uses `/cpa/v0/resource/plugins/...`, `/cpa/v0/management/plugins/...`, and `/cpa/v1/models` for resource, management, and model-catalog requests. The pricing dialog uses a temporary CLIProxyAPI API Key to load the current model directory from same-origin `/v1/models` with that prefix; a Management Key is still required to save prices, synchronize models.dev, or reset data. Both keys exist only in the current DOM/memory, are cleared when the dialog closes, and are never written to the plugin database, browser storage, or URL. Prices, synchronization settings, and provenance are stored in bbolt, survive page refreshes and service restarts, and are not removed by statistics reset.
 
 ### Pricing, Context Tiers, and Cost Estimation
 
@@ -501,6 +509,15 @@ go test ./...
 ```
 
 `main_cgo.go` only participates in compilation when cgo is enabled. Before release, an actual `c-shared` build for the target platform must be performed; passing `CGO_ENABLED=0` tests alone does not prove the ABI can link.
+
+### Release Notes
+
+#### v1.2.6 - 2026-07-30
+
+- Fixed dashboard requests dropping the public path prefix when CLIProxyAPI is deployed below a reverse-proxy subpath.
+- The dashboard now derives the public prefix from its iframe URL and applies it consistently to `/v0/resource/plugins/`, `/v0/management/plugins/`, and `/v1/models` requests.
+- Root deployments remain compatible, with coverage for single-level, nested, and `plugins`-containing proxy prefixes.
+- Verified with the full Go test suite, `go vet`, and JavaScript path checks for root, `/cpa`, nested, and `plugins`-containing prefixes.
 
 ### License
 
