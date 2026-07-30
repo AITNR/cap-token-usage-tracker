@@ -7,11 +7,15 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (e.g. 1.0.0)"
+        description: "Version (e.g. 1.2.6 or 1.2.6-alpha.1)"
         required: false
-        default: "1.0.0"
+        default: "1.2.6"
       release:
-        description: "Create release after build"
+        description: "Publish a stable release after build"
+        type: boolean
+        default: false
+      alpha:
+        description: "Publish an alpha pre-release (adds -alpha.<run number> when needed)"
         type: boolean
         default: false
 
@@ -19,8 +23,64 @@ env:
   PLUGIN_ID: cap-token-usage-tracker
 
 jobs:
+  prepare:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Resolve version and release channel
+        id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_RELEASE: ${{ inputs.release }}
+          INPUT_ALPHA: ${{ inputs.alpha }}
+        run: |
+          publish=false
+          prerelease=false
+
+          if [[ "$REF_TYPE" == "tag" ]]; then
+            version="${REF_NAME#v}"
+            publish=true
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            version="${INPUT_VERSION#v}"
+            if [[ -z "$version" ]]; then
+              version="1.2.6"
+            fi
+            if [[ "$INPUT_ALPHA" == "true" ]]; then
+              if [[ "$version" != *-* ]]; then
+                version="${version}-alpha.${GITHUB_RUN_NUMBER}"
+              fi
+              publish=true
+              prerelease=true
+            elif [[ "$INPUT_RELEASE" == "true" ]]; then
+              publish=true
+            fi
+          else
+            version="dev-${GITHUB_SHA}"
+          fi
+
+          if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "Invalid version: $version" >&2
+            exit 1
+          fi
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version (publish=$publish, prerelease=$prerelease)"
+
   build-windows-amd64:
     name: Windows amd64 (.dll)
+    needs: prepare
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,26 +93,13 @@ jobs:
       - name: Install MinGW-w64
         run: choco install mingw -y
 
-      - name: Resolve version
-        id: ver
-        shell: pwsh
-        run: |
-          if ("${{ github.ref_type }}" -eq "tag") {
-            $v = "${{ github.ref_name }}" -replace '^v', ''
-          } elseif ("${{ github.event.inputs.version }}" -ne "") {
-            $v = "${{ github.event.inputs.version }}" -replace '^v', ''
-          } else {
-            $v = "dev-${{ github.sha }}"
-          }
-          "version=$v" >> $env:GITHUB_OUTPUT
-
       - name: Build DLL
         shell: pwsh
         run: |
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           $env:CGO_ENABLED = "1"
-          $version = "${{ steps.ver.outputs.version }}"
+          $version = "${{ needs.prepare.outputs.version }}"
           go build -buildmode=c-shared -trimpath -buildvcs=false `
             -ldflags="-s -w -X main.version=$version" `
             -o "${{ env.PLUGIN_ID }}.dll" .
@@ -60,17 +107,18 @@ jobs:
       - name: Create zip
         shell: pwsh
         run: |
-          $zipName = "${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_windows_amd64.zip"
+          $zipName = "${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_windows_amd64.zip"
           Compress-Archive -Path "${{ env.PLUGIN_ID }}.dll" -DestinationPath $zipName
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-windows-amd64
-          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_windows_amd64.zip
+          path: ${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_windows_amd64.zip
 
   build-linux-amd64:
     name: Linux amd64 (.so)
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,24 +128,12 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: Resolve version
-        id: ver
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            v="${{ github.event.inputs.version }}"
-            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build .so
         env:
           CGO_ENABLED: "1"
           GOOS: linux
           GOARCH: amd64
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
@@ -105,17 +141,18 @@ jobs:
 
       - name: Create zip
         run: |
-          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_amd64.zip"
+          zipName="${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_linux_amd64.zip"
           zip "$zipName" "${{ env.PLUGIN_ID }}.so"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-linux-amd64
-          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_amd64.zip
+          path: ${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_linux_amd64.zip
 
   build-macos-arm64:
     name: macOS arm64 (.dylib)
+    needs: prepare
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,24 +162,12 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: Resolve version
-        id: ver
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            v="${{ github.event.inputs.version }}"
-            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build .dylib
         env:
           CGO_ENABLED: "1"
           GOOS: darwin
           GOARCH: arm64
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
@@ -150,17 +175,18 @@ jobs:
 
       - name: Create zip
         run: |
-          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_darwin_arm64.zip"
+          zipName="${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_darwin_arm64.zip"
           zip "$zipName" "${{ env.PLUGIN_ID }}.dylib"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-darwin-arm64
-          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_darwin_arm64.zip
+          path: ${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_darwin_arm64.zip
 
   build-linux-arm64:
     name: Linux arm64 (.so)
+    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -175,25 +201,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Resolve version
-        id: ver
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            v="${{ github.event.inputs.version }}"
-            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=dev-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Build .so
         env:
           CGO_ENABLED: "1"
           GOOS: linux
           GOARCH: arm64
           CC: aarch64-linux-gnu-gcc
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
             -ldflags="-s -w -X main.version=${VERSION}" \
@@ -201,35 +215,23 @@ jobs:
 
       - name: Create zip
         run: |
-          zipName="${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_arm64.zip"
+          zipName="${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_linux_arm64.zip"
           zip "$zipName" "${{ env.PLUGIN_ID }}.so"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-linux-arm64
-          path: ${{ env.PLUGIN_ID }}_${{ steps.ver.outputs.version }}_linux_arm64.zip
+          path: ${{ env.PLUGIN_ID }}_${{ needs.prepare.outputs.version }}_linux_arm64.zip
 
   release:
     name: Create Release
-    needs: [ build-windows-amd64, build-linux-amd64, build-linux-arm64, build-macos-arm64 ]
+    needs: [ prepare, build-windows-amd64, build-linux-amd64, build-linux-arm64, build-macos-arm64 ]
     runs-on: ubuntu-latest
-    if: >
-      startsWith(github.ref, 'refs/tags/v') ||
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')
+    if: needs.prepare.outputs.publish == 'true'
     permissions:
       contents: write
     steps:
-      - name: Resolve version
-        id: ver
-        run: |
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-          else
-            v="${{ github.event.inputs.version }}"
-            echo "version=${v#v}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -248,8 +250,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: Release v${{ steps.ver.outputs.version }}
+          tag_name: v${{ needs.prepare.outputs.version }}
+          name: Release v${{ needs.prepare.outputs.version }}
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |
             artifacts/*.zip

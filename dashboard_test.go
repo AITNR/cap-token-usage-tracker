@@ -15,7 +15,7 @@ func TestDashboardUsesBoundedSafeRendering(t *testing.T) {
 		"series.length>240",
 		"body.replaceChildren(fragment)",
 		"svg.replaceChildren(fragment)",
-		"var resourceBase='/v0/resource/plugins/'",
+		"var resourceBase=publicPathPrefix+'/v0/resource/plugins/'",
 		"var statsURL=resourceBase+'/stats'",
 		"load(true).catch(function(error)",
 		"resetKeyInput.value=''",
@@ -135,7 +135,7 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`manualDraftModels.has(name)||input>0`,
 		`if(base.updated_at)value.updated_at=base.updated_at`,
 		`manualDraftModels.clear()`,
-		`var modelsURL='/v1/models'`,
+		`var modelsURL=publicPathPrefix+'/v1/models'`,
 		`function normalizeCLIModels(payload)`,
 		`async function fetchCLIModels(renderEditor)`,
 		`cliModelsPromise=api(modelsURL`,
@@ -248,6 +248,34 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing analytics feature %q", required)
+		}
+	}
+}
+
+func TestDashboardPreservesReverseProxyPathPrefix(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`function readDashboardRoute()`,
+		`marker='/v0/resource/plugins/'`,
+		`index=path.lastIndexOf(marker)`,
+		`publicPathPrefix:path.slice(0,index)`,
+		`var publicPathPrefix=dashboardRoute.publicPathPrefix`,
+		`var resourceBase=publicPathPrefix+'/v0/resource/plugins/'`,
+		`var managementBase=publicPathPrefix+'/v0/management/plugins/'`,
+		`var modelsURL=publicPathPrefix+'/v1/models'`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing reverse-proxy path-prefix contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`var resourceBase='/v0/resource/plugins/'`,
+		`var managementBase='/v0/management/plugins/'`,
+		`var modelsURL='/v1/models'`,
+		`parts.indexOf('plugins')`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard retains root-only path construction %q", forbidden)
 		}
 	}
 }
