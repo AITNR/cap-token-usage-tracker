@@ -156,6 +156,7 @@
   "model.hide": "Hide {model}",
   "result.success": "Success",
   "result.failed": "Failed",
+  "result.failedHttp": "Failed (HTTP {status})",
   "cache.hit": "Hit",
   "cache.miss": "Miss",
   "value.unavailable": "Unavailable",
