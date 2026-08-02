@@ -156,6 +156,7 @@
   "model.hide": "隐藏 {model}",
   "result.success": "成功",
   "result.failed": "失敗",
+  "result.failedHttp": "失敗（HTTP {status}）",
   "cache.hit": "命中",
   "cache.miss": "未命中",
   "value.unavailable": "不可用",
