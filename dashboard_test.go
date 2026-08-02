@@ -87,6 +87,10 @@ func TestDashboardColumnMenusCanOverflowShortTables(t *testing.T) {
 		`.table-panel{overflow:visible}`,
 		`.table-wrap{max-height:540px;overflow:auto;border-radius:0 0 12px 12px;scrollbar-gutter:stable}`,
 		`.request-columns-menu{position:absolute`,
+		`max-height:calc(100dvh - 32px);overflow:auto`,
+		`function positionColumnsMenu(menu,button)`,
+		`menu.style.position='fixed'`,
+		`window.addEventListener('resize',function(){if(!document.getElementById('requestColumnsMenu').hidden)positionColumnsMenu`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing short-table column menu fix %q", required)
