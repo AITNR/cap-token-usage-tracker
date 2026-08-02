@@ -23,6 +23,8 @@
   "button.export": "Export",
   "button.exportCSV": "Export CSV",
   "button.exportPNG": "Export chart image",
+  "button.downloadBackup": "Download Backup",
+  "button.restoreBackup": "Restore Backup",
   "button.refresh": "Refresh",
   "button.reset": "Reset",
   "button.resetModel": "Show all models",
@@ -269,5 +271,13 @@
   "trend.series.aria": "Token usage series visibility",
   "trend.series.hide": "Hide {series}",
   "trend.series.show": "Show {series}",
-  "trend.series.allHidden": "All series hidden"
+  "trend.series.allHidden": "All series hidden",
+  "backup.preparing": "Preparing database backup…",
+  "backup.success": "Database backup downloaded",
+  "backup.failed": "Database backup failed",
+  "backup.keyPrompt": "Enter the CLIProxyAPI management key to download a full database backup.",
+  "backup.restoreWarning": "This will REPLACE all current data (usage history, prices, preferences) with the selected backup. This cannot be undone.",
+  "backup.restoring": "Restoring backup…",
+  "backup.restored": "Backup restored successfully",
+  "backup.fileTooLarge": "Backup file is too large (maximum 64 MB)"
 }

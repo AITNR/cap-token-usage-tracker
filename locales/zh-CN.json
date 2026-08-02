@@ -23,6 +23,8 @@
   "button.export": "导出",
   "button.exportCSV": "导出 CSV",
   "button.exportPNG": "导出图表图片",
+  "button.downloadBackup": "下载备份",
+  "button.restoreBackup": "恢复备份",
   "button.refresh": "刷新",
   "button.reset": "重置",
   "button.resetModel": "查看全部模型",
@@ -269,5 +271,13 @@
   "trend.series.aria": "Token 用量序列显示",
   "trend.series.hide": "隐藏{series}",
   "trend.series.show": "显示{series}",
-  "trend.series.allHidden": "已隐藏全部序列"
+  "trend.series.allHidden": "已隐藏全部序列",
+  "backup.preparing": "正在准备数据库备份…",
+  "backup.success": "数据库备份已下载",
+  "backup.failed": "数据库备份失败",
+  "backup.keyPrompt": "请输入 CLIProxyAPI 管理密钥以下载完整数据库备份。",
+  "backup.restoreWarning": "这将用所选备份替换当前全部数据（使用历史、价格、偏好设置）。此操作无法撤销。",
+  "backup.restoring": "正在恢复备份…",
+  "backup.restored": "备份恢复成功",
+  "backup.fileTooLarge": "备份文件过大（最大 64 MB）"
 }
