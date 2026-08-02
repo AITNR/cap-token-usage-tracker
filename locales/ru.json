@@ -160,6 +160,7 @@
   "model.hide": "Скрыть {model}",
   "result.success": "Успешно",
   "result.failed": "Ошибка",
+  "result.failedHttp": "Ошибка (HTTP {status})",
   "cache.hit": "Попадание",
   "cache.miss": "Промах",
   "value.unavailable": "Недоступно",

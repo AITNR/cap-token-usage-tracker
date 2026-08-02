@@ -733,6 +733,9 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"card.input",
 		"card.output",
 		"card.cacheRead",
+		"result.success",
+		"result.failed",
+		"result.failedHttp",
 	}
 	for _, code := range []string{"en", "zh-CN", "zh-TW", "ru"} {
 		data, err := localeFS.ReadFile("locales/" + code + ".json")
@@ -747,6 +750,20 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 			if _, ok := m[key]; !ok {
 				t.Fatalf("locale %s missing required key %q", code, key)
 			}
+		}
+	}
+
+	// Guard translateRawResult and its call sites so Simplified-Chinese
+	// backend result literals stay mapped through the locale catalog.
+	for _, required := range []string{
+		"function translateRawResult(raw,failed)",
+		`/^失败`,
+		"translateRawResult(item.result,item.failed)",
+		"translateRawResult(record.result,record.failed)",
+		"case 'result':return translateRawResult(item.result,item.failed);",
+	} {
+		if !strings.Contains(dashboardHTML, required) {
+			t.Fatalf("dashboardHTML missing translateRawResult coverage %q", required)
 		}
 	}
 
