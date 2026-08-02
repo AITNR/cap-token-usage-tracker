@@ -82,6 +82,7 @@ type costQuerySnapshot struct {
 	PriceRevision uint64
 	HighWater     uint64
 	Generation    uint64
+	Source        string
 }
 
 type costCacheKey struct {
@@ -91,6 +92,7 @@ type costCacheKey struct {
 	PriceRevision uint64
 	HighWater     uint64
 	Generation    uint64
+	Source        string
 }
 
 type costFlight struct {
@@ -170,13 +172,17 @@ func (s *Store) QueryCosts(rangeName string) (CostResponse, error) {
 }
 
 func (s *Store) queryCosts(queryRange usageRange) (CostResponse, error) {
+	return s.queryCostsBySource(queryRange, "")
+}
+
+func (s *Store) queryCostsBySource(queryRange usageRange, source string) (CostResponse, error) {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	if s.closed {
 		return CostResponse{}, errors.New("store is closed")
 	}
 	resp := make(chan costSnapshotResult, 1)
-	s.commands <- costSnapshotCommand{queryRange: queryRange, resp: resp}
+	s.commands <- costSnapshotCommand{queryRange: queryRange, source: source, resp: resp}
 	result := <-resp
 	if result.err != nil {
 		return CostResponse{}, result.err
@@ -189,6 +195,7 @@ func (s *Store) queryCosts(queryRange usageRange) (CostResponse, error) {
 		PriceRevision: snapshot.PriceRevision,
 		HighWater:     snapshot.HighWater,
 		Generation:    snapshot.Generation,
+		Source:        snapshot.Source,
 	}
 
 	s.costMu.Lock()
@@ -283,6 +290,10 @@ func (s *Store) scanCosts(snapshot costQuerySnapshot) (CostResponse, error) {
 				return fmt.Errorf("decode request detail: %w", err)
 			}
 			if request.Sequence > snapshot.HighWater {
+				continue
+			}
+			request.Dimensions = sanitizeDimensionsSource(request.Dimensions)
+			if snapshot.Source != "" && request.Source != snapshot.Source {
 				continue
 			}
 			request.EstimatedCost = nil

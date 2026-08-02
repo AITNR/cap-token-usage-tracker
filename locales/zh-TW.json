@@ -17,6 +17,8 @@
   "granularity.day": "按日",
   "granularity.week": "按週",
   "granularity.month": "按月",
+  "sourceFilter.label": "來源篩選",
+  "sourceFilter.all": "全部來源",
   "button.pricing": "模型價格",
   "button.export": "導出",
   "button.exportCSV": "導出 CSV",

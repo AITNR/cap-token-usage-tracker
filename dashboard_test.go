@@ -256,6 +256,23 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	}
 }
 
+func TestDashboardSourceFilterUsesSharedQueryScope(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`function initializeSourceFilter()`,
+		`select.id='sourceFilter'`,
+		`granularity.insertAdjacentElement('afterend',select)`,
+		`function renderSourceOptions(sources)`,
+		`currentData&&currentData.sources`,
+		`params.set('source',selectedSource)`,
+		`load(true).catch(function(error){text('error',error.message);})`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing source-filter contract %q", required)
+		}
+	}
+}
+
 func TestDashboardPreservesReverseProxyPathPrefix(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
@@ -709,6 +726,8 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"status.loading",
 		"chart.noCalls",
 		"trend.cacheHitRate",
+		"sourceFilter.label",
+		"sourceFilter.all",
 		"empty.calls",
 		"requestColumns.button",
 		"requestColumns.title",

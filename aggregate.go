@@ -123,6 +123,7 @@ type StatsResponse struct {
 	Groups        []GroupStats       `json:"groups"`
 	Series        []SeriesPoint      `json:"series"`
 	ModelSeries   []ModelSeriesPoint `json:"model_series"`
+	Sources       []string           `json:"sources"`
 }
 
 type usageRange struct {
@@ -136,10 +137,10 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 	if err != nil {
 		return StatsResponse{}, err
 	}
-	return buildStatsForRange(data, since, lastUsed, queryRange, now), nil
+	return buildStatsForRange(data, since, lastUsed, queryRange, "", now), nil
 }
 
-func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Time, queryRange usageRange, now time.Time) StatsResponse {
+func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Time, queryRange usageRange, source string, now time.Time) StatsResponse {
 	groups := make(map[Dimensions]Counters)
 	series := make(map[int64]Counters)
 	modelSeries := make(map[struct {
@@ -147,6 +148,7 @@ func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Tim
 		Model string
 	}]Counters)
 	summary := Counters{}
+	sources := make(map[string]struct{})
 	for key, counters := range data {
 		bucketTime := time.Unix(key.Hour, 0).UTC()
 		if !queryRange.Start.IsZero() && bucketTime.Before(queryRange.Start) {
@@ -156,6 +158,12 @@ func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Tim
 			continue
 		}
 		dimensions := sanitizeDimensionsSource(key.Dimensions)
+		if dimensions.Source != "" {
+			sources[dimensions.Source] = struct{}{}
+		}
+		if source != "" && dimensions.Source != source {
+			continue
+		}
 		group := groups[dimensions]
 		group.add(counters)
 		groups[dimensions] = group
@@ -229,6 +237,11 @@ func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Tim
 			Counters: modelSeries[key],
 		})
 	}
+	sourceValues := make([]string, 0, len(sources))
+	for value := range sources {
+		sourceValues = append(sourceValues, value)
+	}
+	sort.Strings(sourceValues)
 
 	return StatsResponse{
 		SchemaVersion: 1,
@@ -240,6 +253,7 @@ func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Tim
 		Groups:        groupRows,
 		Series:        points,
 		ModelSeries:   modelPoints,
+		Sources:       sourceValues,
 	}
 }
 

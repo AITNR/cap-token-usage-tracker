@@ -362,6 +362,53 @@ func TestStalePriceSyncDoesNotOverwriteNewSettings(t *testing.T) {
 	}
 }
 
+func TestManagementSourceFilterAppliesToStatsRequestsAndCosts(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
+		pluginID: "test", resourceStatsPath: "/v0/resource/plugins/test/stats", resourceRequestsPath: "/v0/resource/plugins/test/requests", resourceCostsPath: "/v0/resource/plugins/test/costs",
+	}}
+	defer runtime.shutdown()
+	for _, usage := range []normalizedUsage{
+		{Dimensions: Dimensions{Model: "alpha", Source: "cli"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 3}},
+		{Dimensions: Dimensions{Model: "beta", Source: "web"}, RequestedAt: nowUTC(), Counters: Counters{Requests: 1, TotalTokens: 5}},
+	} {
+		if err := store.Record(usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+	query := url.Values{"range": []string{"24h"}, "source": []string{"cli"}}
+	for _, path := range []string{runtime.routes.resourceStatsPath, runtime.routes.resourceRequestsPath, runtime.routes.resourceCostsPath} {
+		if path == runtime.routes.resourceRequestsPath {
+			query.Set("offset", "0")
+			query.Set("limit", "100")
+		}
+		request, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: path, Query: query})
+		response, err := runtime.handleManagement(request)
+		if err != nil || response.StatusCode != http.StatusOK || strings.Contains(string(response.Body), `"source":"web"`) {
+			t.Fatalf("source-filtered %s response: %+v, %v", path, response, err)
+		}
+		if path == runtime.routes.resourceStatsPath && (!strings.Contains(string(response.Body), `"total_tokens":3`) || !strings.Contains(string(response.Body), `"sources":["cli","web"]`)) {
+			t.Fatalf("source-filtered stats response: %+v", response)
+		}
+		if path == runtime.routes.resourceRequestsPath && !strings.Contains(string(response.Body), `"total":1`) {
+			t.Fatalf("source-filtered request response: %+v", response)
+		}
+		if path == runtime.routes.resourceCostsPath && !strings.Contains(string(response.Body), `"requests":1`) {
+			t.Fatalf("source-filtered cost response: %+v", response)
+		}
+	}
+
+	allCosts, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceCostsPath, Query: url.Values{"range": []string{"24h"}}})
+	response, err := runtime.handleManagement(allCosts)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"requests":2`) {
+		t.Fatalf("unfiltered costs response: %+v, %v", response, err)
+	}
+}
+
 func TestDashboardSecurityContract(t *testing.T) {
 	response := dashboardResponse()
 	html := string(response.Body)

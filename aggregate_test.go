@@ -98,9 +98,26 @@ func TestBuildStatsForRangeUsesExclusiveEnd(t *testing.T) {
 		{Hour: end.Add(-time.Minute).Unix(), Dimensions: dim}:   {Requests: 1, TotalTokens: 4},
 		{Hour: end.Unix(), Dimensions: dim}:                     {Requests: 1, TotalTokens: 8},
 	}
-	stats := buildStatsForRange(data, start, end, usageRange{Name: "custom", Start: start, End: end}, end)
+	stats := buildStatsForRange(data, start, end, usageRange{Name: "custom", Start: start, End: end}, "", end)
 	if stats.Range != "custom" || stats.Summary.Requests != 2 || stats.Summary.TotalTokens != 6 || len(stats.Series) != 2 {
 		t.Fatalf("custom range stats = %+v", stats)
+	}
+}
+
+func TestBuildStatsForRangeFiltersSourceAndRetainsSourceOptions(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	hour := now.Truncate(time.Hour).Unix()
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: Dimensions{Model: "alpha", Source: "cli"}}: {Requests: 2, TotalTokens: 20},
+		{Hour: hour, Dimensions: Dimensions{Model: "beta", Source: "web"}}:  {Requests: 1, TotalTokens: 10},
+	}
+
+	stats := buildStatsForRange(data, now.Add(-time.Hour), now, usageRange{Name: "retention"}, "cli", now)
+	if stats.Summary.Requests != 2 || stats.Summary.TotalTokens != 20 || len(stats.Groups) != 1 || stats.Groups[0].Source != "cli" {
+		t.Fatalf("source-filtered stats = %+v", stats)
+	}
+	if len(stats.Sources) != 2 || stats.Sources[0] != "cli" || stats.Sources[1] != "web" {
+		t.Fatalf("source options = %+v", stats.Sources)
 	}
 }
 

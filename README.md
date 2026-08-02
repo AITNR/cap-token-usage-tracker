@@ -91,7 +91,7 @@ plugins:
 
 - 仪表盘：`/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - 仪表盘只读统计（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z`
-- 逐请求明细与当前价格下的 `estimated_cost`（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z&offset=0&limit=100&model=gpt-4.1`
+- 逐请求明细与当前价格下的 `estimated_cost`（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z&offset=0&limit=100&model=gpt-4.1&source=cli`
 - 逐请求精确汇总费用（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/costs?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z`
 - 最新 USD/CNY 显示汇率（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/exchange-rate`
 - 模型价格、同步设置和最近同步结果读取（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/prices`
@@ -100,7 +100,7 @@ plugins:
 - 从 models.dev 同步价格（需要 management key）：`POST /v0/management/plugins/cap-token-usage-tracker/prices/sync`
 - 受保护重置：`POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
-仪表盘以浏览器所在地的自然日选择日期范围，并将本地起始日零点与结束日次日零点转换为 RFC3339 `start`、`end` 时间点；后端按左闭右开区间 `[start, end)` 过滤。两个参数必须同时提供且 `start < end`。旧的 `range=24h`、`7d`、`30d`、`retention` 继续用于接口兼容。逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
+仪表盘以浏览器所在地的自然日选择日期范围，并将本地起始日零点与结束日次日零点转换为 RFC3339 `start`、`end` 时间点；后端按左闭右开区间 `[start, end)` 过滤。两个参数必须同时提供且 `start < end`。旧的 `range=24h`、`7d`、`30d`、`retention` 继续用于接口兼容。`source` 可选，按请求明细中的来源字段精确筛选，并可用于 `/stats`、`/requests` 和 `/costs`；逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
 
 Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。通过反向代理部署在子路径时，仪表盘会从当前 iframe 地址自动保留公网路径前缀；例如 iframe 位于 `/cpa/v0/resource/plugins/cap-token-usage-tracker/dashboard` 时，资源、管理和模型目录请求会分别使用 `/cpa/v0/resource/plugins/...`、`/cpa/v0/management/plugins/...` 和 `/cpa/v1/models`。价格弹窗使用临时 CLIProxyAPI API Key 从同源 `/v1/models`（含反向代理前缀）加载当前模型目录；保存价格、同步 models.dev 或重置数据时仍要求 Management Key。两种密钥都只保存在当前 DOM/内存中，关闭对话框后清空，不会写入插件数据库、浏览器存储或 URL。模型价格、同步设置和同步来源元数据保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除价格簿。
 
@@ -353,7 +353,7 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 
 - Dashboard: `/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - Dashboard read-only statistics (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z`
-- Per-request details with current-price `estimated_cost` (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z&offset=0&limit=100&model=gpt-4.1`
+- Per-request details with current-price `estimated_cost` (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z&offset=0&limit=100&model=gpt-4.1&source=cli`
 - Exact per-request-derived cost summary (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/costs?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z`
 - Latest USD/CNY display exchange rate (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/exchange-rate`
 - Model prices, synchronization settings, and last synchronization result (no management key): `GET /v0/resource/plugins/cap-token-usage-tracker/prices`
@@ -362,7 +362,7 @@ The plugin ID is derived from the shared library filename. Using `cap-token-usag
 - Synchronize prices from models.dev (management key required): `POST /v0/management/plugins/cap-token-usage-tracker/prices/sync`
 - Protected reset: `POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
-The dashboard selects calendar days in the browser's local time zone, then converts local midnight at the start and midnight after the end date to RFC3339 `start` and `end` instants. The backend filters the half-open interval `[start, end)`; both parameters are required and `start` must be earlier than `end`. The legacy `range=24h`, `7d`, `30d`, and `retention` values remain supported for API compatibility. Request details are returned newest first; `offset` must be a non-negative integer, `limit` defaults to 100 and is capped at 500, and optional `model` applies an exact model filter.
+The dashboard selects calendar days in the browser's local time zone, then converts local midnight at the start and midnight after the end date to RFC3339 `start` and `end` instants. The backend filters the half-open interval `[start, end)`; both parameters are required and `start` must be earlier than `end`. The legacy `range=24h`, `7d`, `30d`, and `retention` values remain supported for API compatibility. Optional `source` applies an exact filter against the same source field shown in request details and is accepted by `/stats`, `/requests`, and `/costs`. Request details are returned newest first; `offset` must be a non-negative integer, `limit` defaults to 100 and is capped at 500, and optional `model` applies an exact model filter.
 
 The Management Center embeds the plugin page in an iframe. The dashboard loads automatically through the read-only resource endpoints, so opening and refreshing it does not require a management key. When CLIProxyAPI is exposed below a reverse-proxy subpath, the dashboard preserves the public prefix from its iframe URL. For example, an iframe at `/cpa/v0/resource/plugins/cap-token-usage-tracker/dashboard` uses `/cpa/v0/resource/plugins/...`, `/cpa/v0/management/plugins/...`, and `/cpa/v1/models` for resource, management, and model-catalog requests. The pricing dialog uses a temporary CLIProxyAPI API Key to load the current model directory from same-origin `/v1/models` with that prefix; a Management Key is still required to save prices, synchronize models.dev, or reset data. Both keys exist only in the current DOM/memory, are cleared when the dialog closes, and are never written to the plugin database, browser storage, or URL. Prices, synchronization settings, and provenance are stored in bbolt, survive page refreshes and service restarts, and are not removed by statistics reset.
 

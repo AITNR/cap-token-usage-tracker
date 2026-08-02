@@ -17,6 +17,8 @@
   "granularity.day": "By day",
   "granularity.week": "By week",
   "granularity.month": "By month",
+  "sourceFilter.label": "Source",
+  "sourceFilter.all": "All sources",
   "button.pricing": "Model prices",
   "button.export": "Export",
   "button.exportCSV": "Export CSV",

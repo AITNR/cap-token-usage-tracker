@@ -17,6 +17,8 @@
   "granularity.day": "По дням",
   "granularity.week": "По неделям",
   "granularity.month": "По месяцам",
+  "sourceFilter.label": "Источник",
+  "sourceFilter.all": "Все источники",
   "button.pricing": "Цены моделей",
   "button.export": "Экспорт",
   "button.exportCSV": "Экспорт CSV",
