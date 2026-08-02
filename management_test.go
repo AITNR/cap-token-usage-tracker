@@ -71,11 +71,38 @@ func TestManagementStatsAndReset(t *testing.T) {
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total_tokens":3`) {
 		t.Fatalf("resource stats response: %+v, %v", response, err)
 	}
+	customQuery := url.Values{
+		"range": []string{"custom"},
+		"start": []string{time.Now().Add(-time.Hour).Format(time.RFC3339)},
+		"end":   []string{time.Now().Add(time.Hour).Format(time.RFC3339)},
+	}
+	customStatsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceStatsPath, Query: customQuery})
+	response, err = runtime.handleManagement(customStatsRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"range":"custom"`) || !strings.Contains(string(response.Body), `"total_tokens":3`) {
+		t.Fatalf("custom stats response: %+v, %v", response, err)
+	}
+	invalidRangeRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceStatsPath, Query: url.Values{"range": []string{"custom"}, "start": []string{time.Now().Format(time.RFC3339)}}})
+	response, err = runtime.handleManagement(invalidRangeRequest)
+	if err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid custom range response: %+v, %v", response, err)
+	}
 
 	requestsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: url.Values{"range": []string{"24h"}, "offset": []string{"0"}, "limit": []string{"20"}, "model": []string{"m"}}})
 	response, err = runtime.handleManagement(requestsRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":1`) || !strings.Contains(string(response.Body), `"model":"m"`) {
 		t.Fatalf("resource requests response: %+v, %v", response, err)
+	}
+	customRequestsQuery := url.Values{}
+	for key, values := range customQuery {
+		customRequestsQuery[key] = append([]string(nil), values...)
+	}
+	customRequestsQuery.Set("offset", "0")
+	customRequestsQuery.Set("limit", "20")
+	customRequestsQuery.Set("model", "m")
+	customRequestsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: customRequestsQuery})
+	response, err = runtime.handleManagement(customRequestsRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"range":"custom"`) || !strings.Contains(string(response.Body), `"total":1`) {
+		t.Fatalf("custom requests response: %+v, %v", response, err)
 	}
 
 	pricesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePricesPath})
@@ -111,6 +138,11 @@ func TestManagementStatsAndReset(t *testing.T) {
 	response, err = runtime.handleManagement(costsRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"priced_requests":1`) || !strings.Contains(string(response.Body), `"estimate_basis":"current_price_book"`) {
 		t.Fatalf("resource costs response: %+v, %v", response, err)
+	}
+	customCostsRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceCostsPath, Query: customQuery})
+	response, err = runtime.handleManagement(customCostsRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"range":"custom"`) || !strings.Contains(string(response.Body), `"priced_requests":1`) {
+		t.Fatalf("custom costs response: %+v, %v", response, err)
 	}
 	catalogServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		writer.Header().Set("Content-Type", "application/json")

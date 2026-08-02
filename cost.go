@@ -74,7 +74,8 @@ const maxCostCacheEntries = 16
 
 type costQuerySnapshot struct {
 	Range         string
-	Cutoff        time.Time
+	Start         time.Time
+	End           time.Time
 	GeneratedAt   time.Time
 	Prices        map[string]ModelPrice
 	PriceSettings PriceSyncSettings
@@ -85,7 +86,8 @@ type costQuerySnapshot struct {
 
 type costCacheKey struct {
 	Range         string
-	CutoffUnix    int64
+	StartUnix     int64
+	EndUnix       int64
 	PriceRevision uint64
 	HighWater     uint64
 	Generation    uint64
@@ -160,13 +162,21 @@ func (r modelPriceResolver) resolve(model string) (ModelPrice, bool) {
 }
 
 func (s *Store) QueryCosts(rangeName string) (CostResponse, error) {
+	queryRange, err := presetUsageRange(rangeName, time.Now().UTC())
+	if err != nil {
+		return CostResponse{}, err
+	}
+	return s.queryCosts(queryRange)
+}
+
+func (s *Store) queryCosts(queryRange usageRange) (CostResponse, error) {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
 	if s.closed {
 		return CostResponse{}, errors.New("store is closed")
 	}
 	resp := make(chan costSnapshotResult, 1)
-	s.commands <- costSnapshotCommand{rangeName: rangeName, resp: resp}
+	s.commands <- costSnapshotCommand{queryRange: queryRange, resp: resp}
 	result := <-resp
 	if result.err != nil {
 		return CostResponse{}, result.err
@@ -174,7 +184,8 @@ func (s *Store) QueryCosts(rangeName string) (CostResponse, error) {
 	snapshot := result.snapshot
 	key := costCacheKey{
 		Range:         snapshot.Range,
-		CutoffUnix:    snapshot.Cutoff.UnixNano(),
+		StartUnix:     snapshot.Start.UnixNano(),
+		EndUnix:       snapshot.End.UnixNano(),
 		PriceRevision: snapshot.PriceRevision,
 		HighWater:     snapshot.HighWater,
 		Generation:    snapshot.Generation,
@@ -253,16 +264,19 @@ func (s *Store) scanCosts(snapshot costQuerySnapshot) (CostResponse, error) {
 		}
 		cursor := requests.Cursor()
 		key, value := cursor.First()
-		if !snapshot.Cutoff.IsZero() {
-			key, value = cursor.Seek(encodeRequestKey(snapshot.Cutoff.UnixNano(), 0))
+		if !snapshot.Start.IsZero() {
+			key, value = cursor.Seek(encodeRequestKey(snapshot.Start.UnixNano(), 0))
 		}
 		for ; key != nil; key, value = cursor.Next() {
 			if len(key) != 16 || value == nil {
 				continue
 			}
 			requestedAt := time.Unix(0, decodeInt64(key[:8])).UTC()
-			if !snapshot.Cutoff.IsZero() && requestedAt.Before(snapshot.Cutoff) {
+			if !snapshot.Start.IsZero() && requestedAt.Before(snapshot.Start) {
 				continue
+			}
+			if !snapshot.End.IsZero() && !requestedAt.Before(snapshot.End) {
+				break
 			}
 			var request RequestDetail
 			if err := json.Unmarshal(value, &request); err != nil {

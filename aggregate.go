@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"fmt"
 	"math"
 	"sort"
 	"time"
@@ -124,12 +125,21 @@ type StatsResponse struct {
 	ModelSeries   []ModelSeriesPoint `json:"model_series"`
 }
 
+type usageRange struct {
+	Name  string
+	Start time.Time
+	End   time.Time
+}
+
 func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, requestedRange string, now time.Time) (StatsResponse, error) {
-	rangeName, cutoff, err := queryCutoff(requestedRange, now)
+	queryRange, err := presetUsageRange(requestedRange, now)
 	if err != nil {
 		return StatsResponse{}, err
 	}
+	return buildStatsForRange(data, since, lastUsed, queryRange, now), nil
+}
 
+func buildStatsForRange(data map[aggregateKey]Counters, since, lastUsed time.Time, queryRange usageRange, now time.Time) StatsResponse {
 	groups := make(map[Dimensions]Counters)
 	series := make(map[int64]Counters)
 	modelSeries := make(map[struct {
@@ -138,7 +148,11 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 	}]Counters)
 	summary := Counters{}
 	for key, counters := range data {
-		if !cutoff.IsZero() && key.Hour < cutoff.Unix() {
+		bucketTime := time.Unix(key.Hour, 0).UTC()
+		if !queryRange.Start.IsZero() && bucketTime.Before(queryRange.Start) {
+			continue
+		}
+		if !queryRange.End.IsZero() && !bucketTime.Before(queryRange.End) {
 			continue
 		}
 		dimensions := sanitizeDimensionsSource(key.Dimensions)
@@ -219,30 +233,71 @@ func buildStats(data map[aggregateKey]Counters, since, lastUsed time.Time, reque
 	return StatsResponse{
 		SchemaVersion: 1,
 		GeneratedAt:   now.UTC(),
-		Range:         rangeName,
+		Range:         queryRange.Name,
 		RetainedSince: since.UTC(),
 		LastUsed:      lastUsed.UTC(),
 		Summary:       summary,
 		Groups:        groupRows,
 		Series:        points,
 		ModelSeries:   modelPoints,
-	}, nil
+	}
 }
 
 func queryCutoff(value string, now time.Time) (string, time.Time, error) {
+	queryRange, err := presetUsageRange(value, now)
+	return queryRange.Name, queryRange.Start, err
+}
+
+func presetUsageRange(value string, now time.Time) (usageRange, error) {
 	now = now.UTC()
 	switch value {
 	case "", "24h":
-		return "24h", now.Add(-24 * time.Hour).Truncate(time.Minute), nil
+		return usageRange{Name: "24h", Start: now.Add(-24 * time.Hour).Truncate(time.Minute)}, nil
 	case "7d":
-		return "7d", now.Add(-7 * 24 * time.Hour).Truncate(time.Minute), nil
+		return usageRange{Name: "7d", Start: now.Add(-7 * 24 * time.Hour).Truncate(time.Minute)}, nil
 	case "30d":
-		return "30d", now.Add(-30 * 24 * time.Hour).Truncate(time.Minute), nil
+		return usageRange{Name: "30d", Start: now.Add(-30 * 24 * time.Hour).Truncate(time.Minute)}, nil
 	case "retention":
-		return "retention", time.Time{}, nil
+		return usageRange{Name: "retention"}, nil
 	default:
-		return "", time.Time{}, withStatus(400, "unsupported range %q", value)
+		return usageRange{}, withStatus(400, "unsupported range %q", value)
 	}
+}
+
+func usageRangeFromQuery(rangeValue, startValue, endValue string, now time.Time) (usageRange, error) {
+	if startValue == "" && endValue == "" {
+		return presetUsageRange(rangeValue, now)
+	}
+	if rangeValue != "" && rangeValue != "custom" {
+		return usageRange{}, withStatus(400, "range must be custom when start and end are provided")
+	}
+	if startValue == "" || endValue == "" {
+		return usageRange{}, withStatus(400, "start and end must be provided together")
+	}
+	start, err := time.Parse(time.RFC3339, startValue)
+	if err != nil {
+		return usageRange{}, withStatus(400, "invalid start time: %v", err)
+	}
+	end, err := time.Parse(time.RFC3339, endValue)
+	if err != nil {
+		return usageRange{}, withStatus(400, "invalid end time: %v", err)
+	}
+	start = start.UTC()
+	end = end.UTC()
+	if !start.Before(end) {
+		return usageRange{}, withStatus(400, "start must be before end")
+	}
+	return usageRange{Name: "custom", Start: start, End: end}, nil
+}
+
+func (r usageRange) validate() error {
+	if r.Name == "" {
+		return fmt.Errorf("range name is required")
+	}
+	if !r.End.IsZero() && (r.Start.IsZero() || !r.Start.Before(r.End)) {
+		return fmt.Errorf("invalid time range")
+	}
+	return nil
 }
 
 func compareDimensions(left, right Dimensions) int {

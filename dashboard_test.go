@@ -285,7 +285,7 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 	for _, required := range []string{
 		`var costsURL=resourceBase+'/costs'`,
 		`var syncPricesURL=managementBase+'/prices/sync'`,
-		`api(costsURL+'?range='`,
+		`api(costsURL+'?'+query)`,
 		`currentCosts.models`,
 		`currentCosts.series`,
 		`price_book_revision`,
@@ -334,6 +334,42 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains forbidden pricing pattern %q", forbidden)
+		}
+	}
+}
+
+func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="rangeButton"`,
+		`id="dateRangeDialog"`,
+		`id="calendarLeft"`,
+		`id="calendarRight"`,
+		`id="confirmDateRange"`,
+		`id="resetDateRange"`,
+		`function dateRangeQuery()`,
+		`appliedRangeStart.toISOString()`,
+		`new Date(appliedRangeEnd.getFullYear(),appliedRangeEnd.getMonth(),appliedRangeEnd.getDate()+1)`,
+		`new Date(calendarBaseMonth.getFullYear(),calendarBaseMonth.getMonth()+1,1)`,
+		`selected.getTime()<draftRangeStart.getTime()`,
+		`draftRangeEnd=draftRangeStart;draftRangeStart=selected`,
+		`if(draftRangeStart&&draftRangeEnd){draftRangeStart=selected;draftRangeEnd=null;}`,
+		`document.getElementById('confirmDateRange').disabled=!complete`,
+		`params.set('start',appliedRangeStart.toISOString())`,
+		`params.set('end',endExclusive.toISOString())`,
+		`.calendar-panels{display:grid;grid-template-columns:repeat(2`,
+		`@media(max-width:560px){.range-control`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing date range picker contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`<select id="range"`,
+		`document.getElementById('range').addEventListener('change'`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard retains preset range selector %q", forbidden)
 		}
 	}
 }

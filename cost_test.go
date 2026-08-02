@@ -268,6 +268,49 @@ func TestStoreQueryCostsAndRequestPageUseCurrentPriceBook(t *testing.T) {
 	}
 }
 
+func TestCustomRangeUsesSameExclusiveEndAcrossQueries(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.SaveModelPrices(map[string]ModelPrice{"m": {}}); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now().UTC().Add(-3 * time.Hour).Truncate(time.Minute)
+	end := start.Add(time.Hour)
+	for _, requestedAt := range []time.Time{
+		start.Add(-time.Minute),
+		start,
+		end.Add(-time.Nanosecond),
+		end,
+	} {
+		if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "m"}, RequestedAt: requestedAt, Counters: Counters{Requests: 1, InputTokens: 10, TotalTokens: 10}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	queryRange := usageRange{Name: "custom", Start: start, End: end}
+	stats, err := store.queryStats(queryRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.queryRequestPage(queryRange, 0, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	costs, err := store.queryCosts(queryRange)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.Requests != 2 || page.Total != 2 || costs.Summary.Requests != 2 {
+		t.Fatalf("custom range counts differ: stats=%d requests=%d costs=%d", stats.Summary.Requests, page.Total, costs.Summary.Requests)
+	}
+}
+
 func TestCostCacheInvalidatesWhenSuffixSettingsChange(t *testing.T) {
 	config := testConfig(t)
 	config.SyncOnRecord = true
