@@ -38,8 +38,9 @@ type recordCommand struct {
 }
 
 type queryCommand struct {
-	rangeName string
-	resp      chan queryResult
+	queryRange usageRange
+	source     string
+	resp       chan queryResult
 }
 
 type queryResult struct {
@@ -48,11 +49,12 @@ type queryResult struct {
 }
 
 type requestQueryCommand struct {
-	rangeName string
-	offset    int
-	limit     int
-	model     string
-	resp      chan requestQueryResult
+	queryRange usageRange
+	offset     int
+	limit      int
+	model      string
+	source     string
+	resp       chan requestQueryResult
 }
 
 type requestQueryResult struct {
@@ -86,8 +88,9 @@ type observedModelsResult struct {
 	err    error
 }
 type costSnapshotCommand struct {
-	rangeName string
-	resp      chan costSnapshotResult
+	queryRange usageRange
+	source     string
+	resp       chan costSnapshotResult
 }
 type costSnapshotResult struct {
 	snapshot costQuerySnapshot
@@ -190,8 +193,20 @@ func (s *Store) Record(usage normalizedUsage) error {
 }
 
 func (s *Store) Query(rangeName string) (StatsResponse, error) {
+	queryRange, err := presetUsageRange(rangeName, time.Now().UTC())
+	if err != nil {
+		return StatsResponse{}, err
+	}
+	return s.queryStats(queryRange)
+}
+
+func (s *Store) queryStats(queryRange usageRange) (StatsResponse, error) {
+	return s.queryStatsBySource(queryRange, "")
+}
+
+func (s *Store) queryStatsBySource(queryRange usageRange, source string) (StatsResponse, error) {
 	resp := make(chan queryResult, 1)
-	if err := s.send(queryCommand{rangeName: rangeName, resp: resp}); err != nil {
+	if err := s.send(queryCommand{queryRange: queryRange, source: source, resp: resp}); err != nil {
 		return StatsResponse{}, err
 	}
 	result := <-resp
@@ -199,8 +214,20 @@ func (s *Store) Query(rangeName string) (StatsResponse, error) {
 }
 
 func (s *Store) QueryRequests(rangeName string, offset, limit int, model string) (RequestPage, error) {
+	queryRange, err := presetUsageRange(rangeName, time.Now().UTC())
+	if err != nil {
+		return RequestPage{}, err
+	}
+	return s.queryRequestPage(queryRange, offset, limit, model)
+}
+
+func (s *Store) queryRequestPage(queryRange usageRange, offset, limit int, model string) (RequestPage, error) {
+	return s.queryRequestPageBySource(queryRange, offset, limit, model, "")
+}
+
+func (s *Store) queryRequestPageBySource(queryRange usageRange, offset, limit int, model, source string) (RequestPage, error) {
 	resp := make(chan requestQueryResult, 1)
-	if err := s.send(requestQueryCommand{rangeName: rangeName, offset: offset, limit: limit, model: model, resp: resp}); err != nil {
+	if err := s.send(requestQueryCommand{queryRange: queryRange, offset: offset, limit: limit, model: model, source: source, resp: resp}); err != nil {
 		return RequestPage{}, err
 	}
 	result := <-resp
@@ -358,8 +385,12 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- queryResult{err: err}
 					continue
 				}
-				stats, err := buildStats(actor.data, actor.since, actor.lastUsed, item.rangeName, time.Now().UTC())
-				item.resp <- queryResult{stats: stats, err: err}
+				if err := item.queryRange.validate(); err != nil {
+					item.resp <- queryResult{err: withStatus(400, "%v", err)}
+					continue
+				}
+				stats := buildStatsForRange(actor.data, actor.since, actor.lastUsed, item.queryRange, item.source, time.Now().UTC())
+				item.resp <- queryResult{stats: stats}
 			case requestQueryCommand:
 				now := time.Now().UTC()
 				if err := actor.flush(now, true); err != nil {
@@ -367,7 +398,7 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- requestQueryResult{err: err}
 					continue
 				}
-				page, err := actor.queryRequests(item.rangeName, item.offset, item.limit, item.model, now)
+				page, err := actor.queryRequests(item.queryRange, item.offset, item.limit, item.model, item.source, now)
 				item.resp <- requestQueryResult{page: page, err: err}
 			case preferencesQueryCommand:
 				item.resp <- preferencesResult{preferences: cloneDashboardPreferences(actor.dashboardPreferences)}
@@ -396,16 +427,18 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- costSnapshotResult{err: err}
 					continue
 				}
-				rangeName, cutoff, err := queryCutoff(item.rangeName, now)
+				err := item.queryRange.validate()
 				item.resp <- costSnapshotResult{snapshot: costQuerySnapshot{
-					Range:         rangeName,
-					Cutoff:        cutoff,
+					Range:         item.queryRange.Name,
+					Start:         item.queryRange.Start,
+					End:           item.queryRange.End,
 					GeneratedAt:   now,
 					Prices:        cloneModelPrices(actor.modelPrices),
 					PriceSettings: clonePriceSyncSettings(actor.priceSyncSettings),
 					PriceRevision: actor.priceRevision,
 					HighWater:     actor.nextRequestSeq,
 					Generation:    actor.costGeneration,
+					Source:        item.source,
 				}, err: err}
 			case resetCommand:
 				if err := actor.retryFailedFlush(time.Now().UTC()); err != nil {
@@ -1083,10 +1116,9 @@ func (a *storeActor) reset() error {
 	return nil
 }
 
-func (a *storeActor) queryRequests(requestedRange string, offset, limit int, model string, now time.Time) (RequestPage, error) {
-	rangeName, cutoff, err := queryCutoff(requestedRange, now)
-	if err != nil {
-		return RequestPage{}, err
+func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, model, source string, now time.Time) (RequestPage, error) {
+	if err := queryRange.validate(); err != nil {
+		return RequestPage{}, withStatus(400, "%v", err)
 	}
 	if offset < 0 {
 		return RequestPage{}, withStatus(400, "offset must not be negative")
@@ -1101,13 +1133,13 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 	resolver := newModelPriceResolver(a.modelPrices, a.priceSyncSettings)
 	page := RequestPage{
 		GeneratedAt:       now.UTC(),
-		Range:             rangeName,
+		Range:             queryRange.Name,
 		PriceBookRevision: a.priceRevision,
 		Offset:            offset,
 		Limit:             limit,
 		Items:             make([]RequestDetail, 0, limit),
 	}
-	err = a.db.View(func(tx *bolt.Tx) error {
+	err := a.db.View(func(tx *bolt.Tx) error {
 		requests := tx.Bucket(requestsBucket)
 		if requests == nil {
 			return errors.New("requests bucket is missing")
@@ -1118,13 +1150,17 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 				continue
 			}
 			requestedAt := time.Unix(0, decodeInt64(key[:8])).UTC()
-			if !cutoff.IsZero() && requestedAt.Before(cutoff) {
+			if !queryRange.End.IsZero() && !requestedAt.Before(queryRange.End) {
+				continue
+			}
+			if !queryRange.Start.IsZero() && requestedAt.Before(queryRange.Start) {
 				break
 			}
 			var item RequestDetail
 			if err := json.Unmarshal(value, &item); err != nil {
 				return fmt.Errorf("decode request detail: %w", err)
 			}
+			item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
 			itemModel := item.Model
 			if itemModel == "" {
 				itemModel = "未标记模型"
@@ -1132,11 +1168,13 @@ func (a *storeActor) queryRequests(requestedRange string, offset, limit int, mod
 			if model != "" && itemModel != model {
 				continue
 			}
+			if source != "" && item.Source != source {
+				continue
+			}
 			page.Total++
 			if page.Total <= offset || len(page.Items) >= limit {
 				continue
 			}
-			item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
 			cost := estimateRequestCostWithResolver(item, resolver)
 			item.EstimatedCost = &cost
 			page.Items = append(page.Items, item)

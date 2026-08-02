@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
@@ -196,7 +197,11 @@ func (r *pluginRuntime) statsResponse(request pluginapi.ManagementRequest) (plug
 	if r.store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	stats, err := r.store.Query(request.Query.Get("range"))
+	queryRange, err := usageRangeFromQuery(request.Query.Get("range"), request.Query.Get("start"), request.Query.Get("end"), time.Now().UTC())
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	stats, err := r.store.queryStatsBySource(queryRange, request.Query.Get("source"))
 	if err != nil {
 		status := errorHTTPStatus(err)
 		return jsonResponse(status, map[string]any{"error": err.Error()}), nil
@@ -205,6 +210,10 @@ func (r *pluginRuntime) statsResponse(request pluginapi.ManagementRequest) (plug
 }
 
 func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	queryRange, err := usageRangeFromQuery(request.Query.Get("range"), request.Query.Get("start"), request.Query.Get("end"), time.Now().UTC())
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
 	offset, err := parseNonNegativeQueryInt(request.Query.Get("offset"), 0, "offset")
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
@@ -218,7 +227,7 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 	if r.store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	page, err := r.store.QueryRequests(request.Query.Get("range"), offset, limit, request.Query.Get("model"))
+	page, err := r.store.queryRequestPageBySource(queryRange, offset, limit, request.Query.Get("model"), request.Query.Get("source"))
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
@@ -226,13 +235,17 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 }
 
 func (r *pluginRuntime) costsResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	queryRange, err := usageRangeFromQuery(request.Query.Get("range"), request.Query.Get("start"), request.Query.Get("end"), time.Now().UTC())
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
 	r.mu.RLock()
 	store := r.store
 	r.mu.RUnlock()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	costs, err := store.QueryCosts(request.Query.Get("range"))
+	costs, err := store.queryCostsBySource(queryRange, request.Query.Get("source"))
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}

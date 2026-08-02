@@ -68,6 +68,59 @@ func TestQueryCutoffRejectsUnknownRange(t *testing.T) {
 	}
 }
 
+func TestUsageRangeFromQueryParsesCustomOffsets(t *testing.T) {
+	queryRange, err := usageRangeFromQuery("custom", "2026-08-20T00:00:00+08:00", "2026-09-06T00:00:00+08:00", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queryRange.Name != "custom" || !queryRange.Start.Equal(time.Date(2026, 8, 19, 16, 0, 0, 0, time.UTC)) || !queryRange.End.Equal(time.Date(2026, 9, 5, 16, 0, 0, 0, time.UTC)) {
+		t.Fatalf("unexpected custom range: %+v", queryRange)
+	}
+	for _, values := range [][3]string{
+		{"custom", "2026-08-20T00:00:00+08:00", ""},
+		{"24h", "2026-08-20T00:00:00+08:00", "2026-08-21T00:00:00+08:00"},
+		{"custom", "2026-08-21T00:00:00+08:00", "2026-08-20T00:00:00+08:00"},
+		{"custom", "not-a-time", "2026-08-21T00:00:00+08:00"},
+	} {
+		if _, err := usageRangeFromQuery(values[0], values[1], values[2], time.Now()); err == nil || errorHTTPStatus(err) != 400 {
+			t.Fatalf("invalid range accepted: %q %q %q, %v", values[0], values[1], values[2], err)
+		}
+	}
+}
+
+func TestBuildStatsForRangeUsesExclusiveEnd(t *testing.T) {
+	start := time.Date(2026, 8, 19, 16, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 9, 5, 16, 0, 0, 0, time.UTC)
+	dim := Dimensions{Model: "m"}
+	data := map[aggregateKey]Counters{
+		{Hour: start.Add(-time.Minute).Unix(), Dimensions: dim}: {Requests: 1, TotalTokens: 1},
+		{Hour: start.Unix(), Dimensions: dim}:                   {Requests: 1, TotalTokens: 2},
+		{Hour: end.Add(-time.Minute).Unix(), Dimensions: dim}:   {Requests: 1, TotalTokens: 4},
+		{Hour: end.Unix(), Dimensions: dim}:                     {Requests: 1, TotalTokens: 8},
+	}
+	stats := buildStatsForRange(data, start, end, usageRange{Name: "custom", Start: start, End: end}, "", end)
+	if stats.Range != "custom" || stats.Summary.Requests != 2 || stats.Summary.TotalTokens != 6 || len(stats.Series) != 2 {
+		t.Fatalf("custom range stats = %+v", stats)
+	}
+}
+
+func TestBuildStatsForRangeFiltersSourceAndRetainsSourceOptions(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	hour := now.Truncate(time.Hour).Unix()
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: Dimensions{Model: "alpha", Source: "cli"}}: {Requests: 2, TotalTokens: 20},
+		{Hour: hour, Dimensions: Dimensions{Model: "beta", Source: "web"}}:  {Requests: 1, TotalTokens: 10},
+	}
+
+	stats := buildStatsForRange(data, now.Add(-time.Hour), now, usageRange{Name: "retention"}, "cli", now)
+	if stats.Summary.Requests != 2 || stats.Summary.TotalTokens != 20 || len(stats.Groups) != 1 || stats.Groups[0].Source != "cli" {
+		t.Fatalf("source-filtered stats = %+v", stats)
+	}
+	if len(stats.Sources) != 2 || stats.Sources[0] != "cli" || stats.Sources[1] != "web" {
+		t.Fatalf("source options = %+v", stats.Sources)
+	}
+}
+
 func TestBuildStatsStableDimensionOrdering(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 30, 0, 0, time.UTC)
 	hour := now.Truncate(time.Hour).Unix()

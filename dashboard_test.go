@@ -87,6 +87,10 @@ func TestDashboardColumnMenusCanOverflowShortTables(t *testing.T) {
 		`.table-panel{overflow:visible}`,
 		`.table-wrap{max-height:540px;overflow:auto;border-radius:0 0 12px 12px;scrollbar-gutter:stable}`,
 		`.request-columns-menu{position:absolute`,
+		`max-height:calc(100dvh - 32px);overflow:auto`,
+		`function positionColumnsMenu(menu,button)`,
+		`menu.style.position='fixed'`,
+		`window.addEventListener('resize',function(){if(!document.getElementById('requestColumnsMenu').hidden)positionColumnsMenu`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing short-table column menu fix %q", required)
@@ -252,6 +256,23 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	}
 }
 
+func TestDashboardSourceFilterUsesSharedQueryScope(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`function initializeSourceFilter()`,
+		`select.id='sourceFilter'`,
+		`granularity.insertAdjacentElement('afterend',select)`,
+		`function renderSourceOptions(sources)`,
+		`currentData&&currentData.sources`,
+		`params.set('source',selectedSource)`,
+		`load(true).catch(function(error){text('error',error.message);})`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing source-filter contract %q", required)
+		}
+	}
+}
+
 func TestDashboardPreservesReverseProxyPathPrefix(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
@@ -285,7 +306,7 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 	for _, required := range []string{
 		`var costsURL=resourceBase+'/costs'`,
 		`var syncPricesURL=managementBase+'/prices/sync'`,
-		`api(costsURL+'?range='`,
+		`api(costsURL+'?'+query)`,
 		`currentCosts.models`,
 		`currentCosts.series`,
 		`price_book_revision`,
@@ -334,6 +355,42 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains forbidden pricing pattern %q", forbidden)
+		}
+	}
+}
+
+func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="rangeButton"`,
+		`id="dateRangeDialog"`,
+		`id="calendarLeft"`,
+		`id="calendarRight"`,
+		`id="confirmDateRange"`,
+		`id="resetDateRange"`,
+		`function dateRangeQuery()`,
+		`appliedRangeStart.toISOString()`,
+		`new Date(appliedRangeEnd.getFullYear(),appliedRangeEnd.getMonth(),appliedRangeEnd.getDate()+1)`,
+		`new Date(calendarBaseMonth.getFullYear(),calendarBaseMonth.getMonth()+1,1)`,
+		`selected.getTime()<draftRangeStart.getTime()`,
+		`draftRangeEnd=draftRangeStart;draftRangeStart=selected`,
+		`if(draftRangeStart&&draftRangeEnd){draftRangeStart=selected;draftRangeEnd=null;}`,
+		`document.getElementById('confirmDateRange').disabled=!complete`,
+		`params.set('start',appliedRangeStart.toISOString())`,
+		`params.set('end',endExclusive.toISOString())`,
+		`.calendar-panels{display:grid;grid-template-columns:repeat(2`,
+		`@media(max-width:560px){.range-control`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing date range picker contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`<select id="range"`,
+		`document.getElementById('range').addEventListener('change'`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard retains preset range selector %q", forbidden)
 		}
 	}
 }
@@ -669,6 +726,8 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"status.loading",
 		"chart.noCalls",
 		"trend.cacheHitRate",
+		"sourceFilter.label",
+		"sourceFilter.all",
 		"empty.calls",
 		"requestColumns.button",
 		"requestColumns.title",
