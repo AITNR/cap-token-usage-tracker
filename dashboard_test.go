@@ -567,12 +567,15 @@ func TestDashboardModelShareLegendScalesWithoutClipping(t *testing.T) {
 	for _, required := range []string{
 		`.visual-grid{display:grid;grid-template-columns:minmax(0,1.85fr) minmax(0,.85fr)`,
 		`.panel{overflow:hidden;min-width:0}`,
-		`.donut-layout{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr)`,
+		`.donut-layout{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);align-items:center;gap:8px 0px`,
+		`.donut-layout{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);align-items:center;gap:8px 0px;min-width:0;min-height:330px`,
 		`.donut-wrap{position:relative;min-width:0`,
 		`.donut-wrap svg{display:block;width:100%;max-width:280px;height:auto;aspect-ratio:1`,
-		`.legend{min-width:0;max-height:292px;overflow:auto;overflow-x:hidden`,
-		`.legend-item{display:grid;grid-template-columns:24px minmax(0,1fr) minmax(4.25em,max-content)`,
-		`.legend-share{min-width:4.25em`,
+		`.legend{min-width:0;max-height:330px;overflow:auto;overflow-x:hidden;padding:4px 2px 4px 2px;scrollbar-gutter:stable`,
+		`.legend-item{display:grid;grid-template-columns:18px minmax(0,1fr) minmax(3.5em,max-content);align-items:center;column-gap:2px;min-width:0;margin:1px 0;padding:0 2px`,
+		`.legend-toggle{display:flex;width:18px;height:32px`,
+		`.legend-share{min-width:0;padding-right:0`,
+		`.legend-label{min-width:0;padding:3px 0`,
 		`text-align:right;white-space:nowrap`,
 		`.donut-layout{grid-template-columns:1fr;min-height:0`,
 		`.legend{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))`,
@@ -609,7 +612,7 @@ func TestDashboardLegendLabelRecoversFullModelDetails(t *testing.T) {
 		`text-overflow:ellipsis;white-space:nowrap`,
 		`label.addEventListener('click',function(){selectModel(item.model);})`,
 		`toggle.addEventListener('click',function(event){event.stopPropagation();toggleModel(item.model);})`,
-		`minmax(4.25em,max-content)`,
+		`minmax(3.5em,max-content)`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing legend tooltip/a11y contract %q", required)
