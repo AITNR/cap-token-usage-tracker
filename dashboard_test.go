@@ -358,6 +358,7 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`accounting_mode`,
 		`tier_threshold`,
 		`context_tiers`,
+		`service_tiers`,
 		`provider_priority`,
 		`ignored_suffixes`,
 		`mappings`,

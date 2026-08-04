@@ -42,6 +42,46 @@ func TestMatchModelsDevPricesUsesPrioritySuffixAndContextTiers(t *testing.T) {
 	}
 }
 
+func TestMatchModelsDevPricesImportsServiceTierModes(t *testing.T) {
+	baseCost := modelsDevCost{Input: 5, Output: 30, CacheRead: 0.5, CacheWrite: 6.25}
+	priorityCost := modelsDevCost{
+		Input: 10, Output: 60, CacheRead: 1, CacheWrite: 12.5,
+		Tiers: []modelsDevCostTier{
+			{Input: 20, Output: 90, CacheRead: 2, CacheWrite: 25, Tier: modelsDevTierKind{Type: "context", Size: 272_000}},
+		},
+	}
+	catalog := map[string]modelsDevProvider{
+		"openai": {
+			ID: "openai",
+			Models: map[string]modelsDevModel{
+				"gpt-test": {
+					Cost: &baseCost,
+					Experimental: &modelsDevExperimental{Modes: map[string]modelsDevMode{
+						"fast": {
+							Cost:     &priorityCost,
+							Provider: modelsDevModeProvider{Body: modelsDevModeBody{ServiceTier: "Priority"}},
+						},
+						"pro": {},
+					}},
+				},
+			},
+		},
+	}
+
+	result, err := matchModelsDevPrices(catalog, []string{"gpt-test"}, defaultPriceSyncSettings(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	price := result.Prices["gpt-test"]
+	priority, ok := price.ServiceTiers["priority"]
+	if !ok || priority.Input != 10 || priority.Output != 60 || priority.CacheRead != 1 || priority.CacheCreation != 12.5 {
+		t.Fatalf("priority service tier = %+v, present=%v", priority, ok)
+	}
+	if len(priority.ContextTiers) != 1 || priority.ContextTiers[0].Threshold != 272_000 || priority.ContextTiers[0].Input != 20 {
+		t.Fatalf("priority context tiers = %+v", priority.ContextTiers)
+	}
+}
+
 func TestNormalizeSyncModelsValidatesCLIProxyAPIList(t *testing.T) {
 	models, err := normalizeSyncModels([]string{" model-b ", "model-a", "model-b", ""})
 	if err != nil {
@@ -76,7 +116,7 @@ func TestMatchModelsDevPricesAppliesExplicitMapping(t *testing.T) {
 func TestModelsDevFetcherValidatesResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"provider":{"models":{"model":{"cost":{"input":1,"output":2}}}}}`))
+		_, _ = response.Write([]byte(`{"provider":{"models":{"model":{"cost":{"input":1,"output":2},"experimental":{"modes":{"fast":{"cost":{"input":2,"output":4},"provider":{"body":{"service_tier":"priority"}}}}}}}}}`))
 	}))
 	defer server.Close()
 	fetcher := &modelsDevFetcher{client: server.Client(), url: server.URL}
@@ -86,6 +126,10 @@ func TestModelsDevFetcherValidatesResponse(t *testing.T) {
 	}
 	if catalog["provider"].Models["model"].Cost.Input != 1 {
 		t.Fatalf("catalog = %+v", catalog)
+	}
+	fast := catalog["provider"].Models["model"].Experimental.Modes["fast"]
+	if fast.Cost == nil || fast.Cost.Input != 2 || fast.Provider.Body.ServiceTier != "priority" {
+		t.Fatalf("catalog fast mode = %+v", fast)
 	}
 
 	badContent := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

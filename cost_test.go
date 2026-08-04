@@ -78,6 +78,39 @@ func TestEstimateRequestCostSelectsHighestStrictContextTier(t *testing.T) {
 	}
 }
 
+func TestEstimateRequestCostSelectsServiceTierSchedule(t *testing.T) {
+	prices := map[string]ModelPrice{
+		"m": {
+			Input: 1, Output: 2, CacheRead: 0.1,
+			ServiceTiers: map[string]ServiceTierPrice{
+				"priority": {
+					Input: 10, Output: 20, CacheRead: 1,
+					ContextTiers: []ContextPriceTier{
+						{Threshold: 200_000, Input: 20, Output: 30, CacheRead: 2},
+					},
+				},
+			},
+		},
+	}
+	priority := estimateRequestCost(RequestDetail{
+		Dimensions: Dimensions{Provider: "openai", Model: "m", ServiceTier: "Priority"},
+		Counters:   Counters{InputTokens: 300_000, OutputTokens: 10_000, CacheReadTokens: 200_000},
+	}, prices)
+	wantPriority := float64(100_000)*20/1_000_000 + float64(10_000)*30/1_000_000 + float64(200_000)*2/1_000_000
+	if priority.PriceServiceTier != "priority" || priority.TierThreshold != 200_000 || math.Abs(priority.TotalUSD-wantPriority) > 1e-12 {
+		t.Fatalf("priority cost = %+v, want %.12f", priority, wantPriority)
+	}
+
+	standard := estimateRequestCost(RequestDetail{
+		Dimensions: Dimensions{Provider: "openai", Model: "m", ServiceTier: "auto"},
+		Counters:   Counters{InputTokens: 100_000, OutputTokens: 10_000},
+	}, prices)
+	wantStandard := float64(100_000)*1/1_000_000 + float64(10_000)*2/1_000_000
+	if standard.PriceServiceTier != "" || math.Abs(standard.TotalUSD-wantStandard) > 1e-12 {
+		t.Fatalf("standard cost = %+v, want %.12f", standard, wantStandard)
+	}
+}
+
 func TestEstimateRequestCostMissingPrice(t *testing.T) {
 	cost := estimateRequestCost(RequestDetail{Dimensions: Dimensions{Model: "missing"}}, nil)
 	if cost.Priced || cost.TotalUSD != 0 {
