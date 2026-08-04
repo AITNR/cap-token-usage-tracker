@@ -429,7 +429,6 @@ func TestDashboardSecurityContract(t *testing.T) {
 	}
 }
 
-
 func TestManagementBackupAndRestore(t *testing.T) {
 	config := testConfig(t)
 	store, err := openStore(config)
