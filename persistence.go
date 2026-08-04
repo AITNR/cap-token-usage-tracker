@@ -113,6 +113,37 @@ type configCommand struct {
 }
 type closeCommand struct{ resp chan error }
 
+const maxDatabaseBackupBytes = 64 << 20
+
+type backupCommand struct{ resp chan backupResult }
+type backupResult struct {
+	data []byte
+	err  error
+}
+
+type restoreCommand struct {
+	backup []byte
+	resp   chan restoreResult
+}
+type restoreResult struct {
+	db  *bolt.DB
+	err error
+}
+
+// limitedBuffer rejects WriteTo output once it exceeds maxDatabaseBackupBytes.
+type limitedBuffer struct {
+	buf []byte
+	max int
+}
+
+func (b *limitedBuffer) Write(p []byte) (int, error) {
+	if b.max > 0 && len(b.buf)+len(p) > b.max {
+		return 0, fmt.Errorf("database backup exceeds %d bytes", b.max)
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
 type Store struct {
 	db           *bolt.DB
 	lease        *storeLease
@@ -152,6 +183,9 @@ type storeActor struct {
 func openStore(config Config) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(config.DataPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
+	}
+	if err := recoverInterruptedRestore(config.DataPath); err != nil {
+		return nil, err
 	}
 	db, lease, err := openStoreDatabase(config.DataPath)
 	if err != nil {
@@ -357,6 +391,46 @@ func (s *Store) Close() error {
 	return s.closeErr
 }
 
+func (s *Store) Backup() ([]byte, error) {
+	resp := make(chan backupResult, 1)
+	if err := s.send(backupCommand{resp: resp}); err != nil {
+		return nil, err
+	}
+	result := <-resp
+	return result.data, result.err
+}
+
+// RestoreBackup replaces the live database with a previously exported backup while
+// keeping the store actor and handover lease alive. It locks stateMu directly so
+// concurrent cost scans cannot observe a half-swapped *bolt.DB handle.
+func (s *Store) RestoreBackup(backup []byte) error {
+	if len(backup) == 0 {
+		return withStatus(400, "backup body must not be empty")
+	}
+	if len(backup) > maxDatabaseBackupBytes {
+		return withStatus(413, "backup body exceeds %d bytes", maxDatabaseBackupBytes)
+	}
+
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.closed {
+		return errors.New("store is closed")
+	}
+
+	resp := make(chan restoreResult, 1)
+	s.commands <- restoreCommand{backup: append([]byte(nil), backup...), resp: resp}
+	result := <-resp
+	if result.db != nil {
+		s.db = result.db
+		s.costMu.Lock()
+		s.costCache = make(map[costCacheKey]CostResponse)
+		s.costOrder = nil
+		s.costFlights = make(map[costCacheKey]*costFlight)
+		s.costMu.Unlock()
+	}
+	return result.err
+}
+
 func (s *Store) send(command any) error {
 	s.stateMu.RLock()
 	defer s.stateMu.RUnlock()
@@ -456,6 +530,26 @@ func (s *Store) run(actor *storeActor) {
 					ticker.Reset(item.config.FlushInterval)
 				}
 				item.resp <- err
+			case backupCommand:
+				now := time.Now().UTC()
+				if err := actor.flush(now, true); err != nil {
+					actor.lastFlushErr = err
+					item.resp <- backupResult{err: err}
+					continue
+				}
+				buffer := &limitedBuffer{max: maxDatabaseBackupBytes}
+				err := actor.db.View(func(tx *bolt.Tx) error {
+					_, writeErr := tx.WriteTo(buffer)
+					return writeErr
+				})
+				if err != nil {
+					item.resp <- backupResult{err: fmt.Errorf("backup database: %w", err)}
+					continue
+				}
+				item.resp <- backupResult{data: buffer.buf}
+			case restoreCommand:
+				db, err := actor.restoreBackup(item.backup)
+				item.resp <- restoreResult{db: db, err: err}
 			case closeCommand:
 				flushErr := actor.flush(time.Now().UTC(), true)
 				closeErr := actor.db.Close()
@@ -518,6 +612,27 @@ func (a *storeActor) initialize() error {
 		return fmt.Errorf("initialize database: %w", err)
 	}
 
+	return a.reload()
+}
+
+// reload loads actor state from the current database handle without creating
+// buckets, migrating schema, or mutating on-disk data.
+func (a *storeActor) reload() error {
+	a.data = make(map[aggregateKey]Counters)
+	a.dirty = make(map[aggregateKey]struct{})
+	a.pending = 0
+	a.pendingRequests = nil
+	a.lastFlushErr = nil
+	a.lastPruneAt = time.Time{}
+	a.since = time.Time{}
+	a.lastUsed = time.Time{}
+	a.nextRequestSeq = 0
+	a.modelPrices = make(map[string]ModelPrice)
+	a.priceRevision = 0
+	a.priceSyncSettings = defaultPriceSyncSettings()
+	a.lastPriceSync = nil
+	a.dashboardPreferences = defaultDashboardPreferences()
+
 	return a.db.View(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
@@ -527,7 +642,6 @@ func (a *storeActor) initialize() error {
 		}
 		a.since = time.Unix(0, decodeInt64(meta.Get(sinceKey))).UTC()
 		a.nextRequestSeq = decodeUint64(meta.Get(requestSequenceKey))
-		a.modelPrices = make(map[string]ModelPrice)
 		if raw := meta.Get(modelPricesKey); len(raw) > 0 {
 			var stored map[string]ModelPrice
 			if err := json.Unmarshal(raw, &stored); err != nil {
@@ -554,7 +668,6 @@ func (a *storeActor) initialize() error {
 		if a.priceRevision == 0 && len(a.modelPrices) > 0 {
 			a.priceRevision = 1
 		}
-		a.priceSyncSettings = defaultPriceSyncSettings()
 		if raw := meta.Get(modelPriceSettingsKey); len(raw) > 0 {
 			var stored PriceSyncSettings
 			if err := json.Unmarshal(raw, &stored); err != nil {
@@ -599,6 +712,264 @@ func (a *storeActor) initialize() error {
 			})
 		})
 	})
+}
+
+func recoverInterruptedRestore(dataPath string) error {
+	rollbackPath := dataPath + ".rollback"
+	rollbackInfo, err := os.Stat(rollbackPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat restore rollback database: %w", err)
+	}
+	if rollbackInfo.IsDir() {
+		return fmt.Errorf("restore rollback path is a directory: %s", rollbackPath)
+	}
+
+	liveInfo, err := os.Stat(dataPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist), err == nil && !liveInfo.IsDir() && liveInfo.Size() == 0:
+		if err == nil {
+			if removeErr := os.Remove(dataPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				return fmt.Errorf("remove empty live database before rollback recovery: %w", removeErr)
+			}
+		}
+		if renameErr := os.Rename(rollbackPath, dataPath); renameErr != nil {
+			return fmt.Errorf("recover restore rollback database: %w", renameErr)
+		}
+		fmt.Fprintln(os.Stderr, "cap-token-usage-tracker: recovered database from interrupted restore rollback")
+		return nil
+	case err != nil:
+		return fmt.Errorf("stat live database during restore recovery: %w", err)
+	default:
+		// A usable live database already exists; drop the leftover rollback file.
+		if removeErr := os.Remove(rollbackPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("remove stale restore rollback database: %w", removeErr)
+		}
+		return nil
+	}
+}
+
+func validateRestoreDatabase(path string) error {
+	db, err := bolt.Open(path, 0o600, &bolt.Options{ReadOnly: true, Timeout: storeOpenProbeTimeout})
+	if err != nil {
+		return fmt.Errorf("open staged restore database: %w", err)
+	}
+	defer db.Close()
+
+	return db.View(func(tx *bolt.Tx) error {
+		var firstErr error
+		for checkErr := range tx.Check() {
+			if checkErr != nil && firstErr == nil {
+				firstErr = checkErr
+			}
+		}
+		if firstErr != nil {
+			return fmt.Errorf("database integrity check failed: %w", firstErr)
+		}
+		meta := tx.Bucket(metaBucket)
+		hours := tx.Bucket(hoursBucket)
+		requests := tx.Bucket(requestsBucket)
+		if meta == nil || hours == nil || requests == nil {
+			return errors.New("database buckets are missing")
+		}
+		version := decodeUint64(meta.Get(schemaKey))
+		if version != persistenceSchemaVersion {
+			return fmt.Errorf("unsupported restore schema version %d", version)
+		}
+		if raw := meta.Get(sinceKey); len(raw) != 0 && len(raw) != 8 {
+			return errors.New("invalid since metadata")
+		}
+		if raw := meta.Get(lastUsedKey); len(raw) != 0 && len(raw) != 8 {
+			return errors.New("invalid last_used metadata")
+		}
+		if raw := meta.Get(requestSequenceKey); len(raw) != 0 && len(raw) != 8 {
+			return errors.New("invalid request sequence metadata")
+		}
+		if raw := meta.Get(modelPriceRevisionKey); len(raw) != 0 && len(raw) != 8 {
+			return errors.New("invalid model price revision metadata")
+		}
+		if raw := meta.Get(modelPricesKey); len(raw) > 0 {
+			var stored map[string]ModelPrice
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode model prices: %w", err)
+			}
+			if _, err := normalizeModelPrices(stored); err != nil {
+				return fmt.Errorf("validate model prices: %w", err)
+			}
+		}
+		if raw := meta.Get(modelPriceSettingsKey); len(raw) > 0 {
+			var stored PriceSyncSettings
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode model price sync settings: %w", err)
+			}
+			if _, err := normalizePriceSyncSettings(stored); err != nil {
+				return fmt.Errorf("validate model price sync settings: %w", err)
+			}
+		}
+		if raw := meta.Get(modelPriceLastSyncKey); len(raw) > 0 {
+			var stored PriceSyncMetadata
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode model price last sync: %w", err)
+			}
+		}
+		if raw := meta.Get(dashboardPreferencesKey); len(raw) > 0 {
+			var stored DashboardPreferences
+			if err := json.Unmarshal(raw, &stored); err != nil {
+				return fmt.Errorf("decode dashboard preferences: %w", err)
+			}
+			if _, err := normalizeDashboardPreferences(stored); err != nil {
+				return fmt.Errorf("validate dashboard preferences: %w", err)
+			}
+		}
+		return requests.ForEach(func(key, value []byte) error {
+			if len(key) != 16 {
+				return fmt.Errorf("invalid request key length %d", len(key))
+			}
+			if value == nil {
+				return errors.New("request bucket contains nested bucket")
+			}
+			var detail RequestDetail
+			if err := json.Unmarshal(value, &detail); err != nil {
+				return fmt.Errorf("decode request detail: %w", err)
+			}
+			return nil
+		})
+	})
+}
+
+// syncDir fsyncs a directory so directory entries (creates/renames) become durable.
+func syncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func (a *storeActor) restoreBackup(backup []byte) (*bolt.DB, error) {
+	if len(backup) == 0 {
+		return a.db, withStatus(400, "backup body must not be empty")
+	}
+	if len(backup) > maxDatabaseBackupBytes {
+		return a.db, withStatus(413, "backup body exceeds %d bytes", maxDatabaseBackupBytes)
+	}
+	if err := a.flush(time.Now().UTC(), true); err != nil {
+		a.lastFlushErr = err
+		return a.db, err
+	}
+
+	dir := filepath.Dir(a.config.DataPath)
+	staged, err := os.CreateTemp(dir, "usage-restore-*.db")
+	if err != nil {
+		return a.db, fmt.Errorf("create staged restore database: %w", err)
+	}
+	stagedPath := staged.Name()
+	cleanupStaged := true
+	defer func() {
+		if cleanupStaged {
+			_ = os.Remove(stagedPath)
+		}
+	}()
+	if _, err := staged.Write(backup); err != nil {
+		_ = staged.Close()
+		return a.db, fmt.Errorf("write staged restore database: %w", err)
+	}
+	// Persist the staged payload before validation/rename so a crash cannot leave a
+	// half-written restore candidate that later renames would promote.
+	if err := staged.Sync(); err != nil {
+		_ = staged.Close()
+		return a.db, fmt.Errorf("sync staged restore database: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return a.db, fmt.Errorf("close staged restore database: %w", err)
+	}
+	if err := validateRestoreDatabase(stagedPath); err != nil {
+		return a.db, withStatus(400, "invalid backup database: %v", err)
+	}
+
+	livePath := a.config.DataPath
+	rollbackPath := livePath + ".rollback"
+	_ = os.Remove(rollbackPath)
+
+	if err := a.db.Close(); err != nil {
+		return nil, fmt.Errorf("close database for restore: %w", err)
+	}
+	a.db = nil
+
+	reopenLive := func(path string) (*bolt.DB, error) {
+		db, openErr := bolt.Open(path, 0o600, &bolt.Options{Timeout: storeOpenProbeTimeout})
+		if openErr != nil {
+			return nil, openErr
+		}
+		a.db = db
+		if reloadErr := a.reload(); reloadErr != nil {
+			_ = db.Close()
+			a.db = nil
+			return nil, reloadErr
+		}
+		return db, nil
+	}
+
+	if err := os.Rename(livePath, rollbackPath); err != nil {
+		db, openErr := reopenLive(livePath)
+		if openErr != nil {
+			return nil, errors.Join(fmt.Errorf("rename live database aside: %w", err), openErr)
+		}
+		return db, fmt.Errorf("rename live database aside: %w", err)
+	}
+
+	if err := os.Rename(stagedPath, livePath); err != nil {
+		cleanupStaged = false
+		_ = os.Remove(stagedPath)
+		if renameErr := os.Rename(rollbackPath, livePath); renameErr != nil {
+			return nil, errors.Join(fmt.Errorf("promote staged restore database: %w", err), renameErr)
+		}
+		db, openErr := reopenLive(livePath)
+		if openErr != nil {
+			return nil, errors.Join(fmt.Errorf("promote staged restore database: %w", err), openErr)
+		}
+		return db, fmt.Errorf("promote staged restore database: %w", err)
+	}
+	cleanupStaged = false
+	// Directory fsync makes the staged→live rename durable across power loss.
+	// The rename already succeeded, so treat a directory sync failure as best-effort:
+	// continue opening the restored database rather than leaving the actor without a handle.
+	_ = syncDir(dir)
+
+	db, err := bolt.Open(livePath, 0o600, &bolt.Options{Timeout: storeOpenProbeTimeout})
+	if err != nil {
+		_ = os.Remove(livePath)
+		if renameErr := os.Rename(rollbackPath, livePath); renameErr != nil {
+			return nil, errors.Join(fmt.Errorf("open restored database: %w", err), renameErr)
+		}
+		db, openErr := reopenLive(livePath)
+		if openErr != nil {
+			return nil, errors.Join(fmt.Errorf("open restored database: %w", err), openErr)
+		}
+		return db, fmt.Errorf("open restored database: %w", err)
+	}
+
+	a.db = db
+	if err := a.reload(); err != nil {
+		_ = db.Close()
+		a.db = nil
+		_ = os.Remove(livePath)
+		if renameErr := os.Rename(rollbackPath, livePath); renameErr != nil {
+			return nil, errors.Join(fmt.Errorf("reload restored database: %w", err), renameErr)
+		}
+		db, openErr := reopenLive(livePath)
+		if openErr != nil {
+			return nil, errors.Join(fmt.Errorf("reload restored database: %w", err), openErr)
+		}
+		return db, fmt.Errorf("reload restored database: %w", err)
+	}
+
+	a.costGeneration++
+	_ = os.Remove(rollbackPath)
+	return db, nil
 }
 
 func migrateUsageSources(hours, requests *bolt.Bucket, version uint64) error {

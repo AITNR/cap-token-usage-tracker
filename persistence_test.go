@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -842,5 +844,238 @@ func TestFailedSchemaThreePriceMigrationKeepsSchema(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStoreBackupAndRestore(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	if err := store.Record(normalizedUsage{
+		RequestedAt: now,
+		Dimensions:  Dimensions{Provider: "p", Model: "backup-model", Source: "cli"},
+		Counters:    Counters{Requests: 1, InputTokens: 11, OutputTokens: 7, TotalTokens: 18},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveDashboardPreferences(DashboardPreferences{RequestPageSize: 25, DimensionPageSize: 50}); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Summary.TotalTokens != 18 {
+		t.Fatalf("pre-backup tokens = %d, want 18", before.Summary.TotalTokens)
+	}
+
+	backup, err := store.Backup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backup) == 0 {
+		t.Fatal("expected non-empty backup")
+	}
+
+	// Mutate live state so restore has something to reverse.
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 0 {
+		t.Fatalf("expected empty stats after reset, got %+v", stats.Summary)
+	}
+
+	leasePath := config.DataPath + ".handover"
+	leaseBefore, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatalf("read handover lease: %v", err)
+	}
+
+	if err := store.RestoreBackup(backup); err != nil {
+		t.Fatal(err)
+	}
+
+	leaseAfter, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatalf("read handover lease after restore: %v", err)
+	}
+	if string(leaseBefore) != string(leaseAfter) {
+		t.Fatalf("handover lease changed during restore: before=%q after=%q", leaseBefore, leaseAfter)
+	}
+
+	stats, err = store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 18 {
+		t.Fatalf("restored total tokens = %d, want 18", stats.Summary.TotalTokens)
+	}
+	preferences, err := store.QueryDashboardPreferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preferences.RequestPageSize != 25 || preferences.DimensionPageSize != 50 {
+		t.Fatalf("restored preferences = %+v", preferences)
+	}
+
+	// Invalid payload must leave the live database usable.
+	if err := store.RestoreBackup([]byte("not-a-database")); err == nil {
+		t.Fatal("expected invalid backup to fail")
+	}
+	stats, err = store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 18 {
+		t.Fatalf("tokens after failed restore = %d, want 18", stats.Summary.TotalTokens)
+	}
+}
+
+func TestValidateRestoreDatabaseRejectsWrongSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad-schema.db")
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta, err := tx.CreateBucket(metaBucket)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucket(hoursBucket); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucket(requestsBucket); err != nil {
+			return err
+		}
+		return meta.Put(schemaKey, encodeUint64(4))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRestoreDatabase(path); err == nil {
+		t.Fatal("expected schema mismatch")
+	}
+}
+
+
+func TestValidateRestoreDatabaseRejectsMalformedRequests(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad-requests.db")
+	db, err := bolt.Open(path, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta, err := tx.CreateBucket(metaBucket)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucket(hoursBucket); err != nil {
+			return err
+		}
+		requests, err := tx.CreateBucket(requestsBucket)
+		if err != nil {
+			return err
+		}
+		if err := meta.Put(schemaKey, encodeUint64(persistenceSchemaVersion)); err != nil {
+			return err
+		}
+		return requests.Put(encodeRequestKey(time.Now().UTC().UnixNano(), 1), []byte("not-json"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRestoreDatabase(path); err == nil {
+		t.Fatal("expected malformed request payload to fail validation")
+	}
+}
+
+func TestRecoverInterruptedRestoreUsesRollbackWhenLiveMissing(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(normalizedUsage{
+		RequestedAt: time.Now().UTC(),
+		Dimensions:  Dimensions{Model: "rollback-model", Source: "cli"},
+		Counters:    Counters{Requests: 1, TotalTokens: 12},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackPath := config.DataPath + ".rollback"
+	if err := os.Rename(config.DataPath, rollbackPath); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	stats, err := store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 12 {
+		t.Fatalf("recovered tokens = %d, want 12", stats.Summary.TotalTokens)
+	}
+	if _, err := os.Stat(rollbackPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback file still present after recovery: %v", err)
+	}
+}
+
+func TestRecoverInterruptedRestoreDropsRollbackWhenLiveExists(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(normalizedUsage{
+		RequestedAt: time.Now().UTC(),
+		Dimensions:  Dimensions{Model: "live-model", Source: "cli"},
+		Counters:    Counters{Requests: 1, TotalTokens: 8},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rollbackPath := config.DataPath + ".rollback"
+	if err := os.WriteFile(rollbackPath, []byte("stale-rollback"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	stats, err := store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 8 {
+		t.Fatalf("live tokens = %d, want 8", stats.Summary.TotalTokens)
+	}
+	if _, err := os.Stat(rollbackPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale rollback file still present: %v", err)
 	}
 }

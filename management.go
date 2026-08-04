@@ -26,6 +26,8 @@ type registeredRoutes struct {
 	pluginID                 string
 	statsPath                string
 	resetPath                string
+	backupPath               string
+	restorePath              string
 	dashboardPath            string
 	resourceStatsPath        string
 	resourceRequestsPath     string
@@ -51,6 +53,8 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		pluginID:                 pluginID,
 		statsPath:                "/v0/management/plugins/" + pluginID + "/stats",
 		resetPath:                "/v0/management/plugins/" + pluginID + "/reset",
+		backupPath:               "/v0/management/plugins/" + pluginID + "/backup",
+		restorePath:              "/v0/management/plugins/" + pluginID + "/restore",
 		dashboardPath:            "/v0/resource/plugins/" + pluginID + "/dashboard",
 		resourceStatsPath:        "/v0/resource/plugins/" + pluginID + "/stats",
 		resourceRequestsPath:     "/v0/resource/plugins/" + pluginID + "/requests",
@@ -86,6 +90,16 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 				Method:      http.MethodPost,
 				Path:        "/plugins/" + pluginID + "/prices/sync",
 				Description: "Synchronize CLIProxyAPI model prices from models.dev.",
+			},
+			{
+				Method:      http.MethodGet,
+				Path:        "/plugins/" + pluginID + "/backup",
+				Description: "Download a full bbolt database backup of persisted token usage data.",
+			},
+			{
+				Method:      http.MethodPost,
+				Path:        "/plugins/" + pluginID + "/restore",
+				Description: "Restore the persisted token usage database from a previous backup.",
 			},
 		},
 		Resources: []pluginapi.ResourceRoute{
@@ -186,6 +200,16 @@ func (r *pluginRuntime) handleManagement(raw []byte) (pluginapi.ManagementRespon
 			return methodNotAllowed(http.MethodPost), nil
 		}
 		return r.resetResponse(request)
+	case routes.backupPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.backupResponse()
+	case routes.restorePath:
+		if !strings.EqualFold(request.Method, http.MethodPost) {
+			return methodNotAllowed(http.MethodPost), nil
+		}
+		return r.restoreResponse(request)
 	default:
 		return jsonResponse(http.StatusNotFound, map[string]any{"error": "route not found"}), nil
 	}
@@ -431,6 +455,62 @@ func parseNonNegativeQueryInt(raw string, fallback int, name string) (int, error
 		return 0, withStatus(http.StatusBadRequest, "%s must be a non-negative integer", name)
 	}
 	return value, nil
+}
+
+func (r *pluginRuntime) backupResponse() (pluginapi.ManagementResponse, error) {
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	data, err := store.Backup()
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	filename := "cap-token-usage-tracker-" + nowUTC().UTC().Format("20060102-150405") + ".db"
+	return pluginapi.ManagementResponse{
+		StatusCode: http.StatusOK,
+		Headers: http.Header{
+			"Content-Type":           []string{"application/octet-stream"},
+			"Content-Disposition":    []string{`attachment; filename="` + filename + `"`},
+			"Cache-Control":          []string{"no-store"},
+			"X-Content-Type-Options": []string{"nosniff"},
+		},
+		Body: data,
+	}, nil
+}
+
+func (r *pluginRuntime) restoreResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	contentType := strings.TrimSpace(request.Headers.Get("Content-Type"))
+	if contentType != "" {
+		mediaType, _, err := mime.ParseMediaType(contentType)
+		if err != nil || !strings.EqualFold(mediaType, "application/octet-stream") {
+			return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/octet-stream"}), nil
+		}
+	}
+	if request.Headers.Get("X-Confirm-Restore") != "replace" {
+		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "missing X-Confirm-Restore: replace header"}), nil
+	}
+	if len(request.Body) == 0 {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "backup body must not be empty"}), nil
+	}
+	if len(request.Body) > maxDatabaseBackupBytes {
+		return jsonResponse(http.StatusRequestEntityTooLarge, map[string]any{"error": "backup body is too large"}), nil
+	}
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	if err := store.RestoreBackup(request.Body); err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return jsonResponse(http.StatusOK, map[string]any{
+		"restored":    true,
+		"restored_at": nowUTC(),
+	}), nil
 }
 
 func (r *pluginRuntime) resetResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
