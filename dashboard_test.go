@@ -274,6 +274,25 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	}
 }
 
+func TestDashboardCacheHitRateUsesInputTokenDenominator(t *testing.T) {
+	html := dashboardHTML
+	if !strings.Contains(html, `return input?Math.min(100,cacheRead/input*100):0;`) {
+		t.Fatal("cache hit rate must divide cache read tokens by input tokens")
+	}
+	if strings.Contains(html, `var context=input+cacheRead;return context?Math.min(100,cacheRead/context*100):0;`) {
+		t.Fatal("cache hit rate still double-counts cache read tokens in its denominator")
+	}
+	for _, required := range []string{
+		`function cacheReadTokens(point){var cacheRead=Number(point.cache_read_tokens||0);return cacheRead>0?cacheRead:Number(point.cached_tokens||0);}`,
+		`bucket.cacheRead+=cacheReadTokens(point)`,
+		`item.cacheHitRate=cacheHitRate(item.input,item.cacheRead)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboardHTML missing cache hit rate aggregation %q", required)
+		}
+	}
+}
+
 func TestDashboardSourceFilterUsesSharedQueryScope(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
