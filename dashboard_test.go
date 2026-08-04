@@ -750,7 +750,7 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"backup.restoreWarning",
 		"backup.restoring",
 		"backup.restored",
-			"backup.fileTooLarge",
+		"backup.fileTooLarge",
 		"status.loading",
 		"chart.noCalls",
 		"trend.cacheHitRate",

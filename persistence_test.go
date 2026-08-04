@@ -970,7 +970,6 @@ func TestValidateRestoreDatabaseRejectsWrongSchema(t *testing.T) {
 	}
 }
 
-
 func TestValidateRestoreDatabaseRejectsMalformedRequests(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bad-requests.db")
 	db, err := bolt.Open(path, 0o600, nil)
