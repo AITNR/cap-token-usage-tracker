@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -32,7 +34,7 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registration.Routes) != 4 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || registration.Routes[3].Path != "/plugins/custom-id/prices/sync" || len(registration.Resources) != 7 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/costs" || registration.Resources[4].Path != "/exchange-rate" || registration.Resources[5].Path != "/prices" || registration.Resources[6].Path != "/preferences" {
+	if len(registration.Routes) != 6 || registration.Routes[0].Path != "/plugins/custom-id/stats" || registration.Routes[2].Method != http.MethodPut || registration.Routes[2].Path != "/plugins/custom-id/prices" || registration.Routes[3].Path != "/plugins/custom-id/prices/sync" || registration.Routes[4].Method != http.MethodGet || registration.Routes[4].Path != "/plugins/custom-id/backup" || registration.Routes[5].Method != http.MethodPost || registration.Routes[5].Path != "/plugins/custom-id/restore" || len(registration.Resources) != 7 || registration.Resources[0].Path != "/dashboard" || registration.Resources[1].Path != "/stats" || registration.Resources[2].Path != "/requests" || registration.Resources[3].Path != "/costs" || registration.Resources[4].Path != "/exchange-rate" || registration.Resources[5].Path != "/prices" || registration.Resources[6].Path != "/preferences" {
 		t.Fatalf("unexpected registration: %+v", registration)
 	}
 	if registration.Routes[0].Menu != "" {
@@ -424,5 +426,190 @@ func TestDashboardSecurityContract(t *testing.T) {
 	}
 	if response.Headers.Get("Content-Security-Policy") == "" {
 		t.Fatal("missing content security policy")
+	}
+}
+
+
+func TestManagementBackupAndRestore(t *testing.T) {
+	config := testConfig(t)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &pluginRuntime{store: store, config: config, routes: registeredRoutes{
+		pluginID: "test", backupPath: "/v0/management/plugins/test/backup", restorePath: "/v0/management/plugins/test/restore",
+	}}
+	defer runtime.shutdown()
+	if err := store.Record(normalizedUsage{
+		Dimensions:  Dimensions{Model: "backup-endpoint", Source: "cli"},
+		RequestedAt: nowUTC(),
+		Counters:    Counters{Requests: 1, InputTokens: 4, OutputTokens: 5, TotalTokens: 9},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveDashboardPreferences(DashboardPreferences{
+		RequestPageSize:   25,
+		DimensionPageSize: 50,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveModelPrices(map[string]ModelPrice{
+		"backup-endpoint": {Input: 1.5, Output: 6},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	backupRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.backupPath})
+	response, err := runtime.handleManagement(backupRequest)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("backup response: %+v, %v", response, err)
+	}
+	if response.Headers.Get("Content-Type") != "application/octet-stream" {
+		t.Fatalf("backup content type = %q", response.Headers.Get("Content-Type"))
+	}
+	if !strings.Contains(response.Headers.Get("Content-Disposition"), "attachment;") {
+		t.Fatalf("backup disposition = %q", response.Headers.Get("Content-Disposition"))
+	}
+	if response.Headers.Get("Cache-Control") != "no-store" {
+		t.Fatalf("backup cache control = %q", response.Headers.Get("Cache-Control"))
+	}
+	if response.Headers.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("backup nosniff header = %q", response.Headers.Get("X-Content-Type-Options"))
+	}
+	if len(response.Body) == 0 {
+		t.Fatal("expected non-empty backup body")
+	}
+
+	backupPath := filepath.Join(t.TempDir(), "endpoint-backup.db")
+	if err := os.WriteFile(backupPath, response.Body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRestoreDatabase(backupPath); err != nil {
+		t.Fatalf("backup body is not a valid bolt database: %v", err)
+	}
+	backupBody := append([]byte(nil), response.Body...)
+
+	emptyRestore, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   runtime.routes.restorePath,
+		Headers: http.Header{
+			"Content-Type":      []string{"application/octet-stream"},
+			"X-Confirm-Restore": []string{"replace"},
+		},
+	})
+	response, err = runtime.handleManagement(emptyRestore)
+	if err != nil || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(response.Body), "backup body must not be empty") {
+		t.Fatalf("empty restore response: %+v, %v", response, err)
+	}
+
+	invalidTypeRestore, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    runtime.routes.restorePath,
+		Headers: http.Header{"Content-Type": []string{"application/json"}},
+		Body:    []byte("not-a-database"),
+	})
+	response, err = runtime.handleManagement(invalidTypeRestore)
+	if err != nil || response.StatusCode != http.StatusUnsupportedMediaType || !strings.Contains(string(response.Body), "application/octet-stream") {
+		t.Fatalf("invalid content type restore response: %+v, %v", response, err)
+	}
+
+	missingConfirmRestore, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method:  http.MethodPost,
+		Path:    runtime.routes.restorePath,
+		Headers: http.Header{"Content-Type": []string{"application/octet-stream"}},
+		Body:    backupBody,
+	})
+	response, err = runtime.handleManagement(missingConfirmRestore)
+	if err != nil || response.StatusCode != http.StatusBadRequest || !strings.Contains(string(response.Body), "missing X-Confirm-Restore: replace header") {
+		t.Fatalf("missing confirm restore response: %+v, %v", response, err)
+	}
+
+	invalidBodyRestore, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   runtime.routes.restorePath,
+		Headers: http.Header{
+			"Content-Type":      []string{"application/octet-stream"},
+			"X-Confirm-Restore": []string{"replace"},
+		},
+		Body: []byte("not-a-database"),
+	})
+	response, err = runtime.handleManagement(invalidBodyRestore)
+	if err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid body restore response: %+v, %v", response, err)
+	}
+
+	// Oversized restore body is rejected at the management layer before touching storage.
+	// Call restoreResponse directly to avoid base64-encoding a 64 MiB payload through JSON.
+	oversizedBody := make([]byte, maxDatabaseBackupBytes+1)
+	response, err = runtime.restoreResponse(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   runtime.routes.restorePath,
+		Headers: http.Header{
+			"Content-Type":      []string{"application/octet-stream"},
+			"X-Confirm-Restore": []string{"replace"},
+		},
+		Body: oversizedBody,
+	})
+	if err != nil || response.StatusCode != http.StatusRequestEntityTooLarge || !strings.Contains(string(response.Body), "backup body is too large") {
+		t.Fatalf("oversized restore response: %+v, %v", response, err)
+	}
+
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	// Mutate preferences/prices after backup so restore must reintroduce the originals.
+	// Reset only clears usage counters, not preferences or prices.
+	if _, err := store.SaveDashboardPreferences(DashboardPreferences{
+		RequestPageSize:   100,
+		DimensionPageSize: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveModelPrices(map[string]ModelPrice{
+		"mutated-model": {Input: 9, Output: 9},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 0 {
+		t.Fatalf("expected empty stats after reset, got %+v", stats.Summary)
+	}
+
+	roundTripRestore, _ := json.Marshal(pluginapi.ManagementRequest{
+		Method: http.MethodPost,
+		Path:   runtime.routes.restorePath,
+		Headers: http.Header{
+			"Content-Type":      []string{"application/octet-stream"},
+			"X-Confirm-Restore": []string{"replace"},
+		},
+		Body: backupBody,
+	})
+	response, err = runtime.handleManagement(roundTripRestore)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"restored":true`) {
+		t.Fatalf("round-trip restore response: %+v, %v", response, err)
+	}
+	stats, err = store.Query("retention")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Summary.TotalTokens != 9 {
+		t.Fatalf("restored total tokens = %d, want 9", stats.Summary.TotalTokens)
+	}
+	preferences, err := store.QueryDashboardPreferences()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preferences.RequestPageSize != 25 || preferences.DimensionPageSize != 50 {
+		t.Fatalf("restored preferences = %+v, want request=25 dimension=50", preferences)
+	}
+	prices, err := store.QueryModelPrices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prices) != 1 || prices["backup-endpoint"].Input != 1.5 || prices["backup-endpoint"].Output != 6 {
+		t.Fatalf("restored model prices = %+v", prices)
 	}
 }

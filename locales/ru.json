@@ -23,6 +23,8 @@
   "button.export": "Экспорт",
   "button.exportCSV": "Экспорт CSV",
   "button.exportPNG": "Экспорт изображения графика",
+  "button.downloadBackup": "Скачать резервную копию",
+  "button.restoreBackup": "Восстановить",
   "button.refresh": "Обновить",
   "button.reset": "Сбросить",
   "button.resetModel": "Показать все модели",
@@ -269,5 +271,13 @@
   "trend.series.aria": "Видимость рядов использования токенов",
   "trend.series.hide": "Скрыть {series}",
   "trend.series.show": "Показать {series}",
-  "trend.series.allHidden": "Все ряды скрыты"
+  "trend.series.allHidden": "Все ряды скрыты",
+  "backup.preparing": "Подготовка резервной копии базы данных…",
+  "backup.success": "Резервная копия базы данных загружена",
+  "backup.failed": "Не удалось создать резервную копию базы данных",
+  "backup.keyPrompt": "Введите ключ управления CLIProxyAPI, чтобы скачать полную резервную копию базы данных.",
+  "backup.restoreWarning": "Это ЗАМЕНИТ все текущие данные (историю использования, цены, настройки) выбранной резервной копией. Отменить это действие нельзя.",
+  "backup.restoring": "Восстановление резервной копии…",
+  "backup.restored": "Резервная копия восстановлена",
+  "backup.fileTooLarge": "Файл резервной копии слишком большой (максимум 64 МБ)"
 }
