@@ -17,3 +17,5 @@ data/
 # Go tooling
 coverage.out
 *.test
+
+./.ai
