@@ -409,11 +409,20 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
 		`id="rangeButton"`,
-		`id="dateRangeDialog"`,
+		`aria-expanded="false" aria-controls="dateRangePopover"`,
+		`id="dateRangePopover" class="date-range-popover" role="dialog" aria-modal="false"`,
+		`id="dateRangeTitle"`,
 		`id="calendarLeft"`,
 		`id="calendarRight"`,
 		`id="confirmDateRange"`,
 		`id="resetDateRange"`,
+		`function positionDateRangePopover()`,
+		`placeBelow=below>=popoverRect.height||below>=above`,
+		`function closeDateRange(restoreFocus)`,
+		`dateRangePopover.hidden=false`,
+		`rangeButton.setAttribute('aria-expanded','true')`,
+		`event.key==='Escape'&&!dateRangePopover.hidden`,
+		`!event.target.closest('#rangeButton')&&!event.target.closest('#dateRangePopover')`,
 		`function dateRangeQuery()`,
 		`appliedRangeStart.toISOString()`,
 		`new Date(appliedRangeEnd.getFullYear(),appliedRangeEnd.getMonth(),appliedRangeEnd.getDate()+1)`,
@@ -425,6 +434,7 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 		`params.set('start',appliedRangeStart.toISOString())`,
 		`params.set('end',endExclusive.toISOString())`,
 		`.calendar-panels{display:grid;grid-template-columns:repeat(2`,
+		`.date-range-popover{position:fixed`,
 		`@media(max-width:560px){.range-control`,
 	} {
 		if !strings.Contains(html, required) {
@@ -434,9 +444,11 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 	for _, forbidden := range []string{
 		`<select id="range"`,
 		`document.getElementById('range').addEventListener('change'`,
+		`<dialog id="dateRangeDialog"`,
+		`dateRangeDialog.showModal()`,
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("dashboard retains preset range selector %q", forbidden)
+			t.Fatalf("dashboard retains obsolete date range picker pattern %q", forbidden)
 		}
 	}
 }
