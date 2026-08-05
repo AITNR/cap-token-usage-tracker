@@ -102,6 +102,49 @@ func TestDashboardColumnMenusCanOverflowShortTables(t *testing.T) {
 	}
 }
 
+func TestDashboardAnimatesEveryDropdownMenu(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.dropdown-surface{opacity:0;pointer-events:none;transform:translateY(-6px) scale(.98)`,
+		`.dropdown-surface.is-open{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}`,
+		`.dropdown-surface.is-closing{transition-duration:120ms}`,
+		`function openDropdownSurface(menu,button,position)`,
+		`function closeDropdownSurface(menu,button,restoreFocus,afterClose)`,
+		`event.propertyName==='opacity'`,
+		`dropdownCloseTimers.set(menu,setTimeout`,
+		`menu.classList.add('is-opening')`,
+		`menu.classList.add('is-closing')`,
+		`@media(prefers-reduced-motion:reduce)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing dropdown animation contract %q", required)
+		}
+	}
+}
+
+func TestDashboardEnhancesNativeSelectMenus(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`function enhanceSelect(select)`,
+		`function syncEnhancedSelect(select)`,
+		`function enhanceDashboardSelects(root)`,
+		`role='combobox'`,
+		`role='listbox'`,
+		`role='option'`,
+		`aria-activedescendant`,
+		`new Event('change',{bubbles:true})`,
+		`['ArrowDown','ArrowUp','Home','End']`,
+		`enhanceSelect(select);renderSourceOptions([])`,
+		`syncEnhancedSelect(select)`,
+		`enhanceDashboardSelects(list)`,
+		`enhanceDashboardSelects(document)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing enhanced-select contract %q", required)
+		}
+	}
+}
+
 func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
