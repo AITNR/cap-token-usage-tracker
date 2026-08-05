@@ -251,7 +251,7 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 	if r.store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	page, err := r.store.queryRequestPageBySource(queryRange, offset, limit, request.Query.Get("model"), request.Query.Get("source"))
+	page, err := r.store.queryRequestPageBySource(queryRange, offset, limit, request.Query.Get("model"), request.Query.Get("source"), request.Query.Get("result"))
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
@@ -338,7 +338,8 @@ func (r *pluginRuntime) preferencesResponse(request pluginapi.ManagementRequest)
 func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferences, error) {
 	allowed := map[string]struct{}{
 		"save": {}, "request_page_size": {}, "dimension_page_size": {},
-		"hidden_request_column": {}, "hidden_dimension_column": {},
+		"hidden_request_column": {}, "hidden_dimension_column": {}, "time_range_mode": {},
+		"time_range_start": {}, "time_range_end": {},
 	}
 	for key := range query {
 		if _, ok := allowed[key]; !ok {
@@ -356,12 +357,38 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 	if err != nil {
 		return DashboardPreferences{}, err
 	}
+	timeRangeMode, err := optionalDashboardPreference(query, "time_range_mode")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
+	timeRangeStart, err := optionalDashboardPreference(query, "time_range_start")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
+	timeRangeEnd, err := optionalDashboardPreference(query, "time_range_end")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
 	return DashboardPreferences{
 		RequestPageSize:        requestPageSize,
 		DimensionPageSize:      dimensionPageSize,
 		HiddenRequestColumns:   append([]string{}, query["hidden_request_column"]...),
 		HiddenDimensionColumns: append([]string{}, query["hidden_dimension_column"]...),
+		TimeRangeMode:          timeRangeMode,
+		TimeRangeStart:         timeRangeStart,
+		TimeRangeEnd:           timeRangeEnd,
 	}, nil
+}
+
+func optionalDashboardPreference(query map[string][]string, name string) (string, error) {
+	values := query[name]
+	if len(values) > 1 {
+		return "", withStatus(http.StatusBadRequest, "%s must be supplied at most once", name)
+	}
+	if len(values) == 0 {
+		return "", nil
+	}
+	return values[0], nil
 }
 
 func parseDashboardPageSize(query map[string][]string, name string) (int, error) {

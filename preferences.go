@@ -1,17 +1,28 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 const (
 	defaultDashboardPageSize = 100
 	maxDashboardPageSize     = 500
+	defaultTimeRangeMode     = "custom"
 )
+
+var dashboardTimeRangeModes = map[string]struct{}{
+	"custom": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {},
+}
 
 type DashboardPreferences struct {
 	RequestPageSize        int      `json:"request_page_size"`
 	DimensionPageSize      int      `json:"dimension_page_size"`
 	HiddenRequestColumns   []string `json:"hidden_request_columns"`
 	HiddenDimensionColumns []string `json:"hidden_dimension_columns"`
+	TimeRangeMode          string   `json:"time_range_mode"`
+	TimeRangeStart         string   `json:"time_range_start,omitempty"`
+	TimeRangeEnd           string   `json:"time_range_end,omitempty"`
 }
 
 var requestColumnKeys = []string{
@@ -33,6 +44,7 @@ func defaultDashboardPreferences() DashboardPreferences {
 		DimensionPageSize:      defaultDashboardPageSize,
 		HiddenRequestColumns:   []string{},
 		HiddenDimensionColumns: []string{},
+		TimeRangeMode:          defaultTimeRangeMode,
 	}
 }
 
@@ -51,11 +63,33 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 	if err != nil {
 		return DashboardPreferences{}, err
 	}
+	mode := input.TimeRangeMode
+	if mode == "" {
+		mode = defaultTimeRangeMode
+	}
+	if _, ok := dashboardTimeRangeModes[mode]; !ok {
+		return DashboardPreferences{}, fmt.Errorf("time_range_mode is unsupported")
+	}
+	start, end := "", ""
+	if mode == "custom" && (input.TimeRangeStart != "" || input.TimeRangeEnd != "") {
+		if input.TimeRangeStart == "" || input.TimeRangeEnd == "" {
+			return DashboardPreferences{}, fmt.Errorf("time_range_start and time_range_end must be supplied together")
+		}
+		startDate, startErr := time.Parse("2006-01-02", input.TimeRangeStart)
+		endDate, endErr := time.Parse("2006-01-02", input.TimeRangeEnd)
+		if startErr != nil || endErr != nil || endDate.Before(startDate) {
+			return DashboardPreferences{}, fmt.Errorf("custom time range must contain ordered YYYY-MM-DD dates")
+		}
+		start, end = input.TimeRangeStart, input.TimeRangeEnd
+	}
 	return DashboardPreferences{
 		RequestPageSize:        input.RequestPageSize,
 		DimensionPageSize:      input.DimensionPageSize,
 		HiddenRequestColumns:   hiddenRequests,
 		HiddenDimensionColumns: hiddenDimensions,
+		TimeRangeMode:          mode,
+		TimeRangeStart:         start,
+		TimeRangeEnd:           end,
 	}, nil
 }
 

@@ -7,9 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version (e.g. 1.2.6 or 1.2.6-alpha.1)"
+        description: "Optional version override (e.g. 1.2.6 or 1.2.6-alpha.1)"
         required: false
-        default: "1.2.6"
       release:
         description: "Publish a stable release after build"
         type: boolean
@@ -26,6 +25,8 @@ jobs:
   prepare:
     name: Prepare version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
@@ -40,9 +41,45 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_RELEASE: ${{ inputs.release }}
           INPUT_ALPHA: ${{ inputs.alpha }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           publish=false
           prerelease=false
+
+          next_patch_version() {
+            local response status latest_tag major minor patch
+            if ! response=$(curl --silent --show-error \
+              --retry 3 \
+              --header "Authorization: Bearer ${GITHUB_TOKEN}" \
+              --header "Accept: application/vnd.github+json" \
+              --write-out $'\n%{http_code}' \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/releases/latest"); then
+              echo "Unable to read the latest GitHub release." >&2
+              exit 1
+            fi
+
+            status=${response##*$'\n'}
+            if [[ "$status" == "404" ]]; then
+              printf '0.0.1'
+              return
+            fi
+            if [[ "$status" != "200" ]]; then
+              echo "Unable to read the latest GitHub release (HTTP $status)." >&2
+              exit 1
+            fi
+
+            latest_tag=$(printf '%s' "${response%$'\n'*}" | jq --raw-output '.tag_name')
+
+            if [[ ! "$latest_tag" =~ ^v?([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "Latest release tag is not a stable semantic version: $latest_tag" >&2
+              exit 1
+            fi
+
+            major=${BASH_REMATCH[1]}
+            minor=${BASH_REMATCH[2]}
+            patch=${BASH_REMATCH[3]}
+            printf '%s.%s.%s' "$major" "$minor" "$((patch + 1))"
+          }
 
           if [[ "$REF_TYPE" == "tag" ]]; then
             version="${REF_NAME#v}"
@@ -50,7 +87,7 @@ jobs:
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             version="${INPUT_VERSION#v}"
             if [[ -z "$version" ]]; then
-              version="1.2.6"
+              version=$(next_patch_version)
             fi
             if [[ "$INPUT_ALPHA" == "true" ]]; then
               if [[ "$version" != *-* ]]; then
@@ -62,7 +99,9 @@ jobs:
               publish=true
             fi
           else
-            version="dev-${GITHUB_SHA}"
+            version="$(next_patch_version)-alpha.${GITHUB_RUN_NUMBER}"
+            publish=true
+            prerelease=true
           fi
 
           if [[ ! "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
@@ -254,7 +293,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.prepare.outputs.version }}
-          name: Release v${{ needs.prepare.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ needs.prepare.outputs.prerelease == 'true' && 'Test Release' || 'Release' }} v${{ needs.prepare.outputs.version }}
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           generate_release_notes: true
           files: |

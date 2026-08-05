@@ -102,6 +102,49 @@ func TestDashboardColumnMenusCanOverflowShortTables(t *testing.T) {
 	}
 }
 
+func TestDashboardAnimatesEveryDropdownMenu(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`.dropdown-surface{opacity:0;pointer-events:none;transform:translateY(-6px) scale(.98)`,
+		`.dropdown-surface.is-open{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}`,
+		`.dropdown-surface.is-closing{transition-duration:120ms}`,
+		`function openDropdownSurface(menu,button,position)`,
+		`function closeDropdownSurface(menu,button,restoreFocus,afterClose)`,
+		`event.propertyName==='opacity'`,
+		`dropdownCloseTimers.set(menu,setTimeout`,
+		`menu.classList.add('is-opening')`,
+		`menu.classList.add('is-closing')`,
+		`@media(prefers-reduced-motion:reduce)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing dropdown animation contract %q", required)
+		}
+	}
+}
+
+func TestDashboardEnhancesNativeSelectMenus(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`function enhanceSelect(select)`,
+		`function syncEnhancedSelect(select)`,
+		`function enhanceDashboardSelects(root)`,
+		`role='combobox'`,
+		`role='listbox'`,
+		`role='option'`,
+		`aria-activedescendant`,
+		`new Event('change',{bubbles:true})`,
+		`['ArrowDown','ArrowUp','Home','End']`,
+		`enhanceSelect(select);renderSourceOptions([])`,
+		`syncEnhancedSelect(select)`,
+		`enhanceDashboardSelects(list)`,
+		`enhanceDashboardSelects(document)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing enhanced-select contract %q", required)
+		}
+	}
+}
+
 func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
@@ -225,6 +268,14 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`id="requestPrev"`,
 		`id="requestNext"`,
 		`id="requestPageSize"`,
+		`id="requestModelFilter"`,
+		`id="requestSourceFilter"`,
+		`id="requestResultFilter"`,
+		`function renderRequestFilters()`,
+		`requestSourceFilter=''`,
+		`params.set('model',requestModelFilter)`,
+		`params.set('source',requestSourceFilter)`,
+		`params.set('result',requestResultFilter)`,
 		`requestLimit=Math.max(1,Math.min(500`,
 		`id="requestColumnsButton"`,
 		`id="requestColumnsMenu"`,
@@ -255,6 +306,8 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`function scheduleDashboardPreferencesSave()`,
 		`hidden_request_columns:Array.from(hiddenRequestColumns)`,
 		`hidden_dimension_columns:Array.from(hiddenDimensionColumns)`,
+		`time_range_mode:appliedRangeMode`,
+		`params.set('time_range_mode',value.time_range_mode)`,
 		`params.set('save','1')`,
 		`params.append('hidden_request_column',key)`,
 		`params.append('hidden_dimension_column',key)`,
@@ -401,22 +454,70 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
 		`id="rangeButton"`,
-		`id="dateRangeDialog"`,
+		`aria-expanded="false" aria-controls="dateRangePopover"`,
+		`id="dateRangePopover" class="date-range-popover" role="dialog" aria-modal="false"`,
+		`id="dateRangeTitle"`,
 		`id="calendarLeft"`,
 		`id="calendarRight"`,
 		`id="confirmDateRange"`,
 		`id="resetDateRange"`,
+		`function positionDateRangePopover()`,
+		`placeBelow=below>=popoverHeight||below>=above`,
+		`dateRangePopover.dataset.placement=placeBelow?'bottom':'top'`,
+		`function closeDateRange(restoreFocus)`,
+		`function finishDateRangeClose(token)`,
+		`token!==dateRangeAnimationToken`,
+		`dateRangePopover.classList.add('is-closing')`,
+		`dateRangePopover.classList.add('is-opening')`,
+		`dateRangePopover.classList.add('is-open')`,
+		`var wasHidden=dateRangePopover.hidden`,
+		`clearTimeout(dateRangeCloseTimer)`,
+		`dateRangeCloseTimer=setTimeout(function(){finishDateRangeClose(token);},180)`,
+		`event.propertyName==='opacity'`,
+		`dateRangePopover.hidden=true`,
+		`dateRangePopover.hidden=false`,
+		`rangeButton.setAttribute('aria-expanded','true')`,
+		`dateRangePopover.hidden||dateRangePopover.classList.contains('is-closing')`,
+		`event.key==='Escape'&&!dateRangePopover.hidden`,
+		`event.composedPath?event.composedPath():[]`,
+		`path.indexOf(rangeButton)<0&&path.indexOf(dateRangePopover)<0`,
+		`dateRangePopover.addEventListener('click',function(event){event.stopPropagation()`,
+		`id="quickRanges" class="quick-ranges" role="group"`,
+		`data-range-preset="last_5_hours"`,
+		`data-range-preset="last_7_days"`,
+		`data-range-preset="last_30_days"`,
+		`data-range-preset="current_month"`,
+		`button.setAttribute('aria-pressed'`,
+		`function applyRangePreset(mode)`,
 		`function dateRangeQuery()`,
-		`appliedRangeStart.toISOString()`,
+		`function resolvedDateRange()`,
+		`now.getTime()-5*60*60*1000`,
+		`now.getTime()-7*24*60*60*1000`,
+		`now.getTime()-30*24*60*60*1000`,
+		`new Date(now.getFullYear(),now.getMonth(),1)`,
 		`new Date(appliedRangeEnd.getFullYear(),appliedRangeEnd.getMonth(),appliedRangeEnd.getDate()+1)`,
+		`calendarBaseMonth=new Date(appliedRangeEnd.getFullYear(),appliedRangeEnd.getMonth()-1,1)`,
+		`draftRangeMode='custom'`,
 		`new Date(calendarBaseMonth.getFullYear(),calendarBaseMonth.getMonth()+1,1)`,
 		`selected.getTime()<draftRangeStart.getTime()`,
 		`draftRangeEnd=draftRangeStart;draftRangeStart=selected`,
 		`if(draftRangeStart&&draftRangeEnd){draftRangeStart=selected;draftRangeEnd=null;}`,
 		`document.getElementById('confirmDateRange').disabled=!complete`,
-		`params.set('start',appliedRangeStart.toISOString())`,
-		`params.set('end',endExclusive.toISOString())`,
+		`params.set('start',range.start.toISOString())`,
+		`params.set('end',range.end.toISOString())`,
+		`scheduleDashboardPreferencesSave();closeDateRange(true)`,
+		`id="calendarPanels" class="calendar-panels"`,
+		`panels.classList.add(delta>0?'is-shifting-next':'is-shifting-previous')`,
+		`.calendar-panels.is-shifting-next .calendar-panel{animation:calendar-enter-next`,
+		`.calendar-panels.is-shifting-previous .calendar-panel{animation:calendar-enter-previous`,
+		`if(reducedMotion)return`,
 		`.calendar-panels{display:grid;grid-template-columns:repeat(2`,
+		`.date-range-popover{--date-popover-shift:-6px;position:fixed`,
+		`transform:translateY(var(--date-popover-shift)) scale(.98)`,
+		`.date-range-popover[data-placement='top']`,
+		`.date-range-popover.is-open{opacity:1;pointer-events:auto`,
+		`.date-range-popover.is-closing{transition-duration:120ms}`,
+		`@media(prefers-reduced-motion:reduce)`,
 		`@media(max-width:560px){.range-control`,
 	} {
 		if !strings.Contains(html, required) {
@@ -426,9 +527,11 @@ func TestDashboardUsesTwoMonthLocalDateRangePicker(t *testing.T) {
 	for _, forbidden := range []string{
 		`<select id="range"`,
 		`document.getElementById('range').addEventListener('change'`,
+		`<dialog id="dateRangeDialog"`,
+		`dateRangeDialog.showModal()`,
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("dashboard retains preset range selector %q", forbidden)
+			t.Fatalf("dashboard retains obsolete date range picker pattern %q", forbidden)
 		}
 	}
 }
@@ -623,7 +726,7 @@ func TestDashboardLegendLabelRecoversFullModelDetails(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
 		`var nameText=modelName(item.model)`,
-		`var nameText=modelName(item.model),detailText=t('model.calls',{count:fmt(item.requests)})+' · '+t('model.tokens',{count:compact(item.total_tokens)}),legendTip=nameText+' · '+detailText`,
+		`var nameText=modelName(item.model),detailText=modelShareDetail(item),legendTip=nameText+' · '+detailText`,
 		`label.title=legendTip`,
 		`label.setAttribute('aria-label',legendTip)`,
 		`share.className='legend-share'`,
@@ -636,6 +739,38 @@ func TestDashboardLegendLabelRecoversFullModelDetails(t *testing.T) {
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing legend tooltip/a11y contract %q", required)
+		}
+	}
+}
+
+func TestDashboardModelShareMetricSwitch(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="modelShareMetric" class="metric-switch" role="group" data-i18n-aria="modelShare.metric.aria"`,
+		`data-model-share-metric="requests" aria-pressed="true"`,
+		`data-model-share-metric="tokens" aria-pressed="false"`,
+		`data-model-share-metric="cost" aria-pressed="false"`,
+		`var selectedSource='',modelShareMetric='requests'`,
+		`function modelShareMetricValue(item)`,
+		`if(modelShareMetric==='requests')return Number(item.requests||0)`,
+		`if(modelShareMetric==='tokens')return Number(item.total_tokens||0)`,
+		`return cost?Number(cost.total_usd||0):0`,
+		`function syncModelShareMetricButtons()`,
+		`var metric=button.getAttribute('data-model-share-metric'),unavailable=metric==='cost'&&!currentCosts`,
+		`button.disabled=unavailable`,
+		`function setModelShareMetric(metric)`,
+		`modelShareMetric=metric;renderDonut()`,
+		`total=visible.reduce(function(sum,item){return sum+modelShareMetricValue(item);},0)`,
+		`var value=modelShareMetricValue(item),percent=total?value/total*100:0`,
+		`main.textContent=formatModelShareMetric(total,true)`,
+		`sub.textContent=modelShareMetricLabel()`,
+		`document.getElementById('modelShareMetric').addEventListener('click'`,
+		`setModelShareMetric(button.getAttribute('data-model-share-metric'))`,
+		`pieTotal=pieModels.reduce(function(sum,item){return sum+modelShareMetricValue(item);},0)`,
+		`canvasText(ctx,formatModelShareMetric(pieTotal,true)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing model-share metric switch contract %q", required)
 		}
 	}
 }
@@ -779,6 +914,18 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"trend.cacheHitRate",
 		"sourceFilter.label",
 		"sourceFilter.all",
+		"range.quickRanges",
+		"range.lastFiveHours",
+		"range.lastSevenDays",
+		"range.lastThirtyDays",
+		"range.currentMonth",
+		"card.successRate",
+		"requestFilter.model",
+		"requestFilter.source",
+		"requestFilter.result",
+		"requestFilter.allModels",
+		"requestFilter.allSources",
+		"requestFilter.allResults",
 		"empty.calls",
 		"requestColumns.button",
 		"requestColumns.title",

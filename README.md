@@ -91,7 +91,7 @@ plugins:
 
 - 仪表盘：`/v0/resource/plugins/cap-token-usage-tracker/dashboard`
 - 仪表盘只读统计（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/stats?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z`
-- 逐请求明细与当前价格下的 `estimated_cost`（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z&offset=0&limit=100&model=gpt-4.1&source=cli`
+- 逐请求明细与当前价格下的 `estimated_cost`（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/requests?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z&offset=0&limit=100&model=gpt-4.1&source=cli&result=success`
 - 逐请求精确汇总费用（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/costs?range=custom&start=2026-08-19T16:00:00Z&end=2026-08-21T16:00:00Z`
 - 最新 USD/CNY 显示汇率（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/exchange-rate`
 - 模型价格、同步设置和最近同步结果读取（无需 management key）：`GET /v0/resource/plugins/cap-token-usage-tracker/prices`
@@ -100,7 +100,7 @@ plugins:
 - 从 models.dev 同步价格（需要 management key）：`POST /v0/management/plugins/cap-token-usage-tracker/prices/sync`
 - 受保护重置：`POST /v0/management/plugins/cap-token-usage-tracker/reset`
 
-仪表盘以浏览器所在地的自然日选择日期范围，并将本地起始日零点与结束日次日零点转换为 RFC3339 `start`、`end` 时间点；后端按左闭右开区间 `[start, end)` 过滤。两个参数必须同时提供且 `start < end`。旧的 `range=24h`、`7d`、`30d`、`retention` 继续用于接口兼容。`source` 可选，按请求明细中的来源字段精确筛选，并可用于 `/stats`、`/requests` 和 `/costs`；逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型。
+仪表盘以浏览器所在地的自然日选择日期范围，并将本地起始日零点与结束日次日零点转换为 RFC3339 `start`、`end` 时间点；后端按左闭右开区间 `[start, end)` 过滤。两个参数必须同时提供且 `start < end`。旧的 `range=24h`、`7d`、`30d`、`retention` 继续用于接口兼容。`source` 可选，按请求明细中的来源字段精确筛选，并可用于 `/stats`、`/requests` 和 `/costs`；逐请求明细按时间倒序返回，`offset` 必须为非负整数，`limit` 默认为 100、最大为 500，`model` 可选并用于精确筛选模型，`result` 可选值为 `success` 或 `failed`。
 
 Management Center 会把插件页面放入 iframe。仪表盘通过只读资源接口自动加载，打开和刷新页面都不需要 management key。通过反向代理部署在子路径时，仪表盘会从当前 iframe 地址自动保留公网路径前缀；例如 iframe 位于 `/cpa/v0/resource/plugins/cap-token-usage-tracker/dashboard` 时，资源、管理和模型目录请求会分别使用 `/cpa/v0/resource/plugins/...`、`/cpa/v0/management/plugins/...` 和 `/cpa/v1/models`。价格弹窗使用临时 CLIProxyAPI API Key 从同源 `/v1/models`（含反向代理前缀）加载当前模型目录；保存价格、同步 models.dev 或重置数据时仍要求 Management Key。两种密钥都只保存在当前 DOM/内存中，关闭对话框后清空，不会写入插件数据库、浏览器存储或 URL。模型价格、同步设置和同步来源元数据保存在插件 bbolt 数据库中，刷新页面和重启服务后仍会保留；重置统计不会删除价格簿。
 
@@ -226,7 +226,7 @@ bash scripts/verify-darwin-arm64.sh dist/cap-token-usage-tracker.dylib
 
 ### CI 发布
 
-推送分支或执行 `workflow_dispatch` 会构建上述四个平台。推送 `v*` 标签，或手动构建时勾选 `release`，会创建 GitHub Release 并上传：
+每次推送分支提交都会构建上述四个平台，并以 `<下一个补丁版本>-alpha.<Actions 运行序号>` 创建独立的 GitHub 测试版（Pre-release）。推送 `v*` 标签，或手动构建时勾选 `release`，仍会创建正式 GitHub Release。手动构建也可以勾选 `alpha` 发布测试版。发布内容包括：
 
 ```text
 cap-token-usage-tracker_<version>_windows_amd64.zip
@@ -488,7 +488,7 @@ The verification script loads the library from the standard plugin layout with `
 
 #### CI Releases
 
-Pushing a branch or running `workflow_dispatch` builds all four targets. Pushing a `v*` tag, or enabling `release` for a manual run, creates a GitHub Release containing:
+Every branch push builds all four targets and creates a distinct GitHub test pre-release named `<next-patch-version>-alpha.<Actions run number>`. Pushing a `v*` tag, or enabling `release` for a manual run, still creates a stable GitHub Release. Manual runs can also enable `alpha` to publish a test pre-release. Each release contains:
 
 ```text
 cap-token-usage-tracker_<version>_windows_amd64.zip

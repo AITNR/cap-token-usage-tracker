@@ -54,6 +54,7 @@ type requestQueryCommand struct {
 	limit      int
 	model      string
 	source     string
+	result     string
 	resp       chan requestQueryResult
 }
 
@@ -256,12 +257,12 @@ func (s *Store) QueryRequests(rangeName string, offset, limit int, model string)
 }
 
 func (s *Store) queryRequestPage(queryRange usageRange, offset, limit int, model string) (RequestPage, error) {
-	return s.queryRequestPageBySource(queryRange, offset, limit, model, "")
+	return s.queryRequestPageBySource(queryRange, offset, limit, model, "", "")
 }
 
-func (s *Store) queryRequestPageBySource(queryRange usageRange, offset, limit int, model, source string) (RequestPage, error) {
+func (s *Store) queryRequestPageBySource(queryRange usageRange, offset, limit int, model, source, resultFilter string) (RequestPage, error) {
 	resp := make(chan requestQueryResult, 1)
-	if err := s.send(requestQueryCommand{queryRange: queryRange, offset: offset, limit: limit, model: model, source: source, resp: resp}); err != nil {
+	if err := s.send(requestQueryCommand{queryRange: queryRange, offset: offset, limit: limit, model: model, source: source, result: resultFilter, resp: resp}); err != nil {
 		return RequestPage{}, err
 	}
 	result := <-resp
@@ -472,7 +473,7 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- requestQueryResult{err: err}
 					continue
 				}
-				page, err := actor.queryRequests(item.queryRange, item.offset, item.limit, item.model, item.source, now)
+				page, err := actor.queryRequests(item.queryRange, item.offset, item.limit, item.model, item.source, item.result, now)
 				item.resp <- requestQueryResult{page: page, err: err}
 			case preferencesQueryCommand:
 				item.resp <- preferencesResult{preferences: cloneDashboardPreferences(actor.dashboardPreferences)}
@@ -1487,7 +1488,7 @@ func (a *storeActor) reset() error {
 	return nil
 }
 
-func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, model, source string, now time.Time) (RequestPage, error) {
+func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, model, source, resultFilter string, now time.Time) (RequestPage, error) {
 	if err := queryRange.validate(); err != nil {
 		return RequestPage{}, withStatus(400, "%v", err)
 	}
@@ -1499,6 +1500,9 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 	}
 	if limit < 1 || limit > maxRequestPageSize {
 		return RequestPage{}, withStatus(400, "limit must be between 1 and %d", maxRequestPageSize)
+	}
+	if resultFilter != "" && resultFilter != "success" && resultFilter != "failed" {
+		return RequestPage{}, withStatus(400, "result must be success or failed")
 	}
 
 	resolver := newModelPriceResolver(a.modelPrices, a.priceSyncSettings)
@@ -1540,6 +1544,9 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 				continue
 			}
 			if source != "" && item.Source != source {
+				continue
+			}
+			if (resultFilter == "success" && item.Failed) || (resultFilter == "failed" && !item.Failed) {
 				continue
 			}
 			page.Total++

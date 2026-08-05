@@ -85,7 +85,7 @@ func TestDashboardPreferencesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if defaults.RequestPageSize != 100 || defaults.DimensionPageSize != 100 || len(defaults.HiddenRequestColumns) != 0 || len(defaults.HiddenDimensionColumns) != 0 {
+	if defaults.RequestPageSize != 100 || defaults.DimensionPageSize != 100 || len(defaults.HiddenRequestColumns) != 0 || len(defaults.HiddenDimensionColumns) != 0 || defaults.TimeRangeMode != "custom" {
 		t.Fatalf("default preferences = %+v", defaults)
 	}
 	want := DashboardPreferences{
@@ -93,12 +93,15 @@ func TestDashboardPreferencesPersistAcrossRestartAndStatsReset(t *testing.T) {
 		DimensionPageSize:      200,
 		HiddenRequestColumns:   []string{"source", "model", "source"},
 		HiddenDimensionColumns: []string{"provider"},
+		TimeRangeMode:          "custom",
+		TimeRangeStart:         "2026-07-01",
+		TimeRangeEnd:           "2026-08-05",
 	}
 	saved, err := store.SaveDashboardPreferences(want)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.RequestPageSize != 50 || saved.DimensionPageSize != 200 || len(saved.HiddenRequestColumns) != 2 || saved.HiddenRequestColumns[0] != "model" || saved.HiddenRequestColumns[1] != "source" {
+	if saved.RequestPageSize != 50 || saved.DimensionPageSize != 200 || len(saved.HiddenRequestColumns) != 2 || saved.HiddenRequestColumns[0] != "model" || saved.HiddenRequestColumns[1] != "source" || saved.TimeRangeStart != "2026-07-01" || saved.TimeRangeEnd != "2026-08-05" {
 		t.Fatalf("normalized preferences = %+v", saved)
 	}
 	if err := store.Close(); err != nil {
@@ -111,7 +114,7 @@ func TestDashboardPreferencesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	}
 	defer store.Close()
 	loaded, err := store.QueryDashboardPreferences()
-	if err != nil || loaded.RequestPageSize != 50 || loaded.DimensionPageSize != 200 || len(loaded.HiddenDimensionColumns) != 1 || loaded.HiddenDimensionColumns[0] != "provider" {
+	if err != nil || loaded.RequestPageSize != 50 || loaded.DimensionPageSize != 200 || len(loaded.HiddenDimensionColumns) != 1 || loaded.HiddenDimensionColumns[0] != "provider" || loaded.TimeRangeMode != "custom" || loaded.TimeRangeStart != "2026-07-01" {
 		t.Fatalf("preferences after restart = %+v, %v", loaded, err)
 	}
 	if err := store.Reset(); err != nil {
@@ -137,6 +140,12 @@ func TestDashboardPreferencesValidation(t *testing.T) {
 		func(value *DashboardPreferences) { value.HiddenRequestColumns = []string{"api_key"} },
 		func(value *DashboardPreferences) {
 			value.HiddenDimensionColumns = append([]string(nil), dimensionColumnKeys...)
+		},
+		func(value *DashboardPreferences) { value.TimeRangeMode = "yesterday" },
+		func(value *DashboardPreferences) { value.TimeRangeStart = "2026-08-05" },
+		func(value *DashboardPreferences) {
+			value.TimeRangeStart = "2026-08-06"
+			value.TimeRangeEnd = "2026-08-05"
 		},
 	} {
 		value := cloneDashboardPreferences(valid)
@@ -492,6 +501,21 @@ func TestStorePersistsAndQueriesPerRequestDetails(t *testing.T) {
 	}
 	if item.TPS != 20 || item.InputTokens != 100 || item.OutputTokens != 40 || item.ReasoningTokens != 8 || item.CacheCreationTokens != 3 {
 		t.Fatalf("unexpected request counters: %+v", item)
+	}
+	queryRange, err := presetUsageRange("24h", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := store.queryRequestPageBySource(queryRange, 0, 100, "", "", "failed")
+	if err != nil || failed.Total != 1 || len(failed.Items) != 1 || !failed.Items[0].Failed {
+		t.Fatalf("unexpected failed-result filter: %+v, %v", failed, err)
+	}
+	success, err := store.queryRequestPageBySource(queryRange, 0, 100, "alpha", "cli", "success")
+	if err != nil || success.Total != 1 || len(success.Items) != 1 || success.Items[0].Failed {
+		t.Fatalf("unexpected combined request filters: %+v, %v", success, err)
+	}
+	if _, err := store.queryRequestPageBySource(queryRange, 0, 100, "", "", "unknown"); err == nil {
+		t.Fatal("invalid result filter was accepted")
 	}
 
 	if err := store.Close(); err != nil {

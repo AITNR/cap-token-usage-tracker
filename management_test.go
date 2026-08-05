@@ -94,6 +94,18 @@ func TestManagementStatsAndReset(t *testing.T) {
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":1`) || !strings.Contains(string(response.Body), `"model":"m"`) {
 		t.Fatalf("resource requests response: %+v, %v", response, err)
 	}
+	requestsResultQuery := url.Values{"range": []string{"24h"}, "result": []string{"failed"}}
+	requestsResultRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: requestsResultQuery})
+	response, err = runtime.handleManagement(requestsResultRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":0`) {
+		t.Fatalf("filtered resource requests response: %+v, %v", response, err)
+	}
+	requestsResultQuery.Set("result", "unknown")
+	requestsResultRequest, _ = json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: requestsResultQuery})
+	response, err = runtime.handleManagement(requestsResultRequest)
+	if err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid request result response: %+v, %v", response, err)
+	}
 	customRequestsQuery := url.Values{}
 	for key, values := range customQuery {
 		customRequestsQuery[key] = append([]string(nil), values...)
@@ -114,16 +126,16 @@ func TestManagementStatsAndReset(t *testing.T) {
 	}
 	preferencesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePreferencesPath})
 	response, err = runtime.handleManagement(preferencesRequest)
-	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"request_page_size":100`) || !strings.Contains(string(response.Body), `"hidden_request_columns":[]`) {
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"request_page_size":100`) || !strings.Contains(string(response.Body), `"hidden_request_columns":[]`) || !strings.Contains(string(response.Body), `"time_range_mode":"custom"`) {
 		t.Fatalf("default preferences response: %+v, %v", response, err)
 	}
-	savePreferencesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePreferencesPath, Query: url.Values{"save": []string{"1"}, "request_page_size": []string{"50"}, "dimension_page_size": []string{"200"}, "hidden_request_column": []string{"source"}, "hidden_dimension_column": []string{"provider"}}})
+	savePreferencesRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourcePreferencesPath, Query: url.Values{"save": []string{"1"}, "request_page_size": []string{"50"}, "dimension_page_size": []string{"200"}, "hidden_request_column": []string{"source"}, "hidden_dimension_column": []string{"provider"}, "time_range_mode": []string{"last_7_days"}}})
 	response, err = runtime.handleManagement(savePreferencesRequest)
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"request_page_size":50`) || !strings.Contains(string(response.Body), `"hidden_dimension_columns":["provider"]`) {
 		t.Fatalf("save preferences response: %+v, %v", response, err)
 	}
 	response, err = runtime.handleManagement(preferencesRequest)
-	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"dimension_page_size":200`) || !strings.Contains(string(response.Body), `"hidden_request_columns":["source"]`) {
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"dimension_page_size":200`) || !strings.Contains(string(response.Body), `"hidden_request_columns":["source"]`) || !strings.Contains(string(response.Body), `"time_range_mode":"last_7_days"`) {
 		t.Fatalf("persisted preferences response: %+v, %v", response, err)
 	}
 
@@ -267,6 +279,12 @@ func TestDashboardPreferencesResourceValidation(t *testing.T) {
 	}
 	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "unknown": []string{"value"}}); response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("unknown query status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "time_range_mode": []string{"yesterday"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid range mode status = %d body=%s", response.StatusCode, response.Body)
+	}
+	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "time_range_mode": []string{"custom"}, "time_range_start": []string{"2026-08-05"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("incomplete custom range status = %d body=%s", response.StatusCode, response.Body)
 	}
 	if response := request(http.MethodPost, nil); response.StatusCode != http.StatusMethodNotAllowed || response.Headers.Get("Allow") != "GET" {
 		t.Fatalf("wrong method response = %+v", response)
