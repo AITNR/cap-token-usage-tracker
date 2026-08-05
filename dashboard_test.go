@@ -726,7 +726,7 @@ func TestDashboardLegendLabelRecoversFullModelDetails(t *testing.T) {
 	html := dashboardHTML
 	for _, required := range []string{
 		`var nameText=modelName(item.model)`,
-		`var nameText=modelName(item.model),detailText=t('model.calls',{count:fmt(item.requests)})+' · '+t('model.tokens',{count:compact(item.total_tokens)}),legendTip=nameText+' · '+detailText`,
+		`var nameText=modelName(item.model),detailText=modelShareDetail(item),legendTip=nameText+' · '+detailText`,
 		`label.title=legendTip`,
 		`label.setAttribute('aria-label',legendTip)`,
 		`share.className='legend-share'`,
@@ -739,6 +739,38 @@ func TestDashboardLegendLabelRecoversFullModelDetails(t *testing.T) {
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing legend tooltip/a11y contract %q", required)
+		}
+	}
+}
+
+func TestDashboardModelShareMetricSwitch(t *testing.T) {
+	html := dashboardHTML
+	for _, required := range []string{
+		`id="modelShareMetric" class="metric-switch" role="group" data-i18n-aria="modelShare.metric.aria"`,
+		`data-model-share-metric="requests" aria-pressed="true"`,
+		`data-model-share-metric="tokens" aria-pressed="false"`,
+		`data-model-share-metric="cost" aria-pressed="false"`,
+		`var selectedSource='',modelShareMetric='requests'`,
+		`function modelShareMetricValue(item)`,
+		`if(modelShareMetric==='requests')return Number(item.requests||0)`,
+		`if(modelShareMetric==='tokens')return Number(item.total_tokens||0)`,
+		`return cost?Number(cost.total_usd||0):0`,
+		`function syncModelShareMetricButtons()`,
+		`var metric=button.getAttribute('data-model-share-metric'),unavailable=metric==='cost'&&!currentCosts`,
+		`button.disabled=unavailable`,
+		`function setModelShareMetric(metric)`,
+		`modelShareMetric=metric;renderDonut()`,
+		`total=visible.reduce(function(sum,item){return sum+modelShareMetricValue(item);},0)`,
+		`var value=modelShareMetricValue(item),percent=total?value/total*100:0`,
+		`main.textContent=formatModelShareMetric(total,true)`,
+		`sub.textContent=modelShareMetricLabel()`,
+		`document.getElementById('modelShareMetric').addEventListener('click'`,
+		`setModelShareMetric(button.getAttribute('data-model-share-metric'))`,
+		`pieTotal=pieModels.reduce(function(sum,item){return sum+modelShareMetricValue(item);},0)`,
+		`canvasText(ctx,formatModelShareMetric(pieTotal,true)`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("dashboard missing model-share metric switch contract %q", required)
 		}
 	}
 }
