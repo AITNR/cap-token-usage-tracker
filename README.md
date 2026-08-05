@@ -226,7 +226,7 @@ bash scripts/verify-darwin-arm64.sh dist/cap-token-usage-tracker.dylib
 
 ### CI 发布
 
-推送分支或执行 `workflow_dispatch` 会构建上述四个平台。推送 `v*` 标签，或手动构建时勾选 `release`，会创建 GitHub Release 并上传：
+每次推送分支提交都会构建上述四个平台，并以 `<下一个补丁版本>-alpha.<Actions 运行序号>` 创建独立的 GitHub 测试版（Pre-release）。推送 `v*` 标签，或手动构建时勾选 `release`，仍会创建正式 GitHub Release。手动构建也可以勾选 `alpha` 发布测试版。发布内容包括：
 
 ```text
 cap-token-usage-tracker_<version>_windows_amd64.zip
@@ -488,7 +488,7 @@ The verification script loads the library from the standard plugin layout with `
 
 #### CI Releases
 
-Pushing a branch or running `workflow_dispatch` builds all four targets. Pushing a `v*` tag, or enabling `release` for a manual run, creates a GitHub Release containing:
+Every branch push builds all four targets and creates a distinct GitHub test pre-release named `<next-patch-version>-alpha.<Actions run number>`. Pushing a `v*` tag, or enabling `release` for a manual run, still creates a stable GitHub Release. Manual runs can also enable `alpha` to publish a test pre-release. Each release contains:
 
 ```text
 cap-token-usage-tracker_<version>_windows_amd64.zip
