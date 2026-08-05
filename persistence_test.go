@@ -493,6 +493,21 @@ func TestStorePersistsAndQueriesPerRequestDetails(t *testing.T) {
 	if item.TPS != 20 || item.InputTokens != 100 || item.OutputTokens != 40 || item.ReasoningTokens != 8 || item.CacheCreationTokens != 3 {
 		t.Fatalf("unexpected request counters: %+v", item)
 	}
+	queryRange, err := presetUsageRange("24h", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed, err := store.queryRequestPageBySource(queryRange, 0, 100, "", "", "failed")
+	if err != nil || failed.Total != 1 || len(failed.Items) != 1 || !failed.Items[0].Failed {
+		t.Fatalf("unexpected failed-result filter: %+v, %v", failed, err)
+	}
+	success, err := store.queryRequestPageBySource(queryRange, 0, 100, "alpha", "cli", "success")
+	if err != nil || success.Total != 1 || len(success.Items) != 1 || success.Items[0].Failed {
+		t.Fatalf("unexpected combined request filters: %+v, %v", success, err)
+	}
+	if _, err := store.queryRequestPageBySource(queryRange, 0, 100, "", "", "unknown"); err == nil {
+		t.Fatal("invalid result filter was accepted")
+	}
 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

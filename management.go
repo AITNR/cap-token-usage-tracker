@@ -251,7 +251,7 @@ func (r *pluginRuntime) requestsResponse(request pluginapi.ManagementRequest) (p
 	if r.store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	page, err := r.store.queryRequestPageBySource(queryRange, offset, limit, request.Query.Get("model"), request.Query.Get("source"))
+	page, err := r.store.queryRequestPageBySource(queryRange, offset, limit, request.Query.Get("model"), request.Query.Get("source"), request.Query.Get("result"))
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}

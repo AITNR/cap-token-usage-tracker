@@ -94,6 +94,18 @@ func TestManagementStatsAndReset(t *testing.T) {
 	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":1`) || !strings.Contains(string(response.Body), `"model":"m"`) {
 		t.Fatalf("resource requests response: %+v, %v", response, err)
 	}
+	requestsResultQuery := url.Values{"range": []string{"24h"}, "result": []string{"failed"}}
+	requestsResultRequest, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: requestsResultQuery})
+	response, err = runtime.handleManagement(requestsResultRequest)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(response.Body), `"total":0`) {
+		t.Fatalf("filtered resource requests response: %+v, %v", response, err)
+	}
+	requestsResultQuery.Set("result", "unknown")
+	requestsResultRequest, _ = json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: runtime.routes.resourceRequestsPath, Query: requestsResultQuery})
+	response, err = runtime.handleManagement(requestsResultRequest)
+	if err != nil || response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid request result response: %+v, %v", response, err)
+	}
 	customRequestsQuery := url.Values{}
 	for key, values := range customQuery {
 		customRequestsQuery[key] = append([]string(nil), values...)
