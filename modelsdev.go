@@ -36,9 +36,27 @@ type modelsDevProvider struct {
 }
 
 type modelsDevModel struct {
-	ID   string         `json:"id"`
-	Name string         `json:"name"`
-	Cost *modelsDevCost `json:"cost"`
+	ID           string                 `json:"id"`
+	Name         string                 `json:"name"`
+	Cost         *modelsDevCost         `json:"cost"`
+	Experimental *modelsDevExperimental `json:"experimental"`
+}
+
+type modelsDevExperimental struct {
+	Modes map[string]modelsDevMode `json:"modes"`
+}
+
+type modelsDevMode struct {
+	Cost     *modelsDevCost        `json:"cost"`
+	Provider modelsDevModeProvider `json:"provider"`
+}
+
+type modelsDevModeProvider struct {
+	Body modelsDevModeBody `json:"body"`
+}
+
+type modelsDevModeBody struct {
+	ServiceTier string `json:"service_tier"`
 }
 
 type modelsDevCost struct {
@@ -269,7 +287,7 @@ func matchModelsDevPrices(catalog map[string]modelsDevProvider, observed []strin
 			if comparison == "" {
 				continue
 			}
-			price := modelPriceFromModelsDev(*model.Cost, normalizedProvider, catalogModel, now)
+			price := modelPriceFromModelsDev(model, normalizedProvider, catalogModel, now)
 			candidate := modelsDevCandidate{provider: normalizedProvider, model: catalogModel, price: price, rank: rank}
 			current, exists := candidates[comparison]
 			if !exists || candidateLess(candidate, current) {
@@ -309,7 +327,8 @@ func matchModelsDevPrices(catalog map[string]modelsDevProvider, observed []strin
 	return result, nil
 }
 
-func modelPriceFromModelsDev(cost modelsDevCost, provider, model string, now time.Time) ModelPrice {
+func modelPriceFromModelsDev(catalogModel modelsDevModel, provider, model string, now time.Time) ModelPrice {
+	cost := *catalogModel.Cost
 	price := ModelPrice{
 		Input:           cost.Input,
 		Output:          cost.Output,
@@ -330,6 +349,43 @@ func modelPriceFromModelsDev(cost modelsDevCost, provider, model string, now tim
 			Output:        tier.Output,
 			CacheRead:     tier.CacheRead,
 			CacheCreation: tier.CacheWrite,
+		})
+	}
+	if catalogModel.Experimental != nil {
+		modeNames := make([]string, 0, len(catalogModel.Experimental.Modes))
+		for name := range catalogModel.Experimental.Modes {
+			modeNames = append(modeNames, name)
+		}
+		sort.Strings(modeNames)
+		for _, name := range modeNames {
+			mode := catalogModel.Experimental.Modes[name]
+			serviceTier := strings.ToLower(strings.TrimSpace(mode.Provider.Body.ServiceTier))
+			if mode.Cost == nil || serviceTier == "" {
+				continue
+			}
+			if price.ServiceTiers == nil {
+				price.ServiceTiers = make(map[string]ServiceTierPrice)
+			}
+			if _, exists := price.ServiceTiers[serviceTier]; exists {
+				continue
+			}
+			price.ServiceTiers[serviceTier] = serviceTierPriceFromModelsDev(*mode.Cost)
+		}
+	}
+	return price
+}
+
+func serviceTierPriceFromModelsDev(cost modelsDevCost) ServiceTierPrice {
+	price := ServiceTierPrice{
+		Input: cost.Input, Output: cost.Output, CacheRead: cost.CacheRead, CacheCreation: cost.CacheWrite,
+	}
+	for _, tier := range cost.Tiers {
+		if tier.Tier.Type != "context" || tier.Tier.Size == 0 {
+			continue
+		}
+		price.ContextTiers = append(price.ContextTiers, ContextPriceTier{
+			Threshold: tier.Tier.Size, Input: tier.Input, Output: tier.Output,
+			CacheRead: tier.CacheRead, CacheCreation: tier.CacheWrite,
 		})
 	}
 	return price

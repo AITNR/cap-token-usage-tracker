@@ -16,6 +16,7 @@ type EstimatedCost struct {
 	Priced                bool    `json:"priced"`
 	Source                string  `json:"source,omitempty"`
 	AccountingMode        string  `json:"accounting_mode,omitempty"`
+	PriceServiceTier      string  `json:"price_service_tier,omitempty"`
 	TierThreshold         uint64  `json:"tier_threshold,omitempty"`
 	ContextTokens         uint64  `json:"context_tokens,omitempty"`
 	BillableInputTokens   uint64  `json:"billable_input_tokens,omitempty"`
@@ -424,8 +425,16 @@ func estimateRequestCostWithResolver(request RequestDetail, resolver modelPriceR
 	}
 
 	rates := price.tokenRates()
+	contextTiers := price.ContextTiers
+	priceServiceTier := ""
+	serviceTier := strings.ToLower(strings.TrimSpace(request.ServiceTier))
+	if schedule, exists := price.ServiceTiers[serviceTier]; exists {
+		rates = schedule.tokenRates()
+		contextTiers = schedule.ContextTiers
+		priceServiceTier = serviceTier
+	}
 	var selectedThreshold uint64
-	for _, tier := range price.ContextTiers {
+	for _, tier := range contextTiers {
 		if contextTokens > tier.Threshold && tier.Threshold >= selectedThreshold {
 			rates = tier.tokenRates()
 			selectedThreshold = tier.Threshold
@@ -436,6 +445,7 @@ func estimateRequestCostWithResolver(request RequestDetail, resolver modelPriceR
 		Priced:                true,
 		Source:                price.Source,
 		AccountingMode:        mode,
+		PriceServiceTier:      priceServiceTier,
 		TierThreshold:         selectedThreshold,
 		ContextTokens:         contextTokens,
 		BillableInputTokens:   billableInput,
