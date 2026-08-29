@@ -41,6 +41,7 @@ type pluginRuntime struct {
 	mu                sync.RWMutex
 	store             *Store
 	config            Config
+	quotaLimitUSD     float64
 	crypto            cryptoContext
 	apiKeyGeneration  uint64
 	apiKeyGenerations map[uint64]APIKeyCryptoGeneration
@@ -118,6 +119,7 @@ func (r *pluginRuntime) applyConfig(config Config) error {
 		r.crypto = crypto
 		r.apiKeyGeneration = generation
 		r.apiKeyGenerations = generations
+		r.loadQuotaLimitLocked()
 		return nil
 	}
 
@@ -131,6 +133,7 @@ func (r *pluginRuntime) applyConfig(config Config) error {
 	r.config = config
 	r.crypto = crypto
 	r.apiKeyGeneration, r.apiKeyGenerations = next.APIKeyCryptoState()
+	r.loadQuotaLimitLocked()
 	r.mu.Unlock()
 	r.fullModeMu.Lock()
 	r.fullModeSessions = nil

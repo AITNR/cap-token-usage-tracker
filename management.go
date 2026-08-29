@@ -7,6 +7,8 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -52,6 +54,8 @@ type registeredRoutes struct {
 	priceSyncPath             string
 	resourcePricesPath        string
 	resourcePreferencesPath   string
+	resourceUsagePath         string
+	quotaPath                 string
 }
 
 func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationResponse, error) {
@@ -93,6 +97,8 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		priceSyncPath:             "/v0/management/plugins/" + pluginID + "/prices/sync",
 		resourcePricesPath:        "/v0/resource/plugins/" + pluginID + "/prices",
 		resourcePreferencesPath:   "/v0/resource/plugins/" + pluginID + "/preferences",
+		resourceUsagePath:         "/v0/resource/plugins/" + pluginID + "/v1/usage",
+		quotaPath:                 "/v0/resource/plugins/" + pluginID + "/quota",
 	}
 	r.mu.Lock()
 	r.routes = routes
@@ -175,6 +181,14 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Path:        "/preferences",
 				Description: "Read and persist dashboard table preferences.",
+			},
+			{
+				Path:        "/v1/usage",
+				Description: "sub2api-compatible user usage: tracked usage amount (USD) versus a 999999 total quota.",
+			},
+			{
+				Path:        "/quota",
+				Description: "Read or set the /v1/usage quota limit in USD (GET ?set=<value>).",
 			},
 		},
 	}, nil
@@ -319,6 +333,16 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return r.preferencesResponse(request)
+	case routes.resourceUsagePath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.sub2apiUsageResponse(request)
+	case routes.quotaPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		return r.quotaResponse(request)
 	case routes.pricesPath:
 		if !strings.EqualFold(request.Method, http.MethodPut) {
 			return methodNotAllowed(http.MethodPut), nil
@@ -606,6 +630,259 @@ func (r *pluginRuntime) costsResponse(request pluginapi.ManagementRequest) (plug
 	}
 	_, generations := r.store.APIKeyCryptoState()
 	return r.sensitiveJSONResponse(http.StatusOK, &costs, fullMode, r.crypto, generations), nil
+}
+
+// sub2apiUsageResponse mimics the sub2api GET /v1/usage protocol (unrestricted
+// wallet mode) using the plugin's own tracked usage statistics. The plugin has
+// no real quota, so it reports a fixed total quota of 999999 and the current
+// tracked usage amount (USD) as "used": used/999999.
+func (r *pluginRuntime) sub2apiUsageResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	rangeValue := request.Query.Get("range")
+	if rangeValue == "" {
+		rangeValue = "retention"
+	}
+	now := time.Now().UTC()
+	queryRange, err := usageRangeFromQuery(rangeValue, request.Query.Get("start"), request.Query.Get("end"), now)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	todayRange := usageRange{Name: "custom", Start: time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC), End: now}
+
+	r.mu.RLock()
+	if r.store == nil {
+		r.mu.RUnlock()
+		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
+	}
+	stats, errStats := r.store.queryInitialStatsByFilter(queryRange, usageFilter{})
+	costs, errCosts := r.store.queryCostsByFilter(queryRange, usageFilter{})
+	todayStats, errTodayStats := r.store.queryInitialStatsByFilter(todayRange, usageFilter{})
+	todayCosts, errTodayCosts := r.store.queryCostsByFilter(todayRange, usageFilter{})
+	r.mu.RUnlock()
+	if errStats != nil {
+		return jsonResponse(errorHTTPStatus(errStats), map[string]any{"error": errStats.Error()}), nil
+	}
+	if errCosts != nil {
+		return jsonResponse(errorHTTPStatus(errCosts), map[string]any{"error": errCosts.Error()}), nil
+	}
+	if errTodayStats != nil {
+		todayStats = InitialStatsResponse{}
+	}
+	if errTodayCosts != nil {
+		todayCosts = CostResponse{}
+	}
+
+	used := costs.Summary.TotalUSD
+	r.mu.RLock()
+	totalQuota := r.effectiveQuotaLocked()
+	r.mu.RUnlock()
+	remaining := totalQuota - used
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	// usage.total / usage.today（sub2api 字段名）
+	aggFrom := func(s InitialStatsResponse, c CostResponse) map[string]any {
+		return map[string]any{
+			"requests":             s.Summary.Requests,
+			"input_tokens":         s.Summary.InputTokens,
+			"output_tokens":        s.Summary.OutputTokens,
+			"cache_read_tokens":    s.Summary.CacheReadTokens,
+			"cache_creation_tokens": s.Summary.CacheCreationTokens,
+			"total_tokens":         s.Summary.TotalTokens,
+			"cost":                 c.Summary.TotalUSD,
+			"actual_cost":          c.Summary.TotalUSD,
+		}
+	}
+	usage := map[string]any{
+		"total":              aggFrom(stats, costs),
+		"today":              aggFrom(todayStats, todayCosts),
+		"average_duration_ms": avgDurationMS(stats.Summary),
+		"rpm":                0,
+		"tpm":                0,
+	}
+
+	// daily_usage：按天聚合 Series（token）+ costs Series（金额）
+	type dailyAgg struct {
+		Counters
+		cost float64
+	}
+	dayMap := make(map[string]*dailyAgg)
+	addCounters := func(day string, c Counters) {
+		e, ok := dayMap[day]
+		if !ok {
+			e = &dailyAgg{}
+			dayMap[day] = e
+		}
+		e.Counters.add(c)
+	}
+	for _, sp := range stats.Series {
+		if t, errParse := time.Parse(time.RFC3339, sp.Hour); errParse == nil {
+			addCounters(t.Format("2006-01-02"), sp.Counters)
+		}
+	}
+	for _, cp := range costs.Series {
+		if t, errParse := time.Parse(time.RFC3339, cp.Hour); errParse == nil {
+			day := t.Format("2006-01-02")
+			if e, ok := dayMap[day]; ok {
+				e.cost += cp.TotalUSD
+			}
+		}
+	}
+	type dailyEntry struct {
+		Date             string  `json:"date"`
+		Requests         uint64  `json:"requests"`
+		InputTokens      uint64  `json:"input_tokens"`
+		OutputTokens     uint64  `json:"output_tokens"`
+		CacheReadTokens  uint64  `json:"cache_read_tokens"`
+		CacheWriteTokens uint64  `json:"cache_write_tokens"`
+		TotalTokens      uint64  `json:"total_tokens"`
+		Cost             float64 `json:"cost"`
+		ActualCost       float64 `json:"actual_cost"`
+	}
+	dailyUsage := make([]dailyEntry, 0, len(dayMap))
+	for day, e := range dayMap {
+		dailyUsage = append(dailyUsage, dailyEntry{
+			Date:             day,
+			Requests:         e.Requests,
+			InputTokens:      e.InputTokens,
+			OutputTokens:     e.OutputTokens,
+			CacheReadTokens:  e.CacheReadTokens,
+			CacheWriteTokens: e.CacheCreationTokens,
+			TotalTokens:      e.TotalTokens,
+			Cost:             e.cost,
+			ActualCost:       e.cost,
+		})
+	}
+	sort.Slice(dailyUsage, func(i, j int) bool { return dailyUsage[i].Date < dailyUsage[j].Date })
+
+	// model_stats：per-model token（stats.Models）+ cost（costs.Models）
+	modelCost := make(map[string]float64, len(costs.Models))
+	for _, m := range costs.Models {
+		modelCost[m.Model] = m.TotalUSD
+	}
+	type modelStatEntry struct {
+		Model               string  `json:"model"`
+		Requests            uint64  `json:"requests"`
+		InputTokens         uint64  `json:"input_tokens"`
+		OutputTokens        uint64  `json:"output_tokens"`
+		CacheCreationTokens uint64  `json:"cache_creation_tokens"`
+		CacheReadTokens     uint64  `json:"cache_read_tokens"`
+		TotalTokens         uint64  `json:"total_tokens"`
+		Cost                float64 `json:"cost"`
+		ActualCost          float64 `json:"actual_cost"`
+		AccountCost         float64 `json:"account_cost"`
+	}
+	modelStats := make([]modelStatEntry, 0, len(stats.Models))
+	for _, m := range stats.Models {
+		cost := modelCost[m.Model]
+		modelStats = append(modelStats, modelStatEntry{
+			Model:               m.Model,
+			Requests:            m.Requests,
+			InputTokens:         m.InputTokens,
+			OutputTokens:        m.OutputTokens,
+			CacheCreationTokens: m.CacheCreationTokens,
+			CacheReadTokens:     m.CacheReadTokens,
+			TotalTokens:         m.TotalTokens,
+			Cost:                cost,
+			ActualCost:          cost,
+			AccountCost:         cost,
+		})
+	}
+	sort.Slice(modelStats, func(i, j int) bool { return modelStats[i].Cost > modelStats[j].Cost })
+
+	return jsonResponse(http.StatusOK, map[string]any{
+		"mode":        "unrestricted",
+		"isValid":     true,
+		"planName":    "CAP Token Usage Tracker",
+		"unit":        "USD",
+		"quota":       totalQuota,
+		"used":        used,
+		"remaining":   remaining,
+		"balance":     remaining,
+		"range":       queryRange.Name,
+		"usage":       usage,
+		"daily_usage": dailyUsage,
+		"model_stats": modelStats,
+	}), nil
+}
+
+// avgDurationMS returns the average request duration in milliseconds from a
+// Counters aggregate (TotalLatencyNS / LatencySamples), or 0 when unknown.
+func avgDurationMS(c Counters) float64 {
+	if c.LatencySamples == 0 {
+		return 0
+	}
+	return float64(c.TotalLatencyNS) / float64(c.LatencySamples) / 1e6
+}
+
+const defaultQuotaLimitUSD = 999999.0
+
+// quotaResponse reads or sets the /v1/usage quota limit (USD). GET returns the
+// current limit; GET ?set=<value> persists a new limit to a small JSON file in
+// the plugin data directory (survives restarts) and updates the runtime value.
+func (r *pluginRuntime) quotaResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	setValue := strings.TrimSpace(request.Query.Get("set"))
+	if setValue == "" {
+		r.mu.RLock()
+		quota := r.effectiveQuotaLocked()
+		r.mu.RUnlock()
+		return jsonResponse(http.StatusOK, map[string]any{"quota": quota}), nil
+	}
+	value, err := strconv.ParseFloat(setValue, 64)
+	if err != nil || value < 0 || value > 1e12 {
+		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "set must be a non-negative number (USD)"}), nil
+	}
+	r.mu.Lock()
+	r.quotaLimitUSD = value
+	path := r.quotaFilePathLocked()
+	r.mu.Unlock()
+	if path != "" {
+		if err := saveQuotaToFile(path, value); err != nil {
+			return jsonResponse(http.StatusInternalServerError, map[string]any{"error": err.Error()}), nil
+		}
+	}
+	return jsonResponse(http.StatusOK, map[string]any{"quota": value}), nil
+}
+
+// quotaFilePathLocked returns the quota.json path next to the plugin database.
+// Callers must hold r.mu.
+func (r *pluginRuntime) quotaFilePathLocked() string {
+	if r.config.DataPath == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(r.config.DataPath), "quota.json")
+}
+
+// effectiveQuotaLocked returns the current quota limit, defaulting to 999999.
+// Callers must hold r.mu.
+func (r *pluginRuntime) effectiveQuotaLocked() float64 {
+	if r.quotaLimitUSD > 0 {
+		return r.quotaLimitUSD
+	}
+	return defaultQuotaLimitUSD
+}
+
+// loadQuotaLimitLocked loads the persisted quota limit from quota.json when
+// present. Callers must hold r.mu (write lock).
+func (r *pluginRuntime) loadQuotaLimitLocked() {
+	path := r.quotaFilePathLocked()
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	if value, errParse := strconv.ParseFloat(strings.TrimSpace(string(data)), 64); errParse == nil && value > 0 && value <= 1e12 {
+		r.quotaLimitUSD = value
+	}
+}
+
+func saveQuotaToFile(path string, value float64) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(strconv.FormatFloat(value, 'f', 2, 64)), 0o600)
 }
 
 func apiKeyIdentitiesFromRequest(request pluginapi.ManagementRequest, fullMode bool, store *Store) ([]string, error) {

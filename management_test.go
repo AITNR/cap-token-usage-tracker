@@ -34,14 +34,14 @@ func TestManagementRegistrationUsesDynamicPluginID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(registration.Routes) != 7 || registration.Routes[0].Method != http.MethodPost || registration.Routes[0].Path != "/plugins/custom-id/full-mode/session" || registration.Routes[1].Path != "/plugins/custom-id/stats" || registration.Routes[3].Method != http.MethodPut || registration.Routes[3].Path != "/plugins/custom-id/prices" || registration.Routes[4].Path != "/plugins/custom-id/prices/sync" || registration.Routes[5].Method != http.MethodGet || registration.Routes[5].Path != "/plugins/custom-id/backup" || registration.Routes[6].Method != http.MethodPost || registration.Routes[6].Path != "/plugins/custom-id/restore" || len(registration.Resources) != 20 {
+	if len(registration.Routes) != 7 || registration.Routes[0].Method != http.MethodPost || registration.Routes[0].Path != "/plugins/custom-id/full-mode/session" || registration.Routes[1].Path != "/plugins/custom-id/stats" || registration.Routes[3].Method != http.MethodPut || registration.Routes[3].Path != "/plugins/custom-id/prices" || registration.Routes[4].Path != "/plugins/custom-id/prices/sync" || registration.Routes[5].Method != http.MethodGet || registration.Routes[5].Path != "/plugins/custom-id/backup" || registration.Routes[6].Method != http.MethodPost || registration.Routes[6].Path != "/plugins/custom-id/restore" || len(registration.Resources) != 22 {
 		t.Fatalf("unexpected registration: %+v", registration)
 	}
 	resourcePaths := make(map[string]bool, len(registration.Resources))
 	for _, resource := range registration.Resources {
 		resourcePaths[resource.Path] = true
 	}
-	for _, path := range []string{"/dashboard", "/full-dashboard", "/full-mode/data", "/full-mode/api-key-labels", "/full-mode/session/revoke", "/full-mode/prices", "/full-mode/prices/save", "/full-mode/prices/sync", "/full-mode/backup", "/full-mode/restore", "/full-mode/reset", "/stats", "/stats/initial", "/stats/trends", "/stats/groups", "/requests", "/costs", "/exchange-rate", "/prices", "/preferences"} {
+	for _, path := range []string{"/dashboard", "/full-dashboard", "/full-mode/data", "/full-mode/api-key-labels", "/full-mode/session/revoke", "/full-mode/prices", "/full-mode/prices/save", "/full-mode/prices/sync", "/full-mode/backup", "/full-mode/restore", "/full-mode/reset", "/stats", "/stats/initial", "/stats/trends", "/stats/groups", "/requests", "/costs", "/exchange-rate", "/prices", "/preferences", "/v1/usage", "/quota"} {
 		if !resourcePaths[path] {
 			t.Fatalf("registration missing resource %q: %+v", path, registration.Resources)
 		}
