@@ -1,0 +1,64 @@
+name: Quality
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Go, race, and browser validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install browser-test dependencies
+        run: npm ci
+
+      - name: Check Go formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(git ls-files -z '*.go')
+          unformatted=$(gofmt -l -- "${files[@]}")
+          if [[ -n "$unformatted" ]]; then
+            printf 'Unformatted Go files:\n%s\n' "$unformatted"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Race test
+        run: go test -race -count=1 ./...
+
+      - name: Browser regression test
+        env:
+          REQUIRE_BROWSER_TESTS: "1"
+          CHROME_PATH: /usr/bin/google-chrome
+        run: go test -count=1 ./...

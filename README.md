@@ -24,7 +24,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 - 支持来源、认证账号、模型和请求结果筛选
 - 支持请求表和维度表分页、排序、列显示偏好持久化
 - 完整模式支持多选 API Key 并按并集筛选、设置显示标签，并隔离不同加密密钥代际
-- 支持 USD/CNY 汇率展示和总 Token 完整值、k、m、B（10 亿）单位切换
+- 支持 USD/CNY 汇率展示和总 Token 完整值、k、m、B（10 亿）单位切换，并持久化默认显示单位
 - 自动跟随 CLIProxyAPI Management Center 主题和浏览器语言
 - 内置英文、简体中文、繁体中文和俄文
 - 提供独立的普通模式和完整模式前端
@@ -88,7 +88,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 - API Key 加密密文、带密钥指纹、加密代际和用户设置的显示标签
 - 经过清理的认证账号显示信息
 - 模型价格、Context Tier、服务层级价格和同步元数据
-- 仪表盘时间范围、分页大小和隐藏列偏好
+- 仪表盘时间范围、分页大小、Token 显示单位和隐藏列偏好
 
 来源字段会进行凭据清理。疑似 API Key、Bearer Token 或其他凭据形式的来源不会按原值保存；插件会尽量回退到规范化的提供商服务地址。
 
@@ -171,7 +171,7 @@ plugins:
 
 重置统计入口只在完整模式可用，需要当前完整模式会话和显式确认。
 
-表格偏好和时间范围保存在插件数据库中。自定义时间按浏览器本地时区选择，再转换为 UTC RFC3339 时间戳请求。
+表格偏好、Token 显示单位和时间范围保存在插件数据库中。`token_display_mode` 支持 `full`、`k`、`m`、`B`，普通模式和完整模式共用该偏好。自定义时间按浏览器本地时区选择，再转换为 UTC RFC3339 时间戳请求。
 
 ### 模型价格与费用估算
 
@@ -193,7 +193,7 @@ plugins:
 
 备份文件最大为 64 MiB。恢复会替换当前数据库，需要用户确认，并在服务端校验 `X-Confirm-Restore: replace`。完整模式通过分段上传传输恢复数据；上传暂存使用独立的短时固定有效期，不随完整模式会话有效期配置变化。
 
-直接调用 CLIProxyAPI Management API 时，仍可使用管理密钥访问备份、恢复、价格保存、价格同步和重置路由。
+直接调用 CLIProxyAPI Management API 时，仍可使用管理密钥访问备份、恢复、价格保存、价格同步、偏好保存和重置路由。
 
 ### 页面与接口
 
@@ -212,7 +212,7 @@ plugins:
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/costs` | 基于逐请求记录计算的费用统计 |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/exchange-rate` | 缓存的 USD/CNY 汇率 |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/prices` | 读取当前价格簿，用于费用展示 |
-| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | 读取或保存仪表盘偏好 |
+| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | 读取仪表盘偏好；`save=1` 为旧版兼容保存方式 |
 
 完整模式资源：
 
@@ -241,6 +241,7 @@ X-Full-Mode-Session: <session-token>
 |---|---|---|
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/full-mode/session` | 签发完整模式会话 |
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/stats` | 读取聚合统计 |
+| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | 以 JSON 请求体保存仪表盘偏好 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/reset` | 重置统计 |
 | `PUT` | `/v0/management/plugins/cap-token-usage-tracker/prices` | 保存模型价格 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/prices/sync` | 同步 models.dev 价格 |
@@ -296,10 +297,10 @@ $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -trimpath -buildvcs=false `
   -ldflags="-s -w -X main.version=1.0.0" `
-  -o cap-token-usage-tracker.dll .
+  -o dist/cap-token-usage-tracker.dll .
 ```
 
-`build_dll.ps1` 包含当前工作区固定的 MinGW 和路径设置，在其他机器使用前需要调整。仓库还提供 Linux ARM64 构建/验证脚本以及 macOS amd64/arm64 验证脚本。
+`scripts/build_dll.ps1` 使用仓库相对路径，但包含当前工作区固定的 MinGW 路径；在其他机器使用前可能仍需调整。仓库还提供 Linux ARM64 构建/验证脚本以及 macOS amd64/arm64 验证脚本。
 
 本地验证：
 
@@ -340,7 +341,7 @@ The plugin does not store prompts, request bodies, or model response bodies. Whe
 - Source, model, and request-result filters
 - Persistent table pagination, sorting, and column visibility preferences
 - Full-mode API-key multi-selection with union filtering, display labels, and isolation between encryption-key generations
-- USD/CNY display and full, k, m, or B (one billion) total-token units
+- USD/CNY display and persistent full, k, m, or B (one billion) total-token units
 - Automatic Management Center theme and browser-language synchronization
 - Built-in English, Simplified Chinese, Traditional Chinese, and Russian locales
 - Separate normal-mode and full-mode frontends
@@ -465,7 +466,7 @@ Without an explicit `data_path`, the plugin resolves the database in this order:
 
 Both modes support preset or custom date-time ranges, source filtering, trend granularity and zoom, model drill-down, full, k, m, or B token units (`B = 1,000,000,000`), currency units, table columns and sorting, manual refresh, 15-second automatic refresh, and preset/custom table page sizes. Statistics reset is available only in full mode and requires the active session plus explicit confirmation.
 
-Table preferences and the selected range are stored in the plugin database. Custom browser-local times are converted to UTC RFC3339 timestamps for requests.
+Table preferences, the selected token display unit, and the selected range are stored in the plugin database. `token_display_mode` accepts `full`, `k`, `m`, or `B`, and normal and full modes share the preference. Custom browser-local times are converted to UTC RFC3339 timestamps for requests.
 
 ### Model Pricing and Cost Estimation
 
@@ -481,7 +482,7 @@ CSV export, Dashboard PNG export, database backup, database restore, and statist
 
 Backup files are limited to 64 MiB. Restore replaces the current database, requires user confirmation, and is checked server-side with `X-Confirm-Restore: replace`. Full mode uses staged uploads for restore payloads; upload staging has its own short fixed lifetime and does not follow the full-mode session lifetime configuration.
 
-Management-key-protected CLIProxyAPI Management API routes remain available for direct backup, restore, price persistence, price synchronization, and reset operations.
+Management-key-protected CLIProxyAPI Management API routes remain available for direct backup, restore, price persistence, price synchronization, preference persistence, and reset operations.
 
 ### Pages and Endpoints
 
@@ -500,7 +501,7 @@ Normal resources:
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/costs` | Per-request-derived cost statistics |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/exchange-rate` | Cached USD/CNY exchange rate |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/prices` | Current price book for cost display |
-| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | Read or persist dashboard preferences |
+| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | Read dashboard preferences; `save=1` is the legacy compatibility write path |
 
 Full-mode resources:
 
@@ -529,6 +530,7 @@ Management API routes:
 |---|---|---|
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/full-mode/session` | Issue a session after management authentication |
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/stats` | Read aggregate statistics |
+| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | Persist dashboard preferences with a JSON request body |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/reset` | Reset statistics |
 | `PUT` | `/v0/management/plugins/cap-token-usage-tracker/prices` | Persist model prices |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/prices/sync` | Synchronize models.dev prices |
@@ -584,10 +586,10 @@ $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -trimpath -buildvcs=false `
   -ldflags="-s -w -X main.version=1.0.0" `
-  -o cap-token-usage-tracker.dll .
+  -o dist/cap-token-usage-tracker.dll .
 ```
 
-`build_dll.ps1` contains workspace-specific MinGW and directory paths and must be adjusted for other machines. The repository also includes Linux ARM64 build/verification scripts and macOS amd64/arm64 verification scripts.
+`scripts/build_dll.ps1` uses repository-relative paths but contains a workspace-specific MinGW path; it may still need adjustment on other machines. The repository also includes Linux ARM64 build/verification scripts and macOS amd64/arm64 verification scripts.
 
 Local verification:
 
