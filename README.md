@@ -193,7 +193,7 @@ plugins:
 
 备份文件最大为 64 MiB。恢复会替换当前数据库，需要用户确认，并在服务端校验 `X-Confirm-Restore: replace`。完整模式通过分段上传传输恢复数据；上传暂存使用独立的短时固定有效期，不随完整模式会话有效期配置变化。
 
-直接调用 CLIProxyAPI Management API 时，仍可使用管理密钥访问备份、恢复、价格保存、价格同步和重置路由。
+直接调用 CLIProxyAPI Management API 时，仍可使用管理密钥访问备份、恢复、价格保存、价格同步、偏好保存和重置路由。
 
 ### 页面与接口
 
@@ -212,7 +212,7 @@ plugins:
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/costs` | 基于逐请求记录计算的费用统计 |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/exchange-rate` | 缓存的 USD/CNY 汇率 |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/prices` | 读取当前价格簿，用于费用展示 |
-| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | 读取或保存仪表盘偏好 |
+| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | 读取仪表盘偏好；`save=1` 为旧版兼容保存方式 |
 
 完整模式资源：
 
@@ -241,6 +241,7 @@ X-Full-Mode-Session: <session-token>
 |---|---|---|
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/full-mode/session` | 签发完整模式会话 |
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/stats` | 读取聚合统计 |
+| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | 保存仪表盘偏好 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/reset` | 重置统计 |
 | `PUT` | `/v0/management/plugins/cap-token-usage-tracker/prices` | 保存模型价格 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/prices/sync` | 同步 models.dev 价格 |
@@ -296,10 +297,10 @@ $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -trimpath -buildvcs=false `
   -ldflags="-s -w -X main.version=1.0.0" `
-  -o cap-token-usage-tracker.dll .
+  -o dist/cap-token-usage-tracker.dll .
 ```
 
-`build_dll.ps1` 包含当前工作区固定的 MinGW 和路径设置，在其他机器使用前需要调整。仓库还提供 Linux ARM64 构建/验证脚本以及 macOS amd64/arm64 验证脚本。
+`scripts/build_dll.ps1` 包含当前工作区固定的 MinGW 和路径设置，在其他机器使用前需要调整。仓库还提供 Linux ARM64 构建/验证脚本以及 macOS amd64/arm64 验证脚本。
 
 本地验证：
 
@@ -481,7 +482,7 @@ CSV export, Dashboard PNG export, database backup, database restore, and statist
 
 Backup files are limited to 64 MiB. Restore replaces the current database, requires user confirmation, and is checked server-side with `X-Confirm-Restore: replace`. Full mode uses staged uploads for restore payloads; upload staging has its own short fixed lifetime and does not follow the full-mode session lifetime configuration.
 
-Management-key-protected CLIProxyAPI Management API routes remain available for direct backup, restore, price persistence, price synchronization, and reset operations.
+Management-key-protected CLIProxyAPI Management API routes remain available for direct backup, restore, price persistence, price synchronization, preference persistence, and reset operations.
 
 ### Pages and Endpoints
 
@@ -500,7 +501,7 @@ Normal resources:
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/costs` | Per-request-derived cost statistics |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/exchange-rate` | Cached USD/CNY exchange rate |
 | `GET` | `/v0/resource/plugins/cap-token-usage-tracker/prices` | Current price book for cost display |
-| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | Read or persist dashboard preferences |
+| `GET` | `/v0/resource/plugins/cap-token-usage-tracker/preferences` | Read dashboard preferences; `save=1` is the legacy compatibility write path |
 
 Full-mode resources:
 
@@ -529,6 +530,7 @@ Management API routes:
 |---|---|---|
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/full-mode/session` | Issue a session after management authentication |
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/stats` | Read aggregate statistics |
+| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | Persist dashboard preferences |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/reset` | Reset statistics |
 | `PUT` | `/v0/management/plugins/cap-token-usage-tracker/prices` | Persist model prices |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/prices/sync` | Synchronize models.dev prices |
@@ -584,10 +586,10 @@ $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -trimpath -buildvcs=false `
   -ldflags="-s -w -X main.version=1.0.0" `
-  -o cap-token-usage-tracker.dll .
+  -o dist/cap-token-usage-tracker.dll .
 ```
 
-`build_dll.ps1` contains workspace-specific MinGW and directory paths and must be adjusted for other machines. The repository also includes Linux ARM64 build/verification scripts and macOS amd64/arm64 verification scripts.
+`scripts/build_dll.ps1` contains workspace-specific MinGW and directory paths and must be adjusted for other machines. The repository also includes Linux ARM64 build/verification scripts and macOS amd64/arm64 verification scripts.
 
 Local verification:
 

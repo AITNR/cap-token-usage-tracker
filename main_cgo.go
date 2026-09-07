@@ -49,8 +49,10 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	pluginabi "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	pluginapi "github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+
+	"github.com/AITNR/cap-token-usage-tracker/internal/plugin"
 )
 
 var hostAPICallbackState struct {
@@ -65,25 +67,25 @@ func init() {
 }
 
 //export cliproxy_plugin_init
-func cliproxy_plugin_init(host *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) (result C.int) {
+func cliproxy_plugin_init(host *C.cliproxy_host_api, pluginAPI *C.cliproxy_plugin_api) (result C.int) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			fmt.Fprintln(os.Stderr, "cap-token-usage-tracker: plugin initialization panic")
 			result = 3
 		}
 	}()
-	if plugin == nil {
+	if pluginAPI == nil {
 		return 1
 	}
 	if host != nil && uint32(host.abi_version) != pluginabi.ABIVersion {
 		return 2
 	}
 	setHostAPI(host)
-	runtimeState.setAuthRuntimeLookup(hostRuntimeAuthLookup)
-	plugin.abi_version = C.uint32_t(pluginabi.ABIVersion)
-	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxy_plugin_call_bridge)
-	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
-	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
+	plugin.RuntimeState.SetAuthRuntimeLookup(hostRuntimeAuthLookup)
+	pluginAPI.abi_version = C.uint32_t(pluginabi.ABIVersion)
+	pluginAPI.call = C.cliproxy_plugin_call_fn(C.cliproxy_plugin_call_bridge)
+	pluginAPI.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
+	pluginAPI.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
 	return 0
 }
 
@@ -97,7 +99,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			if !writeCResponse(response, marshalError("plugin_panic", "plugin call failed", false, 500)) {
+			if !writeCResponse(response, plugin.MarshalError("plugin_panic", "plugin call failed", false, 500)) {
 				result = 2
 				return
 			}
@@ -106,13 +108,13 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	}()
 
 	if method == nil {
-		if !writeCResponse(response, marshalError("invalid_method", "method is required", false, 400)) {
+		if !writeCResponse(response, plugin.MarshalError("invalid_method", "method is required", false, 400)) {
 			return 2
 		}
 		return 0
 	}
 	if uint64(requestLen) > uint64(1<<31-1) {
-		if !writeCResponse(response, marshalError("request_too_large", "request is too large", false, 413)) {
+		if !writeCResponse(response, plugin.MarshalError("request_too_large", "request is too large", false, 413)) {
 			return 2
 		}
 		return 0
@@ -122,7 +124,7 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if request != nil && requestLen > 0 {
 		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
-	if !writeCResponse(response, dispatchRPC(C.GoString(method), requestBytes)) {
+	if !writeCResponse(response, plugin.DispatchRPC(C.GoString(method), requestBytes)) {
 		return 2
 	}
 	return 0
@@ -148,7 +150,7 @@ func cliproxyPluginShutdown() {
 		}
 	}()
 	clearHostAPI()
-	if err := runtimeState.shutdown(); err != nil {
+	if err := plugin.RuntimeState.Shutdown(); err != nil {
 		fmt.Fprintln(os.Stderr, "cap-token-usage-tracker: shutdown persistence error:", err)
 	}
 }
@@ -168,17 +170,17 @@ func clearHostAPI() {
 	hostAPICallbackState.Unlock()
 }
 
-func hostRuntimeAuthLookup(authIndex string) (authRuntimeMetadata, error) {
+func hostRuntimeAuthLookup(authIndex string) (plugin.AuthRuntimeMetadata, error) {
 	request, err := json.Marshal(pluginapi.HostAuthGetRequest{AuthIndex: authIndex})
 	if err != nil {
-		return authRuntimeMetadata{}, fmt.Errorf("encode runtime auth request: %w", err)
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("encode runtime auth request: %w", err)
 	}
 
 	hostAPICallbackState.Lock()
 	host := hostAPICallbackState.host
 	if host == nil {
 		hostAPICallbackState.Unlock()
-		return authRuntimeMetadata{}, fmt.Errorf("host runtime auth API is unavailable")
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("host runtime auth API is unavailable")
 	}
 	hostAPICallbackState.inFlight++
 	hostAPICallbackState.Unlock()
@@ -200,28 +202,28 @@ func hostRuntimeAuthLookup(authIndex string) (authRuntimeMetadata, error) {
 	}
 	var response C.cliproxy_buffer
 	if result := C.cliproxy_host_call_bridge(host, method, requestPtr, C.size_t(len(request)), &response); result != 0 {
-		return authRuntimeMetadata{}, fmt.Errorf("host runtime auth call failed: %d", int(result))
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("host runtime auth call failed: %d", int(result))
 	}
 	if response.ptr == nil || response.len == 0 || uint64(response.len) > uint64(1<<31-1) {
-		return authRuntimeMetadata{}, fmt.Errorf("host runtime auth response is invalid")
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("host runtime auth response is invalid")
 	}
 	defer C.cliproxy_host_free_bridge(host, response.ptr, response.len)
 
-	var envelope rpcEnvelope
+	var envelope plugin.RPCEnvelope
 	if err := json.Unmarshal(C.GoBytes(response.ptr, C.int(response.len)), &envelope); err != nil {
-		return authRuntimeMetadata{}, fmt.Errorf("decode runtime auth response: %w", err)
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("decode runtime auth response: %w", err)
 	}
 	if !envelope.OK {
 		if envelope.Error != nil && envelope.Error.Message != "" {
-			return authRuntimeMetadata{}, fmt.Errorf("runtime auth lookup failed: %s", envelope.Error.Message)
+			return plugin.AuthRuntimeMetadata{}, fmt.Errorf("runtime auth lookup failed: %s", envelope.Error.Message)
 		}
-		return authRuntimeMetadata{}, fmt.Errorf("runtime auth lookup failed")
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("runtime auth lookup failed")
 	}
 	var responseData pluginapi.HostAuthGetRuntimeResponse
 	if err := json.Unmarshal(envelope.Result, &responseData); err != nil {
-		return authRuntimeMetadata{}, fmt.Errorf("decode runtime auth metadata: %w", err)
+		return plugin.AuthRuntimeMetadata{}, fmt.Errorf("decode runtime auth metadata: %w", err)
 	}
-	return authRuntimeMetadata{
+	return plugin.AuthRuntimeMetadata{
 		Provider:    responseData.Auth.Provider,
 		Type:        responseData.Auth.Type,
 		Email:       responseData.Auth.Email,
