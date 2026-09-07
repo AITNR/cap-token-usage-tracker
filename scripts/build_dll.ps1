@@ -1,9 +1,19 @@
-﻿$env:GOOS = "windows"
+$ErrorActionPreference = "Stop"
+
+$rootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$env:GOOS = "windows"
 $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 $env:Path = "C:\mingw64\mingw64\bin;" + $env:Path
-Set-Location D:\c\cap-token-usage-tracker
-New-Item -ItemType Directory -Force -Path dist | Out-Null
-go build -buildmode=c-shared -buildvcs=false -o dist\cap-token-usage-tracker.dll .
-Write-Output "DLL_BUILD_EXIT=$LASTEXITCODE"
-Get-Item dist\cap-token-usage-tracker.dll | Format-List Name, Length, LastWriteTime
+
+Push-Location $rootDir
+try {
+    New-Item -ItemType Directory -Force -Path (Join-Path $rootDir "dist") | Out-Null
+    go build -buildmode=c-shared -buildvcs=false -o (Join-Path $rootDir "dist\cap-token-usage-tracker.dll") .
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+    Get-Item (Join-Path $rootDir "dist\cap-token-usage-tracker.dll") | Format-List Name, Length, LastWriteTime
+} finally {
+    Pop-Location
+}

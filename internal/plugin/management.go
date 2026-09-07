@@ -715,7 +715,7 @@ func (r *pluginRuntime) pricesResponse() (pluginapi.ManagementResponse, error) {
 // new callers use the management POST route.
 func (r *pluginRuntime) preferencesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
 	if request.Query.Get("save") != "" {
-		return r.saveDashboardPreferencesResponse(request)
+		return r.saveDashboardPreferencesLegacyResponse(request)
 	}
 	if len(request.Query) != 0 {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"error": "save must be 1 when preference values are supplied"}), nil
@@ -734,21 +734,52 @@ func (r *pluginRuntime) preferencesResponse(request pluginapi.ManagementRequest)
 }
 
 func (r *pluginRuntime) saveDashboardPreferencesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	contentType, _, err := mime.ParseMediaType(request.Headers.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(contentType, "application/json") {
+		return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/json"}), nil
+	}
+	if len(request.Body) > 2<<20 {
+		return jsonResponse(http.StatusRequestEntityTooLarge, map[string]any{"error": "dashboard preferences JSON is too large"}), nil
+	}
+	preferences, err := dashboardPreferencesFromBody(request.Body)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return r.persistDashboardPreferences(preferences)
+}
+
+func (r *pluginRuntime) saveDashboardPreferencesLegacyResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	preferences, err := dashboardPreferencesFromQuery(request.Query)
+	if err != nil {
+		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
+	}
+	return r.persistDashboardPreferences(preferences)
+}
+
+func (r *pluginRuntime) persistDashboardPreferences(preferences DashboardPreferences) (pluginapi.ManagementResponse, error) {
 	r.mu.RLock()
 	store := r.store
 	r.mu.RUnlock()
 	if store == nil {
 		return jsonResponse(http.StatusServiceUnavailable, map[string]any{"error": "storage is not initialized"}), nil
 	}
-	preferences, err := dashboardPreferencesFromQuery(request.Query)
-	if err != nil {
-		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
-	}
-	preferences, err = store.SaveDashboardPreferences(preferences)
+	preferences, err := store.SaveDashboardPreferences(preferences)
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}
 	return jsonResponse(http.StatusOK, preferences), nil
+}
+
+func dashboardPreferencesFromBody(raw []byte) (DashboardPreferences, error) {
+	var preferences DashboardPreferences
+	if err := decodeStrictJSON(raw, &preferences); err != nil {
+		return DashboardPreferences{}, withStatus(http.StatusBadRequest, "invalid dashboard preferences JSON: %v", err)
+	}
+	normalized, err := normalizeDashboardPreferences(preferences)
+	if err != nil {
+		return DashboardPreferences{}, withStatus(http.StatusBadRequest, "%v", err)
+	}
+	return normalized, nil
 }
 
 func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferences, error) {

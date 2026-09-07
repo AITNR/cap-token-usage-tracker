@@ -241,7 +241,7 @@ X-Full-Mode-Session: <session-token>
 |---|---|---|
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/full-mode/session` | 签发完整模式会话 |
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/stats` | 读取聚合统计 |
-| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | 保存仪表盘偏好 |
+| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | 以 JSON 请求体保存仪表盘偏好 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/reset` | 重置统计 |
 | `PUT` | `/v0/management/plugins/cap-token-usage-tracker/prices` | 保存模型价格 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/prices/sync` | 同步 models.dev 价格 |
@@ -300,7 +300,7 @@ go build -buildmode=c-shared -trimpath -buildvcs=false `
   -o dist/cap-token-usage-tracker.dll .
 ```
 
-`scripts/build_dll.ps1` 包含当前工作区固定的 MinGW 和路径设置，在其他机器使用前需要调整。仓库还提供 Linux ARM64 构建/验证脚本以及 macOS amd64/arm64 验证脚本。
+`scripts/build_dll.ps1` 使用仓库相对路径，但包含当前工作区固定的 MinGW 路径；在其他机器使用前可能仍需调整。仓库还提供 Linux ARM64 构建/验证脚本以及 macOS amd64/arm64 验证脚本。
 
 本地验证：
 
@@ -530,7 +530,7 @@ Management API routes:
 |---|---|---|
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/full-mode/session` | Issue a session after management authentication |
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/stats` | Read aggregate statistics |
-| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | Persist dashboard preferences |
+| `POST` | `/v0/management/plugins/cap-token-usage-tracker/preferences` | Persist dashboard preferences with a JSON request body |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/reset` | Reset statistics |
 | `PUT` | `/v0/management/plugins/cap-token-usage-tracker/prices` | Persist model prices |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/prices/sync` | Synchronize models.dev prices |
@@ -589,7 +589,7 @@ go build -buildmode=c-shared -trimpath -buildvcs=false `
   -o dist/cap-token-usage-tracker.dll .
 ```
 
-`scripts/build_dll.ps1` contains workspace-specific MinGW and directory paths and must be adjusted for other machines. The repository also includes Linux ARM64 build/verification scripts and macOS amd64/arm64 verification scripts.
+`scripts/build_dll.ps1` uses repository-relative paths but contains a workspace-specific MinGW path; it may still need adjustment on other machines. The repository also includes Linux ARM64 build/verification scripts and macOS amd64/arm64 verification scripts.
 
 Local verification:
 

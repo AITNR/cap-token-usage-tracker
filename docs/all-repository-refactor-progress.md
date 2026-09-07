@@ -112,19 +112,21 @@
 - 修改 `management.go`：
   - 新增管理端 `POST /v0/management/plugins/<id>/preferences` 路由；
   - 注册 `POST /plugins/<id>/preferences` 管理路由；
-  - 将保存逻辑抽取为 `saveDashboardPreferencesResponse`；
+  - 将保存逻辑拆分为管理端 JSON 请求体的 `saveDashboardPreferencesResponse` 与旧 GET 兼容路径的 `saveDashboardPreferencesLegacyResponse`；
   - resource `GET /preferences` 保持只读语义，但保留 `save=1` 旧兼容路径；
   - resource 描述改为“读取偏好”，避免继续宣传 GET 写入。
 - 修改 `management_test.go`：
   - 更新管理路由注册数量和顺序断言；
-  - 新增管理端 POST 保存、GET 读取、错误方法和旧 GET 兼容路径测试。
+  - 新增管理端 POST JSON 请求体保存、无效请求体拒绝、GET 读取、错误方法和旧 GET 兼容路径测试。
 - 修改 `README.md`：
   - 中英文接口表补充管理端 `POST /preferences`；
   - 明确 resource `GET /preferences` 的读取语义和 `save=1` 旧兼容写入语义。
 - 验证：
   - `go test ./... -count=1 -run "TestManagementRegistrationUsesDynamicPluginID|TestDashboardPreferences"` 通过；
   - `go test ./... -count=1` 通过；
-  - `go vet ./...` 通过。
+  - `go vet ./...` 通过；
+  - `go test -race ./... -count=1` 通过；
+  - `REQUIRE_BROWSER_TESTS=1 CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe" go test ./... -count=1` 通过。
 - 未完成事项：
   - 前端仍使用旧 resource `save=1` 兼容路径，避免在宿主管理授权交互未设计前破坏自动保存体验；
   - 后续需要确定是否让用户输入/缓存管理密钥，或提供 capability 保护的偏好保存路径，再切换前端调用。
@@ -224,7 +226,7 @@
 ## 当前剩余事项
 
 1. 偏好设置：
-   - 管理端 POST 路由已就绪；
+   - 管理端 POST 路由已就绪，并改为接收 JSON 请求体；
    - 前端仍保留 resource `save=1` 兼容路径，切换前需确定管理密钥交互或 capability 写入路径。
 2. dashboard 模板：
    - marker 契约已锁定；
@@ -270,6 +272,7 @@
 - [x] 根目录保留 Go 入口、C 桥接、模块元数据、项目级文件与图片资源
 - [x] 按用户要求将图片资源保留在根目录，仪表盘语法参考脚本移动到 `assets/`
 - [x] 将本地构建脚本移动到 `scripts/`
+- [x] `scripts/build.sh` 与 `scripts/build_dll.ps1` 改为使用仓库相对路径，并在构建失败时返回非零状态
 - [x] 将本地 DLL、头文件和旧 EXE 移动到 `dist/`
 - [x] 更新浏览器测试的 `node_modules` 与 `test/dashboard_date_range.mjs` 相对路径
 - [x] 更新 `main_cgo.go`，通过 `internal/plugin` 的公开 facade 调用运行时
@@ -306,7 +309,9 @@
 - `go vet ./...` 通过；
 - `REQUIRE_BROWSER_TESTS=1 CHROME_PATH="C:\Program Files\Google\Chrome\Application\chrome.exe" go test ./... -count=1` 通过；
 - `go test -race ./... -count=1` 通过；
-- Windows amd64 `c-shared` DLL 构建通过。
+- Windows amd64 `c-shared` DLL 构建通过；
+- `bash -n scripts/build.sh` 通过；
+- `scripts/build_dll.ps1` PowerShell 语法解析通过。
 
 ### 整理后的 DLL
 

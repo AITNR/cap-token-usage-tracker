@@ -803,8 +803,11 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 	}
 	defer runtime.shutdown()
 
-	call := func(method, path string, query url.Values) pluginapi.ManagementResponse {
-		raw, err := json.Marshal(pluginapi.ManagementRequest{Method: method, Path: path, Query: query})
+	call := func(method, path string, query url.Values, headers http.Header, body []byte) pluginapi.ManagementResponse {
+		if headers == nil {
+			headers = http.Header{}
+		}
+		raw, err := json.Marshal(pluginapi.ManagementRequest{Method: method, Path: path, Query: query, Headers: headers, Body: body})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -815,19 +818,21 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		return response
 	}
 
-	wrongMethod := call(http.MethodGet, runtime.routes.preferencesSavePath, nil)
+	wrongMethod := call(http.MethodGet, runtime.routes.preferencesSavePath, nil, nil, nil)
 	if wrongMethod.StatusCode != http.StatusMethodNotAllowed || wrongMethod.Headers.Get("Allow") != http.MethodPost {
 		t.Fatalf("wrong management save method response = %+v", wrongMethod)
 	}
 
-	query := url.Values{
-		"save":                  {"1"},
-		"request_page_size":     {"25"},
-		"dimension_page_size":   {"50"},
-		"hidden_request_column": {"model", "source"},
-		"time_range_mode":       {"last_7_days"},
+	body, err := json.Marshal(DashboardPreferences{
+		RequestPageSize:      25,
+		DimensionPageSize:    50,
+		HiddenRequestColumns: []string{"model", "source"},
+		TimeRangeMode:        "last_7_days",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	response := call(http.MethodPost, runtime.routes.preferencesSavePath, query)
+	response := call(http.MethodPost, runtime.routes.preferencesSavePath, nil, http.Header{"Content-Type": []string{"application/json"}}, body)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("management preferences save response = %+v body=%s", response, response.Body)
 	}
@@ -836,7 +841,13 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		t.Fatalf("saved preferences payload = %s, err = %v", response.Body, err)
 	}
 
-	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, nil)
+	invalidBody := []byte(`{"request_page_size":0,"dimension_page_size":50}`)
+	response = call(http.MethodPost, runtime.routes.preferencesSavePath, nil, http.Header{"Content-Type": []string{"application/json"}}, invalidBody)
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid management preferences save response = %+v body=%s", response, response.Body)
+	}
+
+	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, nil, nil, nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("resource preferences read response = %+v body=%s", response, response.Body)
 	}
@@ -846,11 +857,11 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 	}
 
 	legacyQuery := url.Values{"save": {"1"}, "request_page_size": {"75"}, "dimension_page_size": {"100"}}
-	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, legacyQuery)
+	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, legacyQuery, nil, nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("legacy resource preferences save response = %+v body=%s", response, response.Body)
 	}
-	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, nil)
+	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, nil, nil, nil)
 	saved = DashboardPreferences{}
 	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 75 || saved.DimensionPageSize != 100 {
 		t.Fatalf("legacy stored preferences payload = %s, err = %v", response.Body, err)
