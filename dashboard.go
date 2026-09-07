@@ -291,6 +291,7 @@ try{if(window.frameElement){window.frameElement.style.backgroundColor=background
 <div class="control-group control-actions">
 <button id="fullModeButton" class="control" type="button" title="Full mode" data-i18n-title="button.fullMode"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg><span class="button-label" data-i18n="button.fullMode">Full mode</span></button>
 <button id="pricingButton" class="control" type="button" title="Configure model prices" data-i18n-title="button.pricing.title" hidden><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 6v12M15 8.5h-4.5a2.2 2.2 0 0 0 0 4.4h3a2.2 2.2 0 0 1 0 4.4H9"></path></svg><span class="button-label" data-i18n="button.pricing">Model prices</span></button>
+<button id="quotaButton" class="control" type="button" title="Set usage quota limit (USD)"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M3 10h18M8 14h5"></path></svg><span class="button-label">限额</span></button>
 <div class="export-wrap"><button id="exportButton" class="control" type="button" aria-haspopup="menu" aria-expanded="false" data-i18n-aria="button.export" data-i18n-title="button.export" title="Export"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M5 20h14"></path></svg><span class="button-label" data-i18n="button.export">Export</span></button><div id="exportMenu" class="export-menu dropdown-surface" role="menu" hidden><button id="exportCSV" type="button" role="menuitem" data-i18n="button.exportCSV">Export CSV</button><button id="exportPNG" type="button" role="menuitem" data-i18n="button.exportPNG">Export chart image</button><div style="height:1px;background:var(--border-color);margin:4px 0"></div><button id="exportBackup" type="button" role="menuitem" data-i18n="button.downloadBackup">Download Backup</button><button id="restoreBackup" type="button" role="menuitem" data-i18n="button.restoreBackup" style="color:var(--warning-color)">Restore Backup</button></div></div>
 <button id="refreshButton" class="control primary" type="button" title="Refresh now" data-i18n-title="button.refresh.title"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5"></path><path d="M18.2 15a7 7 0 1 1-.9-7.9L20 11"></path></svg><span class="button-label" data-i18n="button.refresh">Refresh</span></button><button id="resetButton" class="control danger" type="button" title="Clear statistics" data-i18n-title="button.reset.title"><svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M8 10v7M12 10v7M16 10v7M6 7l1 14h10l1-14"></path></svg><span class="button-label" data-i18n="button.reset">Reset</span></button></div></div></header>
 <div class="feedback"><div id="status" class="status" data-i18n="status.loading">Loading statistics…</div><div id="error" class="error" role="alert"></div></div>
@@ -311,6 +312,7 @@ try{if(window.frameElement){window.frameElement.style.backgroundColor=background
 <dialog id="resetDialog"><form method="dialog"><h2 data-i18n="reset.title">Management Key Confirmation</h2><p data-i18n="reset.description">Clearing statistics requires a CLIProxyAPI management key. The key is only used for this request.</p><input id="resetKeyInput" class="key-input" type="password" autocomplete="off" placeholder="Management key"><div class="dialog-actions"><button class="control" value="cancel" data-i18n="reset.cancel">Cancel</button><button class="control danger" value="confirm" data-i18n="reset.confirm">Confirm Clear</button></div></form></dialog>
 <dialog id="backupDialog"><form method="dialog"><h2 data-i18n="reset.title">Management Key Confirmation</h2><p data-i18n="backup.keyPrompt">Enter the CLIProxyAPI management key to download a full database backup.</p><input id="backupKeyInput" class="key-input" type="password" autocomplete="off" placeholder="Management key"><div class="dialog-actions"><button class="control" value="cancel" data-i18n="reset.cancel">Cancel</button><button class="control primary" value="confirm" data-i18n="button.downloadBackup">Download Backup</button></div></form></dialog>
 <dialog id="fullModeDialog"><form method="dialog"><h2 data-i18n="fullMode.title">Full mode</h2><p data-i18n="fullMode.description">Enter the CLIProxyAPI management key to unlock full mode for this page session.</p><input id="fullModeKeyInput" class="key-input" type="password" autocomplete="off" data-i18n-placeholder="fullMode.managementKey" placeholder="Management key"><div id="fullModeError" class="error" role="alert"></div><div class="dialog-actions"><button class="control" value="cancel" data-i18n="reset.cancel">Cancel</button><button id="fullModeUnlockButton" class="control primary" type="button" data-i18n="button.unlockFullMode">Unlock</button></div></form></dialog>
+<dialog id="quotaDialog"><form method="dialog"><h2>限额设置</h2><p>/v1/usage 接口的配额上限（USD），默认 999999.00</p><input id="quotaInput" class="key-input" type="number" step="0.01" min="0" max="1000000000000" value="999999.00"><div id="quotaError" class="error" role="alert"></div><div class="dialog-actions"><button class="control" value="cancel">取消</button><button id="saveQuotaButton" class="control primary" type="button">确认</button></div></form></dialog>
 <script>
 (function(){
 'use strict';
@@ -657,6 +659,67 @@ document.getElementById('granularity').addEventListener('change',function(){rese
 document.getElementById('barWrap').addEventListener('wheel',function(event){if(lastTrend.length<2)return;event.preventDefault();var current=tokenTrendZoom.size||lastTrend.length,rawDelta=event.deltaY||event.deltaX;if(event.deltaMode===1)rawDelta*=16;else if(event.deltaMode===2)rawDelta*=this.clientHeight||300;if(event.shiftKey){panTrend(lastTrend,tokenTrendZoom,rawDelta>0?1:-1);renderBar();return;}var rect=this.getBoundingClientRect(),ratio=rect.width?Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)):.5,factor=Math.exp(Math.max(-700,Math.min(700,rawDelta))*.0015);zoomTrend(lastTrend,tokenTrendZoom,factor,ratio,renderBar);},{passive:false,capture:true});document.getElementById('costWrap').addEventListener('wheel',function(event){if(lastCostTrend.length<2)return;event.preventDefault();var rawDelta=event.deltaY||event.deltaX;if(event.deltaMode===1)rawDelta*=16;else if(event.deltaMode===2)rawDelta*=this.clientHeight||300;if(event.shiftKey){panTrend(lastCostTrend,costTrendZoom,rawDelta>0?1:-1);renderCostTrend();return;}var rect=this.getBoundingClientRect(),ratio=rect.width?Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width)):.5,factor=Math.exp(Math.max(-700,Math.min(700,rawDelta))*.0015);zoomTrend(lastCostTrend,costTrendZoom,factor,ratio,renderCostTrend);},{passive:false,capture:true});
 /*FULL_MODE_APIKEY_SCRIPT*/
 if(!pluginID){text('error','Cannot identify plugin ID from resource URL.');return;}startDashboard();
+})();
+</script>
+<script>
+// 限额设置（/v1/usage quota limit）
+(function(){
+'use strict';
+function resourceBase(){
+  var m=window.location.pathname.match(/\/v0\/resource\/plugins\/[^/]+/);
+  return m?m[0]:'';
+}
+function openQuota(){
+  var dialog=document.getElementById('quotaDialog');
+  var input=document.getElementById('quotaInput');
+  var err=document.getElementById('quotaError');
+  if(!dialog||!input)return;
+  err.textContent='';
+  fetch(resourceBase()+'/quota',{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(p){
+      if(p&&typeof p.quota==='number')input.value=String(p.quota.toFixed(2));
+      dialog.showModal();
+      input.focus();
+    })
+    .catch(function(e){err.textContent=e.message||String(e);});
+}
+function saveQuota(){
+  var dialog=document.getElementById('quotaDialog');
+  var input=document.getElementById('quotaInput');
+  var err=document.getElementById('quotaError');
+  var value=parseFloat(input.value);
+  if(!isFinite(value)||value<0){
+    err.textContent='请输入有效的非负数字';
+    return;
+  }
+  fetch(resourceBase()+'/quota?set='+encodeURIComponent(value),{credentials:'same-origin'})
+    .then(function(r){return r.json();})
+    .then(function(p){
+      if(p&&p.error)throw new Error(p.error);
+      dialog.close();
+      if(p&&typeof p.quota==='number'){
+        var s=document.getElementById('status');
+        if(s)s.textContent='限额已保存: '+p.quota.toFixed(2)+' USD';
+      }
+    })
+    .catch(function(e){err.textContent=e.message||String(e);});
+}
+function hook(){
+  var btn=document.getElementById('quotaButton');
+  if(btn)btn.addEventListener('click',openQuota);
+  var save=document.getElementById('saveQuotaButton');
+  if(save)save.addEventListener('click',saveQuota);
+  var dialog=document.getElementById('quotaDialog');
+  if(dialog){
+    var input=document.getElementById('quotaInput');
+    if(input)input.addEventListener('keydown',function(e){
+      if(e.key==='Enter'){e.preventDefault();saveQuota();}
+    });
+  }
+}
+if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',hook);
+else hook();
 })();
 </script>
 </body>
