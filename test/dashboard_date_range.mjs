@@ -31,6 +31,7 @@ const tokenUnitInitial = {
   bucket_seconds: 86400,
 };
 const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : emptyInitial;
+const savedTokenDisplayModes = [];
 
 async function setTimePickerValue(page, boundary, values) {
   for (const [part, value] of Object.entries(values)) {
@@ -54,10 +55,21 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/preferences`) {
+    if (url.searchParams.get('save') === '1') {
+      savedTokenDisplayModes.push(url.searchParams.get('token_display_mode'));
+      sendJSON({
+        request_page_size: url.searchParams.get('request_page_size'),
+        dimension_page_size: url.searchParams.get('dimension_page_size'),
+        time_range_mode: url.searchParams.get('time_range_mode'),
+        token_display_mode: url.searchParams.get('token_display_mode'),
+      });
+      return;
+    }
     sendJSON({
       time_range_mode: 'custom',
       time_range_start: initialRange.start,
       time_range_end: initialRange.end,
+      token_display_mode: scenario === 'token-unit' ? 'B' : 'full',
     });
     return;
   }
@@ -107,22 +119,33 @@ try {
     const tokenButton = page.locator('#tokenUnitButton');
     const totalTokens = page.locator('#totalTokens');
     const expected = [
-      ['完整', '1,230,000,000'],
-      ['k', '1,230,000k'],
-      ['m', '1,230m'],
-      ['B', '1.23B'],
+      ['B', '1.23B', 'full'],
+      ['完整', '1,230,000,000', 'k'],
+      ['k', '1,230,000k', 'm'],
+      ['m', '1,230m', 'B'],
     ];
-    for (const [buttonText, totalText] of expected) {
+    for (const [buttonText, totalText, savedMode] of expected) {
       if (await tokenButton.textContent() !== buttonText) {
         throw new Error(`expected token unit button ${buttonText}, got ${await tokenButton.textContent()}`);
       }
       if (await totalTokens.textContent() !== totalText) {
         throw new Error(`expected total tokens ${totalText}, got ${await totalTokens.textContent()}`);
       }
-      await tokenButton.click();
+      await Promise.all([
+        page.waitForResponse((response) => {
+          const savedURL = new URL(response.url());
+          return savedURL.pathname === `${resourceBase}/preferences`
+            && savedURL.searchParams.get('save') === '1'
+            && savedURL.searchParams.get('token_display_mode') === savedMode;
+        }),
+        tokenButton.click(),
+      ]);
     }
-    if (await tokenButton.textContent() !== '完整' || await totalTokens.textContent() !== '1,230,000,000') {
-      throw new Error(`expected token unit cycle to return to Full, got ${await tokenButton.textContent()} / ${await totalTokens.textContent()}`);
+    if (JSON.stringify(savedTokenDisplayModes) !== JSON.stringify(['full', 'k', 'm', 'B'])) {
+      throw new Error(`expected saved token display modes full,k,m,B, got ${savedTokenDisplayModes.join(',')}`);
+    }
+    if (await tokenButton.textContent() !== 'B' || await totalTokens.textContent() !== '1.23B') {
+      throw new Error(`expected token unit cycle to return to B, got ${await tokenButton.textContent()} / ${await totalTokens.textContent()}`);
     }
   }
 

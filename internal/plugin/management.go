@@ -786,7 +786,7 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 	allowed := map[string]struct{}{
 		"save": {}, "request_page_size": {}, "dimension_page_size": {},
 		"hidden_request_column": {}, "hidden_dimension_column": {}, "time_range_mode": {},
-		"time_range_start": {}, "time_range_end": {},
+		"token_display_mode": {}, "time_range_start": {}, "time_range_end": {},
 	}
 	for key := range query {
 		if _, ok := allowed[key]; !ok {
@@ -808,6 +808,10 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 	if err != nil {
 		return DashboardPreferences{}, err
 	}
+	tokenDisplayMode, err := optionalDashboardPreference(query, "token_display_mode")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
 	timeRangeStart, err := optionalDashboardPreference(query, "time_range_start")
 	if err != nil {
 		return DashboardPreferences{}, err
@@ -822,6 +826,7 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 		HiddenRequestColumns:   append([]string{}, query["hidden_request_column"]...),
 		HiddenDimensionColumns: append([]string{}, query["hidden_dimension_column"]...),
 		TimeRangeMode:          timeRangeMode,
+		TokenDisplayMode:       tokenDisplayMode,
 		TimeRangeStart:         timeRangeStart,
 		TimeRangeEnd:           timeRangeEnd,
 	}, nil

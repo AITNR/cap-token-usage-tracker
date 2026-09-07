@@ -9,10 +9,15 @@ const (
 	defaultDashboardPageSize = 100
 	maxDashboardPageSize     = 500
 	defaultTimeRangeMode     = "custom"
+	defaultTokenDisplayMode  = "full"
 )
 
 var dashboardTimeRangeModes = map[string]struct{}{
 	"custom": {}, "last_5_hours": {}, "last_7_days": {}, "last_30_days": {}, "current_month": {},
+}
+
+var dashboardTokenDisplayModes = map[string]struct{}{
+	"full": {}, "k": {}, "m": {}, "B": {},
 }
 
 type DashboardPreferences struct {
@@ -21,6 +26,7 @@ type DashboardPreferences struct {
 	HiddenRequestColumns   []string `json:"hidden_request_columns"`
 	HiddenDimensionColumns []string `json:"hidden_dimension_columns"`
 	TimeRangeMode          string   `json:"time_range_mode"`
+	TokenDisplayMode       string   `json:"token_display_mode"`
 	TimeRangeStart         string   `json:"time_range_start,omitempty"`
 	TimeRangeEnd           string   `json:"time_range_end,omitempty"`
 }
@@ -45,6 +51,7 @@ func defaultDashboardPreferences() DashboardPreferences {
 		HiddenRequestColumns:   []string{},
 		HiddenDimensionColumns: []string{},
 		TimeRangeMode:          defaultTimeRangeMode,
+		TokenDisplayMode:       defaultTokenDisplayMode,
 	}
 }
 
@@ -70,6 +77,13 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 	if _, ok := dashboardTimeRangeModes[mode]; !ok {
 		return DashboardPreferences{}, fmt.Errorf("time_range_mode is unsupported")
 	}
+	tokenDisplayMode := input.TokenDisplayMode
+	if tokenDisplayMode == "" {
+		tokenDisplayMode = defaultTokenDisplayMode
+	}
+	if _, ok := dashboardTokenDisplayModes[tokenDisplayMode]; !ok {
+		return DashboardPreferences{}, fmt.Errorf("token_display_mode is unsupported")
+	}
 	start, end := "", ""
 	if mode == "custom" && (input.TimeRangeStart != "" || input.TimeRangeEnd != "") {
 		if input.TimeRangeStart == "" || input.TimeRangeEnd == "" {
@@ -90,6 +104,7 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 		HiddenRequestColumns:   hiddenRequests,
 		HiddenDimensionColumns: hiddenDimensions,
 		TimeRangeMode:          mode,
+		TokenDisplayMode:       tokenDisplayMode,
 		TimeRangeStart:         start,
 		TimeRangeEnd:           end,
 	}, nil

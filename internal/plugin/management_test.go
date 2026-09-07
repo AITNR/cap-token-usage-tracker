@@ -364,6 +364,9 @@ func TestDashboardPreferencesResourceValidation(t *testing.T) {
 	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "time_range_mode": []string{"yesterday"}}); response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid range mode status = %d body=%s", response.StatusCode, response.Body)
 	}
+	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "token_display_mode": []string{"billion"}}); response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid token display mode status = %d body=%s", response.StatusCode, response.Body)
+	}
 	if response := request(http.MethodGet, url.Values{"save": []string{"1"}, "request_page_size": []string{"100"}, "dimension_page_size": []string{"100"}, "time_range_mode": []string{"custom"}, "time_range_start": []string{"2026-08-05"}}); response.StatusCode != http.StatusBadRequest {
 		t.Fatalf("incomplete custom range status = %d body=%s", response.StatusCode, response.Body)
 	}
@@ -828,6 +831,7 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		DimensionPageSize:    50,
 		HiddenRequestColumns: []string{"model", "source"},
 		TimeRangeMode:        "last_7_days",
+		TokenDisplayMode:     "B",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -837,7 +841,7 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		t.Fatalf("management preferences save response = %+v body=%s", response, response.Body)
 	}
 	var saved DashboardPreferences
-	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || len(saved.HiddenRequestColumns) != 2 || saved.TimeRangeMode != "last_7_days" {
+	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || len(saved.HiddenRequestColumns) != 2 || saved.TimeRangeMode != "last_7_days" || saved.TokenDisplayMode != "B" {
 		t.Fatalf("saved preferences payload = %s, err = %v", response.Body, err)
 	}
 
@@ -852,18 +856,18 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		t.Fatalf("resource preferences read response = %+v body=%s", response, response.Body)
 	}
 	saved = DashboardPreferences{}
-	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 {
+	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || saved.TokenDisplayMode != "B" {
 		t.Fatalf("stored preferences payload = %s, err = %v", response.Body, err)
 	}
 
-	legacyQuery := url.Values{"save": {"1"}, "request_page_size": {"75"}, "dimension_page_size": {"100"}}
+	legacyQuery := url.Values{"save": {"1"}, "request_page_size": {"75"}, "dimension_page_size": {"100"}, "token_display_mode": {"m"}}
 	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, legacyQuery, nil, nil)
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("legacy resource preferences save response = %+v body=%s", response, response.Body)
 	}
 	response = call(http.MethodGet, runtime.routes.resourcePreferencesPath, nil, nil, nil)
 	saved = DashboardPreferences{}
-	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 75 || saved.DimensionPageSize != 100 {
+	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 75 || saved.DimensionPageSize != 100 || saved.TokenDisplayMode != "m" {
 		t.Fatalf("legacy stored preferences payload = %s, err = %v", response.Body, err)
 	}
 }

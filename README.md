@@ -24,7 +24,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 - 支持来源、认证账号、模型和请求结果筛选
 - 支持请求表和维度表分页、排序、列显示偏好持久化
 - 完整模式支持多选 API Key 并按并集筛选、设置显示标签，并隔离不同加密密钥代际
-- 支持 USD/CNY 汇率展示和总 Token 完整值、k、m、B（10 亿）单位切换
+- 支持 USD/CNY 汇率展示和总 Token 完整值、k、m、B（10 亿）单位切换，并持久化默认显示单位
 - 自动跟随 CLIProxyAPI Management Center 主题和浏览器语言
 - 内置英文、简体中文、繁体中文和俄文
 - 提供独立的普通模式和完整模式前端
@@ -88,7 +88,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 - API Key 加密密文、带密钥指纹、加密代际和用户设置的显示标签
 - 经过清理的认证账号显示信息
 - 模型价格、Context Tier、服务层级价格和同步元数据
-- 仪表盘时间范围、分页大小和隐藏列偏好
+- 仪表盘时间范围、分页大小、Token 显示单位和隐藏列偏好
 
 来源字段会进行凭据清理。疑似 API Key、Bearer Token 或其他凭据形式的来源不会按原值保存；插件会尽量回退到规范化的提供商服务地址。
 
@@ -171,7 +171,7 @@ plugins:
 
 重置统计入口只在完整模式可用，需要当前完整模式会话和显式确认。
 
-表格偏好和时间范围保存在插件数据库中。自定义时间按浏览器本地时区选择，再转换为 UTC RFC3339 时间戳请求。
+表格偏好、Token 显示单位和时间范围保存在插件数据库中。`token_display_mode` 支持 `full`、`k`、`m`、`B`，普通模式和完整模式共用该偏好。自定义时间按浏览器本地时区选择，再转换为 UTC RFC3339 时间戳请求。
 
 ### 模型价格与费用估算
 
@@ -341,7 +341,7 @@ The plugin does not store prompts, request bodies, or model response bodies. Whe
 - Source, model, and request-result filters
 - Persistent table pagination, sorting, and column visibility preferences
 - Full-mode API-key multi-selection with union filtering, display labels, and isolation between encryption-key generations
-- USD/CNY display and full, k, m, or B (one billion) total-token units
+- USD/CNY display and persistent full, k, m, or B (one billion) total-token units
 - Automatic Management Center theme and browser-language synchronization
 - Built-in English, Simplified Chinese, Traditional Chinese, and Russian locales
 - Separate normal-mode and full-mode frontends
@@ -466,7 +466,7 @@ Without an explicit `data_path`, the plugin resolves the database in this order:
 
 Both modes support preset or custom date-time ranges, source filtering, trend granularity and zoom, model drill-down, full, k, m, or B token units (`B = 1,000,000,000`), currency units, table columns and sorting, manual refresh, 15-second automatic refresh, and preset/custom table page sizes. Statistics reset is available only in full mode and requires the active session plus explicit confirmation.
 
-Table preferences and the selected range are stored in the plugin database. Custom browser-local times are converted to UTC RFC3339 timestamps for requests.
+Table preferences, the selected token display unit, and the selected range are stored in the plugin database. `token_display_mode` accepts `full`, `k`, `m`, or `B`, and normal and full modes share the preference. Custom browser-local times are converted to UTC RFC3339 timestamps for requests.
 
 ### Model Pricing and Cost Estimation
 
