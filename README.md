@@ -248,7 +248,7 @@ X-Full-Mode-Session: <session-token>
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/backup` | 下载数据库备份 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/restore` | 恢复数据库 |
 
-统计、逐请求和费用接口支持 `range`，或 `start` 与 `end`，以及 `source` 等筛选参数。完整模式还支持重复的 `api_key_ref`，多个值按并集筛选；逐请求接口另支持 `offset`、`limit`、`model` 和 `result`。`/stats/groups` 另支持 `offset`、`limit`、`sort`、`direction`、`model` 和重复的 `exclude_model`；每页最多 500 条。
+统计、逐请求和费用接口支持 `range`，或 `start` 与 `end`，以及 `source` 等筛选参数。完整模式还支持重复的 `api_key_ref`，多个值按并集筛选；逐请求接口另支持 `offset`、`limit`、`model` 和 `result`。`/stats/groups` 另支持 `offset`、`limit`、`sort`、`direction`、`model` 和重复的 `exclude_model`；每页最多 500 条。统计和维度统计中的 `Groups` 行不按失败状态拆分：同一 provider、executor、model、alias、source、API key、auth type、service tier 和 reasoning effort 只有一行；`failed`/`failure_status` 在这些行中恒为 `false`/`0`，失败次数由 `failed_requests` 承载，逐请求状态保留在 `/requests`。
 
 重置请求正文：
 
@@ -537,7 +537,7 @@ Management API routes:
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/backup` | Download a database backup |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/restore` | Restore the database |
 
-Statistics, request, and cost resources accept `range`, or `start` and `end`, plus filters such as `source`. Full mode also accepts repeated `api_key_ref` values and applies their union. The request resource additionally accepts `offset`, `limit`, `model`, and `result`. `/stats/groups` additionally accepts `offset`, `limit`, `sort`, `direction`, `model`, and repeated `exclude_model`; pages are limited to 500 rows.
+Statistics, request, and cost resources accept `range`, or `start` and `end`, plus filters such as `source`. Full mode also accepts repeated `api_key_ref` values and applies their union. The request resource additionally accepts `offset`, `limit`, `model`, and `result`. `/stats/groups` additionally accepts `offset`, `limit`, `sort`, `direction`, `model`, and repeated `exclude_model`; pages are limited to 500 rows. `Groups` rows in statistics and dimension statistics do not split by failure state: each provider, executor, model, alias, source, API key, auth type, service tier, and reasoning-effort combination has one row; `failed`/`failure_status` are always `false`/`0` in those rows, failures are counted in `failed_requests`, and per-request status remains available from `/requests`.
 
 Reset body:
 
