@@ -18,6 +18,7 @@ type normalizedUsage struct {
 	TTFTNS      uint64
 	Counters    Counters
 	authIndex   string
+	baseURL     string
 }
 
 func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
@@ -59,13 +60,14 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 	executorType := normalizeDimension(firstString(root, "ExecutorType", "executor_type"))
 	authType := normalizeDimension(firstString(root, "AuthType", "auth_type"))
 	apiKey := firstString(root, "APIKey", "api_key")
+	baseURL := sanitizeServiceURL(firstString(root, "BaseURL", "base_url"))
 	return normalizedUsage{
 		Dimensions: Dimensions{
 			Provider:        provider,
 			ExecutorType:    executorType,
 			Model:           normalizeDimension(firstString(root, "Model", "model")),
 			Alias:           normalizeDimension(firstString(root, "Alias", "alias")),
-			Source:          safeUsageSource(firstString(root, "Source", "source"), apiKey, provider, executorType, authType),
+			Source:          safeUsageSource(firstString(root, "Source", "source"), apiKey, provider, executorType, authType, baseURL),
 			APIKey:          normalizeDimension(apiKey),
 			AuthType:        authType,
 			ServiceTier:     normalizeDimension(firstString(root, "ServiceTier", "service_tier")),
@@ -77,6 +79,7 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 		LatencyNS:   positiveDurationNS(root, "Latency", "latency", "latency_ns"),
 		TTFTNS:      positiveDurationNS(root, "TTFT", "ttft", "ttft_ns"),
 		authIndex:   strings.TrimSpace(firstString(root, "AuthIndex", "auth_index")),
+		baseURL:     baseURL,
 		Counters: Counters{
 			Requests:            1,
 			FailedRequests:      boolCount(failed),
@@ -91,17 +94,20 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 	}, nil
 }
 
-func safeUsageSource(rawSource, apiKey, provider, executorType, authType string) string {
+func safeUsageSource(rawSource, apiKey, provider, executorType, authType, baseURL string) string {
 	source := strings.TrimSpace(rawSource)
 	if safeURL := sanitizeServiceURL(source); safeURL != "" {
 		return normalizeDimension(safeURL)
 	}
 
 	// CLIProxyAPI currently uses the selected upstream API key itself as Source
-	// for API-key credentials. Never persist that value. UsageRecord does not
-	// expose the configured base_url, so use the provider's public service URL
-	// when it is known and a non-secret provider identifier otherwise.
+	// for API-key credentials. Never persist that value. When the host exposes
+	// the configured base_url, prefer it over the provider's public service URL
+	// so relays and custom endpoints stay distinguishable.
 	if isAPIKeyAuth(authType) || sameSecret(source, apiKey) || looksLikeCredential(source) {
+		if safeURL := sanitizeServiceURL(baseURL); safeURL != "" {
+			return normalizeDimension(safeURL)
+		}
 		return normalizeDimension(providerServiceAddress(provider, executorType))
 	}
 	return normalizeDimension(source)
@@ -112,7 +118,7 @@ func canonicalUsageSource(dimensions Dimensions) string {
 }
 
 func canonicalUsageSourceWithIdentity(dimensions Dimensions, authProvider, authAccount string) string {
-	source := safeUsageSource(dimensions.Source, "", dimensions.Provider, dimensions.ExecutorType, dimensions.AuthType)
+	source := safeUsageSource(dimensions.Source, "", dimensions.Provider, dimensions.ExecutorType, dimensions.AuthType, "")
 	if provider, account := displayAuthProvider(authProvider), safeAuthAccount(authAccount); provider != "" && account != "" {
 		return normalizeDimension(provider + "-" + account)
 	}

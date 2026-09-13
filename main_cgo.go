@@ -230,6 +230,7 @@ func hostRuntimeAuthLookup(authIndex string) (plugin.AuthRuntimeMetadata, error)
 		AccountType: responseData.Auth.AccountType,
 		Account:     responseData.Auth.Account,
 		Label:       responseData.Auth.Label,
+		BaseURL:     responseData.Auth.BaseURL,
 	}, nil
 }
 
