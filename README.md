@@ -90,7 +90,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 - 模型价格、Context Tier、服务层级价格和同步元数据
 - 仪表盘时间范围、分页大小、Token 显示单位和隐藏列偏好
 
-来源字段会进行凭据清理。疑似 API Key、Bearer Token 或其他凭据形式的来源不会按原值保存；插件会尽量回退到规范化的提供商服务地址。
+来源字段会进行凭据清理。疑似 API Key、Bearer Token 或其他凭据形式的来源不会按原值保存；插件会优先使用宿主提供的凭据配置地址 `base_url`（清除其中的用户凭据与查询参数后展示），其次回退到规范化的提供商服务地址。CLIProxyAPI v7.2.158 起的宿主会在用量记录和运行时凭据信息中传递 `base_url`；旧版宿主不提供该字段，行为与之前一致。
 
 API Key 跟踪默认使用公开密钥 `123456`。该默认值只能提供误显示防护，任何获得数据库或备份的人都可以使用它解密其中保存的 API Key；完整模式会持续显示安全警告。生产环境应配置至少 32 字节的自定义 `api_key_secret`。成功应用自定义密钥后，警告会在重新打开完整模式、手动刷新或下一次 15 秒自动刷新时消失。
 
@@ -248,7 +248,7 @@ X-Full-Mode-Session: <session-token>
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/backup` | 下载数据库备份 |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/restore` | 恢复数据库 |
 
-统计、逐请求和费用接口支持 `range`，或 `start` 与 `end`，以及 `source` 等筛选参数。完整模式还支持重复的 `api_key_ref`，多个值按并集筛选；逐请求接口另支持 `offset`、`limit`、`model` 和 `result`。`/stats/groups` 另支持 `offset`、`limit`、`sort`、`direction`、`model` 和重复的 `exclude_model`；每页最多 500 条。
+统计、逐请求和费用接口支持 `range`，或 `start` 与 `end`，以及 `source` 等筛选参数。完整模式还支持重复的 `api_key_ref`，多个值按并集筛选；逐请求接口另支持 `offset`、`limit`、`model` 和 `result`。`/stats/groups` 另支持 `offset`、`limit`、`sort`、`direction`、`model` 和重复的 `exclude_model`；每页最多 500 条。统计和维度统计中的 `Groups` 行不按失败状态拆分：同一 provider、executor、model、alias、source、API key、auth type、service tier 和 reasoning effort 只有一行；`failed`/`failure_status` 在这些行中恒为 `false`/`0`，失败次数由 `failed_requests` 承载，逐请求状态保留在 `/requests`。
 
 重置请求正文：
 
@@ -537,7 +537,7 @@ Management API routes:
 | `GET` | `/v0/management/plugins/cap-token-usage-tracker/backup` | Download a database backup |
 | `POST` | `/v0/management/plugins/cap-token-usage-tracker/restore` | Restore the database |
 
-Statistics, request, and cost resources accept `range`, or `start` and `end`, plus filters such as `source`. Full mode also accepts repeated `api_key_ref` values and applies their union. The request resource additionally accepts `offset`, `limit`, `model`, and `result`. `/stats/groups` additionally accepts `offset`, `limit`, `sort`, `direction`, `model`, and repeated `exclude_model`; pages are limited to 500 rows.
+Statistics, request, and cost resources accept `range`, or `start` and `end`, plus filters such as `source`. Full mode also accepts repeated `api_key_ref` values and applies their union. The request resource additionally accepts `offset`, `limit`, `model`, and `result`. `/stats/groups` additionally accepts `offset`, `limit`, `sort`, `direction`, `model`, and repeated `exclude_model`; pages are limited to 500 rows. `Groups` rows in statistics and dimension statistics do not split by failure state: each provider, executor, model, alias, source, API key, auth type, service tier, and reasoning-effort combination has one row; `failed`/`failure_status` are always `false`/`0` in those rows, failures are counted in `failed_requests`, and per-request status remains available from `/requests`.
 
 Reset body:
 

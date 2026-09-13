@@ -31,6 +31,16 @@ type Dimensions struct {
 	FailureStatus    int    `json:"failure_status"`
 }
 
+// groupIdentity strips failure-only fields so rows that differ only by
+// Failed/FailureStatus merge into one dimension row. Failure counts stay
+// visible through Counters.FailedRequests, and per-request failure details
+// remain available on the /requests endpoint.
+func groupIdentity(dimensions Dimensions) Dimensions {
+	dimensions.Failed = false
+	dimensions.FailureStatus = 0
+	return dimensions
+}
+
 // usageFilter scopes every analytics surface to the same persisted dimensions.
 // Empty fields intentionally mean no restriction, which preserves legacy callers.
 type usageFilter struct {
@@ -357,9 +367,10 @@ func buildStatsForRangeWithFilter(data map[aggregateKey]Counters, since, lastUse
 		if !filter.matches(dimensions) {
 			continue
 		}
-		group := groups[dimensions]
+		identity := groupIdentity(dimensions)
+		group := groups[identity]
 		group.add(counters)
-		groups[dimensions] = group
+		groups[identity] = group
 
 		point := series[key.Hour]
 		point.add(counters)
@@ -702,9 +713,10 @@ func buildGroupsForRange(data map[aggregateKey]Counters, queryRange usageRange, 
 		if !filter.matches(dimensions) {
 			continue
 		}
-		group := groups[dimensions]
+		identity := groupIdentity(dimensions)
+		group := groups[identity]
 		group.add(counters)
-		groups[dimensions] = group
+		groups[identity] = group
 	}
 	items := make([]GroupStats, 0, len(groups))
 	for dimensions, counters := range groups {

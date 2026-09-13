@@ -115,6 +115,58 @@ func TestDecodeUsageReplacesAPIKeySourceWithProviderServiceAddress(t *testing.T)
 	}
 }
 
+func TestDecodeUsagePrefersConfiguredBaseURL(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	apiKey := "sk-user-secret-1234567890"
+	record := pluginapi.UsageRecord{
+		Provider:     "openai",
+		ExecutorType: "OpenAICompatExecutor",
+		APIKey:       apiKey,
+		AuthType:     "apikey",
+		Source:       apiKey,
+		BaseURL:      "https://user:secret@relay.example.com/v1/?token=leaky#frag",
+		RequestedAt:  now,
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"BaseURL"`) {
+		t.Fatalf("SDK record should serialize the field as %q: %s", "BaseURL", raw)
+	}
+	usage, err := decodeUsage(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Dimensions.Source != "https://relay.example.com/v1" {
+		t.Fatalf("source = %q, want sanitized configured base URL", usage.Dimensions.Source)
+	}
+	if usage.baseURL != "https://relay.example.com/v1" {
+		t.Fatalf("transient base URL = %q", usage.baseURL)
+	}
+	encoded, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"user:secret", "token=leaky"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("base URL credential leaked: %s", encoded)
+		}
+	}
+}
+
+func TestDecodeUsageAcceptsSnakeCaseBaseURL(t *testing.T) {
+	now := time.Date(2026, 9, 13, 12, 0, 0, 0, time.UTC)
+	raw := []byte(`{"provider":"xai","api_key":"xai-secret-1234567890","auth_type":"apikey","source":"xai-secret-1234567890","base_url":"https://relay.example.com/xai"}`)
+	usage, err := decodeUsage(raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Dimensions.Source != "https://relay.example.com/xai" {
+		t.Fatalf("source = %q, want snake_case base_url honored", usage.Dimensions.Source)
+	}
+}
+
 func TestSafeUsageSourceSanitizesURLAndCredentials(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -123,6 +175,7 @@ func TestSafeUsageSourceSanitizesURLAndCredentials(t *testing.T) {
 		provider     string
 		executorType string
 		authType     string
+		baseURL      string
 		want         string
 	}{
 		{name: "url removes credentials and request metadata", source: "https://user:secret@example.com/v1/?api_key=secret#fragment", want: "https://example.com/v1"},
@@ -131,10 +184,16 @@ func TestSafeUsageSourceSanitizesURLAndCredentials(t *testing.T) {
 		{name: "known credential prefix", source: "gsk_secret01234567890123456789", provider: "groq", want: "https://api.groq.com/openai/v1"},
 		{name: "safe integration source", source: "cli", provider: "openai", authType: "oauth", want: "cli"},
 		{name: "unknown provider fallback", source: "secret", provider: "custom-provider", authType: "apikey", want: "custom-provider"},
+		{name: "base url preferred over provider service address", source: "plain-secret-without-known-prefix", provider: "xai", authType: "api_key", baseURL: "https://relay.example.com/v1", want: "https://relay.example.com/v1"},
+		{name: "base url used when source matches api key without auth type", source: "opaque", apiKey: "opaque", provider: "openai", baseURL: "https://relay.example.com/openai", want: "https://relay.example.com/openai"},
+		{name: "base url used for credential-looking source", source: "gsk_secret01234567890123456789", provider: "groq", baseURL: "https://relay.example.com/groq", want: "https://relay.example.com/groq"},
+		{name: "base url ignored for non-credential source", source: "cli", provider: "openai", authType: "oauth", baseURL: "https://relay.example.com/v1", want: "cli"},
+		{name: "explicit source url still wins over base url", source: "https://direct.example.com/v1", provider: "openai", authType: "api_key", baseURL: "https://relay.example.com/v1", want: "https://direct.example.com/v1"},
+		{name: "invalid base url falls back to provider service address", source: "opaque", apiKey: "opaque", provider: "openai", authType: "apikey", baseURL: "not a url", want: "https://api.openai.com/v1"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := safeUsageSource(test.source, test.apiKey, test.provider, test.executorType, test.authType); got != test.want {
+			if got := safeUsageSource(test.source, test.apiKey, test.provider, test.executorType, test.authType, test.baseURL); got != test.want {
 				t.Fatalf("safeUsageSource() = %q, want %q", got, test.want)
 			}
 		})

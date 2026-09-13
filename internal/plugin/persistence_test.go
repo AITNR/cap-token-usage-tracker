@@ -114,6 +114,100 @@ func TestExactCustomStatsUseRequestBoundariesAndSourceFilter(t *testing.T) {
 	}
 }
 
+func TestGroupsPageMergesFailedRecordsAcrossStatusCodes(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	now := nowUTC().UTC()
+	start := now.Add(-time.Minute).Add(1500 * time.Millisecond)
+	end := now.Add(-100 * time.Millisecond)
+	base := Dimensions{Provider: "p", Model: "m", Source: "codex"}
+	usages := []normalizedUsage{
+		{Dimensions: base, RequestedAt: start.Add(100 * time.Millisecond), Counters: Counters{Requests: 1, InputTokens: 2, TotalTokens: 2}},
+		{Dimensions: base, RequestedAt: start.Add(200 * time.Millisecond), Counters: Counters{Requests: 1, InputTokens: 3, TotalTokens: 3}},
+		{Dimensions: func() Dimensions { d := base; d.Failed, d.FailureStatus = true, 500; return d }(), RequestedAt: start.Add(300 * time.Millisecond), Counters: Counters{Requests: 1, FailedRequests: 1}},
+		{Dimensions: func() Dimensions { d := base; d.Failed, d.FailureStatus = true, 429; return d }(), RequestedAt: start.Add(400 * time.Millisecond), Counters: Counters{Requests: 1, FailedRequests: 1}},
+		{Dimensions: func() Dimensions { d := base; d.Failed = true; return d }(), RequestedAt: start.Add(500 * time.Millisecond), Counters: Counters{Requests: 1, FailedRequests: 1}},
+	}
+	for _, usage := range usages {
+		if err := store.Record(usage); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	regularRange := usageRange{Name: "24h", Start: now.Add(-time.Hour)}
+	regularGroups, err := store.queryGroupsByFilter(regularRange, usageFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if regularGroups.Total != 1 || len(regularGroups.Items) != 1 ||
+		regularGroups.Items[0].Requests != 5 || regularGroups.Items[0].FailedRequests != 3 ||
+		regularGroups.Items[0].Failed || regularGroups.Items[0].FailureStatus != 0 ||
+		regularGroups.Items[0].TotalTokens != 5 {
+		t.Fatalf("regular groups page = %+v", regularGroups)
+	}
+
+	exactRange := usageRange{Name: "custom", Start: start, End: end}
+	exactStats, err := store.queryStatsByFilter(exactRange, usageFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exactStats.Groups) != 1 || exactStats.Groups[0].Requests != 5 ||
+		exactStats.Groups[0].FailedRequests != 3 || exactStats.Groups[0].Failed ||
+		exactStats.Groups[0].FailureStatus != 0 || exactStats.Groups[0].TotalTokens != 5 {
+		t.Fatalf("exact stats groups = %+v", exactStats.Groups)
+	}
+	exactGroups, err := store.queryGroupsByFilter(exactRange, usageFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exactGroups.Total != 1 || len(exactGroups.Items) != 1 || exactGroups.Items[0].Requests != 5 ||
+		exactGroups.Items[0].FailedRequests != 3 || exactGroups.Items[0].TotalTokens != 5 {
+		t.Fatalf("exact groups page = %+v", exactGroups)
+	}
+
+	requests, err := store.queryRequestPageByFilter(exactRange, 0, 100, "", usageFilter{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Total != 5 || len(requests.Items) != 5 {
+		t.Fatalf("request details total = %d, items = %d", requests.Total, len(requests.Items))
+	}
+	failedCount, status500Count, status429Count := 0, 0, 0
+	results := make(map[string]int)
+	for _, item := range requests.Items {
+		results[item.Result]++
+		if item.Failed {
+			failedCount++
+			if item.FailureStatus == 500 {
+				status500Count++
+			}
+			if item.FailureStatus == 429 {
+				status429Count++
+			}
+		}
+	}
+	if failedCount != 3 || status500Count != 1 || status429Count != 1 ||
+		results["成功"] != 2 || results["失败 (HTTP 500)"] != 1 ||
+		results["失败 (HTTP 429)"] != 1 || results["失败"] != 1 {
+		t.Fatalf("request failure details = total %d, 500 %d, 429 %d, results %+v", failedCount, status500Count, status429Count, results)
+	}
+
+	failed, err := store.queryRequestPageByFilter(exactRange, 0, 100, "", usageFilter{}, "failed")
+	if err != nil || failed.Total != 3 || len(failed.Items) != 3 {
+		t.Fatalf("failed request filter = %+v, %v", failed, err)
+	}
+	success, err := store.queryRequestPageByFilter(exactRange, 0, 100, "", usageFilter{}, "success")
+	if err != nil || success.Total != 2 || len(success.Items) != 2 {
+		t.Fatalf("success request filter = %+v, %v", success, err)
+	}
+}
+
 func TestSourceFilterAppliesToStatsRequestsAndCosts(t *testing.T) {
 	config := testConfig(t)
 	config.SyncOnRecord = true

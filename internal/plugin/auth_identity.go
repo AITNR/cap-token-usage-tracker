@@ -22,6 +22,7 @@ type authRuntimeMetadata struct {
 	AccountType string
 	Account     string
 	Label       string
+	BaseURL     string
 }
 
 type authRuntimeLookup func(authIndex string) (authRuntimeMetadata, error)
@@ -48,6 +49,7 @@ type authIdentityFlight struct {
 type usageIdentity struct {
 	Provider string
 	Account  string
+	BaseURL  string
 }
 
 func newAuthIdentityResolver(lookup authRuntimeLookup) *authIdentityResolver {
@@ -115,6 +117,7 @@ func sanitizeAuthRuntimeMetadata(metadata authRuntimeMetadata) authRuntimeMetada
 		metadata.Account = ""
 	}
 	metadata.Label = safeAuthLabel(metadata.Label)
+	metadata.BaseURL = sanitizeServiceURL(metadata.BaseURL)
 	return metadata
 }
 
@@ -130,7 +133,7 @@ func identityFromRuntimeMetadata(metadata authRuntimeMetadata, usage Dimensions)
 	if account == "" {
 		account = safeAuthAccount(sanitizeDimensionsSource(usage).Source)
 	}
-	return usageIdentity{Provider: provider, Account: account}
+	return usageIdentity{Provider: provider, Account: account, BaseURL: metadata.BaseURL}
 }
 
 func displayAuthProvider(value string) string {
@@ -193,6 +196,16 @@ func (r *pluginRuntime) resolveUsageIdentity(usage *normalizedUsage) {
 	identity, err := resolver.resolve(usage.authIndex, usage.Dimensions)
 	if err != nil {
 		return
+	}
+	// API-key credentials keep the bare sanitized base_url as Source. Composite
+	// Provider-Account labels would be stripped again on every read because
+	// safeUsageSource re-runs on persisted dimensions and rewrites non-URL
+	// API-key sources to the hardcoded provider service address.
+	if isAPIKeyAuth(usage.Dimensions.AuthType) {
+		if baseURL := firstNonEmptyIdentity(usage.baseURL, identity.BaseURL); baseURL != "" {
+			usage.Dimensions.Source = normalizeDimension(baseURL)
+			return
+		}
 	}
 	usage.Dimensions.Source = canonicalUsageSourceWithIdentity(usage.Dimensions, identity.Provider, identity.Account)
 }

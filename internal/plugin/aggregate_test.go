@@ -137,6 +137,38 @@ func TestBuildStatsForRangeSeparatesAndFiltersSources(t *testing.T) {
 	}
 }
 
+func TestBuildStatsMergesFailureDimensionsIntoSingleGroup(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 30, 0, 0, time.UTC)
+	hour := now.Truncate(time.Hour).Unix()
+	base := Dimensions{Provider: "p", Model: "m"}
+	data := map[aggregateKey]Counters{
+		{Hour: hour, Dimensions: base}: {Requests: 2, InputTokens: 8, OutputTokens: 4, TotalTokens: 12},
+		{Hour: hour, Dimensions: func() Dimensions { d := base; d.Failed, d.FailureStatus = true, 500; return d }()}: {Requests: 1, FailedRequests: 1},
+		{Hour: hour, Dimensions: func() Dimensions { d := base; d.Failed, d.FailureStatus = true, 429; return d }()}: {Requests: 1, FailedRequests: 1},
+		{Hour: hour, Dimensions: func() Dimensions { d := base; d.Failed = true; return d }()}:                       {Requests: 1, FailedRequests: 1},
+	}
+	queryRange := usageRange{Name: "retention"}
+
+	stats := buildStatsForRangeWithFilter(data, now.Add(-time.Hour), now, queryRange, usageFilter{}, now, nil)
+	if len(stats.Groups) != 1 {
+		t.Fatalf("stats group count = %d, groups = %+v", len(stats.Groups), stats.Groups)
+	}
+	group := stats.Groups[0]
+	if group.Requests != 5 || group.FailedRequests != 3 || group.Failed || group.FailureStatus != 0 ||
+		group.InputTokens != 8 || group.OutputTokens != 4 || group.TotalTokens != 12 {
+		t.Fatalf("merged stats group = %+v", group)
+	}
+
+	page := buildGroupsForRange(data, queryRange, usageFilter{}, now, nil)
+	if page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("groups page = %+v", page)
+	}
+	item := page.Items[0]
+	if item.Requests != 5 || item.FailedRequests != 3 || item.Failed || item.FailureStatus != 0 || item.TotalTokens != 12 {
+		t.Fatalf("merged groups page item = %+v", item)
+	}
+}
+
 func TestBuildStatsStableDimensionOrdering(t *testing.T) {
 	now := time.Date(2026, 7, 14, 12, 30, 0, 0, time.UTC)
 	hour := now.Truncate(time.Hour).Unix()
