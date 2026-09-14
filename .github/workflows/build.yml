@@ -146,7 +146,7 @@ jobs:
           $env:Path = "C:\msys64\mingw64\bin;$env:Path"
           $version = "${{ needs.prepare.outputs.version }}"
           go build -buildmode=c-shared -trimpath -buildvcs=false `
-            -ldflags="-s -w -X main.version=$version" `
+            -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=$version" `
             -o "${{ env.PLUGIN_ID }}.dll" .
 
       - name: Create zip
@@ -181,7 +181,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
-            -ldflags="-s -w -X main.version=${VERSION}" \
+            -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=${VERSION}" \
             -o "${{ env.PLUGIN_ID }}.so" .
 
       - name: Create zip
@@ -215,7 +215,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
-            -ldflags="-s -w -X main.version=${VERSION}" \
+            -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=${VERSION}" \
             -o "${{ env.PLUGIN_ID }}.dylib" .
 
       - name: Verify .dylib and default data path
@@ -252,7 +252,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
-            -ldflags="-s -w -X main.version=${VERSION}" \
+            -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=${VERSION}" \
             -o "${{ env.PLUGIN_ID }}.dylib" .
 
       - name: Verify .dylib and default data path
@@ -295,7 +295,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           go build -buildmode=c-shared -trimpath -buildvcs=false \
-            -ldflags="-s -w -X main.version=${VERSION}" \
+            -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=${VERSION}" \
             -o "${{ env.PLUGIN_ID }}.so" .
 
       - name: Create zip

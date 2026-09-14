@@ -5,6 +5,17 @@ import (
 	"testing"
 )
 
+func TestPluginRegistrationReportsBuildVersion(t *testing.T) {
+	oldVersion := version
+	version = "test-version"
+	defer func() { version = oldVersion }()
+
+	registration := pluginRegistration(1)
+	if registration.Metadata.Version != "test-version" {
+		t.Fatalf("metadata version = %q, want test-version", registration.Metadata.Version)
+	}
+}
+
 func TestDecodeLifecycleAcceptsConfigYAMLRepresentations(t *testing.T) {
 	yamlConfig := []byte("retention_days: 45\nsync_on_record: true\n")
 	standard, err := json.Marshal(lifecycleRequest{ConfigYAML: yamlConfig, SchemaVersion: 1})

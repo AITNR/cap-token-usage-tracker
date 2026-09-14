@@ -271,22 +271,22 @@ X-Confirm-Restore: replace
 # Linux amd64
 CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.so .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.so .
 
 # Linux arm64
 CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.so .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.so .
 
 # macOS amd64 (Intel)
 CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.dylib .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.dylib .
 
 # macOS arm64
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.dylib .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.dylib .
 ```
 
 Windows PowerShell：
@@ -296,7 +296,7 @@ $env:GOOS = "windows"
 $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -trimpath -buildvcs=false `
-  -ldflags="-s -w -X main.version=1.0.0" `
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" `
   -o dist/cap-token-usage-tracker.dll .
 ```
 
@@ -560,22 +560,22 @@ Go 1.26+ and `CGO_ENABLED=1` are required. Windows amd64 requires MinGW-w64; Lin
 # Linux amd64
 CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.so .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.so .
 
 # Linux arm64
 CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.so .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.so .
 
 # macOS amd64 (Intel)
 CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.dylib .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.dylib .
 
 # macOS arm64
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
   go build -buildmode=c-shared -trimpath -buildvcs=false \
-  -ldflags="-s -w -X main.version=1.0.0" -o cap-token-usage-tracker.dylib .
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" -o cap-token-usage-tracker.dylib .
 ```
 
 Windows PowerShell:
@@ -585,7 +585,7 @@ $env:GOOS = "windows"
 $env:GOARCH = "amd64"
 $env:CGO_ENABLED = "1"
 go build -buildmode=c-shared -trimpath -buildvcs=false `
-  -ldflags="-s -w -X main.version=1.0.0" `
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=1.0.0" `
   -o dist/cap-token-usage-tracker.dll .
 ```
 
