@@ -19,6 +19,10 @@ type normalizedUsage struct {
 	Counters    Counters
 	authIndex   string
 	baseURL     string
+
+	// explicitTotalTokens records whether TotalTokens was supplied by the
+	// upstream record rather than filled in by decodeUsage.
+	explicitTotalTokens bool
 }
 
 func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
@@ -44,6 +48,7 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 	cacheReadTokens := firstInt64(detail, "CacheReadTokens", "cache_read_tokens")
 	cacheCreationTokens := firstInt64(detail, "CacheCreationTokens", "cache_creation_tokens")
 	total := firstInt64(detail, "TotalTokens", "total_tokens")
+	explicitTotalTokens := total > 0
 	if total <= 0 {
 		// The SDK always serializes TotalTokens, so providers that leave it at
 		// zero still produce a present JSON field. Match the raw-record fallback
@@ -75,11 +80,12 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 			Failed:          failed,
 			FailureStatus:   clampStatus(firstInt64(failure, "StatusCode", "status_code")),
 		},
-		RequestedAt: requestedAt,
-		LatencyNS:   positiveDurationNS(root, "Latency", "latency", "latency_ns"),
-		TTFTNS:      positiveDurationNS(root, "TTFT", "ttft", "ttft_ns"),
-		authIndex:   strings.TrimSpace(firstString(root, "AuthIndex", "auth_index")),
-		baseURL:     baseURL,
+		RequestedAt:         requestedAt,
+		LatencyNS:           positiveDurationNS(root, "Latency", "latency", "latency_ns"),
+		TTFTNS:              positiveDurationNS(root, "TTFT", "ttft", "ttft_ns"),
+		authIndex:           strings.TrimSpace(firstString(root, "AuthIndex", "auth_index")),
+		baseURL:             baseURL,
+		explicitTotalTokens: explicitTotalTokens,
 		Counters: Counters{
 			Requests:            1,
 			FailedRequests:      boolCount(failed),

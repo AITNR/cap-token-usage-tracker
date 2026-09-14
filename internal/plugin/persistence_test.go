@@ -1487,3 +1487,102 @@ func TestRecoverInterruptedRestoreDropsRollbackWhenLiveExists(t *testing.T) {
 		t.Fatalf("stale rollback file still present: %v", err)
 	}
 }
+
+func TestQueryRequestsRecalculatesStoredSeparateReasoningTPS(t *testing.T) {
+	config := testConfig(t)
+	config.SyncOnRecord = true
+	now := time.Now().UTC().Add(-time.Minute).Truncate(time.Millisecond)
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := normalizedUsage{
+		Dimensions:  Dimensions{Provider: "gemini", Model: "gemini-thinking"},
+		RequestedAt: now,
+		LatencyNS:   uint64(2250 * time.Millisecond),
+		TTFTNS:      uint64(250 * time.Millisecond),
+		Counters: Counters{
+			Requests:        1,
+			InputTokens:     100,
+			OutputTokens:    50,
+			ReasoningTokens: 600,
+			TotalTokens:     750,
+		},
+	}
+	if err := store.Record(usage); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a record persisted by the pre-fix implementation.
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type requestUpdate struct {
+		key   []byte
+		value []byte
+	}
+	var updates []requestUpdate
+	if err := db.Update(func(tx *bolt.Tx) error {
+		requests := tx.Bucket(requestsBucket)
+		if requests == nil {
+			return errors.New("requests bucket is missing")
+		}
+		return requests.ForEach(func(key, value []byte) error {
+			var item RequestDetail
+			if err := json.Unmarshal(value, &item); err != nil {
+				return err
+			}
+			if item.Model != usage.Dimensions.Model {
+				return nil
+			}
+			item.TPS = 25
+			encoded, err := json.Marshal(item)
+			if err != nil {
+				return err
+			}
+			updates = append(updates, requestUpdate{key: append([]byte(nil), key...), value: encoded})
+			return nil
+		})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 {
+		_ = db.Close()
+		t.Fatalf("stored request updates = %d, want 1", len(updates))
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		requests := tx.Bucket(requestsBucket)
+		for _, update := range updates {
+			if err := requests.Put(update.key, update.value); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	page, err := store.QueryRequests("24h", 0, 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 {
+		t.Fatalf("unexpected request page: %+v", page)
+	}
+	item := page.Items[0]
+	if item.GenerationNS != uint64(2*time.Second) || item.TPS != 325 {
+		t.Fatalf("stored request TPS was not recalculated: %+v", item)
+	}
+}

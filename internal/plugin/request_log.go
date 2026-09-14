@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -48,14 +49,86 @@ func (p *RequestPage) Reveal(decrypt DecryptFunc) {
 	}
 }
 
+type reasoningTokenAccounting uint8
+
+const (
+	reasoningAccountingUnknown reasoningTokenAccounting = iota
+	reasoningAccountingIncludedInOutput
+	reasoningAccountingSeparateFromOutput
+)
+
+// reasoningAccountingForDimensions mirrors the provider semantics used by
+// CLIProxyAPI to normalize token accounting. It only determines whether the
+// reasoning bucket is already included in the output bucket.
+func reasoningAccountingForDimensions(dimensions Dimensions) reasoningTokenAccounting {
+	provider := strings.ToLower(strings.TrimSpace(dimensions.Provider))
+	executor := strings.ToLower(strings.TrimSpace(dimensions.ExecutorType))
+	value := provider + " " + executor
+	if value == " " || value == "unknown" || value == "unknown unknown" {
+		return reasoningAccountingUnknown
+	}
+	if executor == "openaicompatexecutor" ||
+		provider == "openai-compatibility" ||
+		strings.HasPrefix(provider, "openai-compatible-") {
+		return reasoningAccountingIncludedInOutput
+	}
+	if strings.Contains(value, "claude") || strings.Contains(value, "anthropic") {
+		return reasoningAccountingIncludedInOutput
+	}
+	for _, marker := range []string{"gemini", "aistudio", "antigravity", "vertex", "interaction"} {
+		if strings.Contains(value, marker) {
+			return reasoningAccountingSeparateFromOutput
+		}
+	}
+	for _, marker := range []string{"openai", "codex", "xai", "grok", "kimi", "qwen", "deepseek", "openrouter"} {
+		if strings.Contains(value, marker) {
+			return reasoningAccountingIncludedInOutput
+		}
+	}
+	return reasoningAccountingUnknown
+}
+
+// effectiveOutputTokensForTPS returns the token numerator for TPS. Known
+// protocol semantics take precedence. For unknown providers, only unambiguous
+// arithmetic evidence may add reasoning tokens; otherwise the historical
+// output-only numerator is retained.
+func effectiveOutputTokensForTPS(dimensions Dimensions, counters Counters, explicitTotal bool) uint64 {
+	if counters.ReasoningTokens == 0 {
+		return counters.OutputTokens
+	}
+	switch reasoningAccountingForDimensions(dimensions) {
+	case reasoningAccountingIncludedInOutput:
+		return counters.OutputTokens
+	case reasoningAccountingSeparateFromOutput:
+		return saturatingAdd(counters.OutputTokens, counters.ReasoningTokens)
+	}
+
+	if counters.ReasoningTokens > counters.OutputTokens {
+		return saturatingAdd(counters.OutputTokens, counters.ReasoningTokens)
+	}
+	if !explicitTotal {
+		return counters.OutputTokens
+	}
+	inputAndOutput := saturatingAdd(counters.InputTokens, counters.OutputTokens)
+	inputOutputAndReasoning := saturatingAdd(inputAndOutput, counters.ReasoningTokens)
+	if counters.TotalTokens == inputOutputAndReasoning {
+		return saturatingAdd(counters.OutputTokens, counters.ReasoningTokens)
+	}
+	return counters.OutputTokens
+}
+
+func requestTPS(item RequestDetail, explicitTotal bool) float64 {
+	if item.GenerationNS == 0 {
+		return 0
+	}
+	outputTokens := effectiveOutputTokensForTPS(item.Dimensions, item.Counters, explicitTotal)
+	return float64(outputTokens) / (float64(item.GenerationNS) / float64(time.Second))
+}
+
 func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail {
 	generationNS := usage.LatencyNS
 	if usage.TTFTNS > 0 && usage.LatencyNS >= usage.TTFTNS {
 		generationNS = usage.LatencyNS - usage.TTFTNS
-	}
-	var tps float64
-	if generationNS > 0 {
-		tps = float64(usage.Counters.OutputTokens) / (float64(generationNS) / float64(time.Second))
 	}
 	result := "成功"
 	if usage.Dimensions.Failed {
@@ -64,7 +137,7 @@ func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail
 			result = fmt.Sprintf("失败 (HTTP %d)", usage.Dimensions.FailureStatus)
 		}
 	}
-	return RequestDetail{
+	item := RequestDetail{
 		Sequence:     sequence,
 		Time:         usage.RequestedAt.UTC(),
 		Dimensions:   usage.Dimensions,
@@ -73,7 +146,8 @@ func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail
 		LatencyNS:    usage.LatencyNS,
 		TTFTNS:       usage.TTFTNS,
 		GenerationNS: generationNS,
-		TPS:          tps,
 		CacheHit:     usage.Counters.CacheReadTokens > 0,
 	}
+	item.TPS = requestTPS(item, usage.explicitTotalTokens)
+	return item
 }
