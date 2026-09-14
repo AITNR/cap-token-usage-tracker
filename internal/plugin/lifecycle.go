@@ -12,6 +12,8 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+// version is set at build time with:
+// -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=<version>
 var version = "dev"
 
 // maxSupportedRPCSchema is intentionally independent from the SDK's latest

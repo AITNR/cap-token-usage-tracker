@@ -65,7 +65,7 @@ go build \
   -buildmode=c-shared \
   -trimpath \
   -buildvcs=false \
-  -ldflags="-s -w -X main.version=${VERSION}" \
+  -ldflags="-s -w -X github.com/AITNR/cap-token-usage-tracker/internal/plugin.version=${VERSION}" \
   -o "$RELEASE_ARTIFACT" \
   .
 
