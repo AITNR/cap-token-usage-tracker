@@ -2485,6 +2485,10 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 				return fmt.Errorf("decode request detail: %w", err)
 			}
 			item.Dimensions = sanitizeDimensionsSource(item.Dimensions)
+			// Stored records do not retain whether TotalTokens was explicit. Use
+			// the conservative unknown-provider path here; known protocol
+			// semantics still correct historical separate-reasoning records.
+			item.TPS = requestTPS(item, false)
 			if model != "" && !modelFilterMatches(model, item.Model) {
 				continue
 			}

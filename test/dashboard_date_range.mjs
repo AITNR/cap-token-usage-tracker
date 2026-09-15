@@ -106,7 +106,7 @@ const dashboardURL = `http://127.0.0.1:${address.port}${resourceBase}/dashboard`
 const browser = await chromium.launch({ executablePath: chromePath, headless: true });
 
 try {
-  const context = await browser.newContext({ timezoneId });
+  const context = await browser.newContext({ locale: 'zh-CN', timezoneId });
   const page = await context.newPage();
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error));
