@@ -177,6 +177,8 @@ plugins:
 
 模型价格入口只在完整模式显示。所有价格单位均为每 100 万 Token 的美元价格，支持 Input、Output、Cache Read、Cache Creation、Context Tier、Service Tier 独立价格及其 Context Tier，以及 `input_excludes_cache` 和 `input_includes_cache` 两种计费方式。所有价格为 0 的模型按免费模型处理。
 
+支持在模型的“峰谷定价”折叠区配置时区、星期和时间段（最多 32 个），按请求原始时间选价。未命中时使用基础或 Service Tier 价格；Context Tier 优先于时间价格。跨午夜归属起始日，时间区间包含开始、不包含结束。修改配置会重新估算历史费用。详见 [峰谷定价说明](docs/issue-78-time-of-use-pricing-plan.md)。
+
 价格可手工维护，也可从 models.dev 同步。同步先读取 CLIProxyAPI `/v1/models` 当前返回的模型，再根据提供商优先级、忽略后缀和显式模型映射匹配 models.dev。
 
 手工价格优先，不会被同步覆盖。价格簿使用 revision 防止并发覆盖。费用根据逐请求记录和匹配的价格规则计算；缺价请求会显示在价格覆盖率和缺价提示中，不会作为零成本混入已知费用。
