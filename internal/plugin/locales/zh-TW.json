@@ -160,6 +160,7 @@
   "table.ttft": "首字延遲",
   "table.generation": "生成時間",
   "table.tps": "TPS",
+  "table.tpsBuffered": "上游串流疑似緩衝，TPS 使用總延遲估算",
   "table.reasoningEffort": "思考強度",
   "table.input": "輸入",
   "table.output": "輸出",

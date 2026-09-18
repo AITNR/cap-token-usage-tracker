@@ -30,6 +30,52 @@ func TestRequestDetailForUsageSeparateReasoningTPS(t *testing.T) {
 	}
 }
 
+func TestRequestDetailForUsageBufferedSeparateReasoningTPS(t *testing.T) {
+	usage := normalizedUsage{
+		Dimensions:  Dimensions{Provider: "gemini", Model: "gemini-thinking"},
+		RequestedAt: time.Date(2026, 9, 17, 5, 10, 12, 0, time.UTC),
+		LatencyNS:   uint64(8600 * time.Millisecond),
+		TTFTNS:      uint64(7976 * time.Millisecond),
+		Counters: Counters{
+			Requests:        1,
+			InputTokens:     200000,
+			OutputTokens:    966,
+			ReasoningTokens: 721,
+			TotalTokens:     202687,
+		},
+	}
+	item := requestDetailForUsage(usage, 1)
+	if item.GenerationNS != uint64(624*time.Millisecond) {
+		t.Fatalf("generation time = %d, want %d", item.GenerationNS, 624*time.Millisecond)
+	}
+	wantTPS := 1687.0 / 8.6
+	if math.Abs(item.TPS-wantTPS) > 1e-9 {
+		t.Fatalf("TPS = %v, want %v", item.TPS, wantTPS)
+	}
+	if item.TPSBasis != "latency_buffered" {
+		t.Fatalf("TPS basis = %q, want latency_buffered", item.TPSBasis)
+	}
+}
+
+func TestRequestDetailForUsageDoesNotFlagSmallNormalStream(t *testing.T) {
+	usage := normalizedUsage{
+		Dimensions: Dimensions{Provider: "gemini", Model: "gemini-thinking"},
+		LatencyNS:  uint64(3 * time.Second),
+		TTFTNS:     uint64(2 * time.Second),
+		Counters: Counters{
+			OutputTokens:    40,
+			ReasoningTokens: 76,
+		},
+	}
+	item := requestDetailForUsage(usage, 1)
+	if item.TPS != 116 {
+		t.Fatalf("TPS = %v, want 116", item.TPS)
+	}
+	if item.TPSBasis != "generation" {
+		t.Fatalf("TPS basis = %q, want generation", item.TPSBasis)
+	}
+}
+
 func TestEffectiveOutputTokensForTPS(t *testing.T) {
 	tests := []struct {
 		name          string

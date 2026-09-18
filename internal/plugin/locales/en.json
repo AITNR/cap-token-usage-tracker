@@ -160,6 +160,7 @@
   "table.ttft": "Time to first token",
   "table.generation": "Generation time",
   "table.tps": "TPS",
+  "table.tpsBuffered": "TPS uses total latency because the upstream stream appears buffered",
   "table.reasoningEffort": "Reasoning effort",
   "table.input": "Input",
   "table.output": "Output",
