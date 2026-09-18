@@ -191,6 +191,8 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`estimated.cache_creation_usd`,
 		`estimated.total_usd`,
 		`async function exportCSV()`,
+		`record.tps_basis==='latency_unreliable'?'':Number(record.tps||0).toFixed(4)`,
+		`record.tps_basis||'generation'`,
 		`function exportPNG()`,
 		`id="exportBackup"`,
 		`var backupURL=resourceBase+'/full-mode/backup'`,

@@ -253,7 +253,7 @@
   "pricing.unpriced": "Unpriced",
   "pricing.saved": "Saved",
   "pricing.notSet": "Not set",
-  "export.csvHeaders": "Time,Model,Source,Tier,Result,Time to first token (ns),Generation time (ns),TPS,Reasoning effort,Input,Output,Reasoning,Cache read,Cache creation,Total Tokens,Cache hit,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,Price source,Accounting mode,Price Tier threshold",
+  "export.csvHeaders": "Time,Model,Source,Tier,Result,Time to first token (ns),Generation time (ns),TPS,TPS basis,Reasoning effort,Input,Output,Reasoning,Cache read,Cache creation,Total Tokens,Cache hit,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,Price source,Accounting mode,Price Tier threshold",
   "export.pngTitle": "Token Usage Analytics",
   "export.pngRange": "Range: {range} · Exported: {time}",
   "export.visibleModels": "All visible models",

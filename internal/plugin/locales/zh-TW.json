@@ -253,7 +253,7 @@
   "pricing.unpriced": "未定價",
   "pricing.saved": "已保存",
   "pricing.notSet": "未設置",
-  "export.csvHeaders": "時間,模型名稱,來源,Tier,結果,首字延遲(ns),生成時間(ns),TPS,思考強度,輸入,輸出,思考,快取讀取,快取創建,總Token數,快取命中,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,價格來源,計費模式,價格Tier閾值",
+  "export.csvHeaders": "時間,模型名稱,來源,Tier,結果,首字延遲(ns),生成時間(ns),TPS,TPS基礎,思考強度,輸入,輸出,思考,快取讀取,快取創建,總Token數,快取命中,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,價格來源,計費模式,價格Tier閾值",
   "export.pngTitle": "Token 用量統計",
   "export.pngRange": "範圍：{range} · 導出：{time}",
   "export.visibleModels": "全部可見模型",
