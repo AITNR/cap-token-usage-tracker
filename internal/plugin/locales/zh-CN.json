@@ -253,7 +253,7 @@
   "pricing.unpriced": "未定价",
   "pricing.saved": "已保存",
   "pricing.notSet": "未设置",
-  "export.csvHeaders": "时间,模型名称,来源,Tier,结果,首字延迟(ns),生成时间(ns),TPS,TPS基础,思考强度,输入,输出,思考,缓存读取,缓存创建,总Token数,缓存命中,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,价格来源,计费模式,价格Tier阈值",
+  "export.csvHeaders": "时间,模型名称,来源,Tier,结果,首字延迟(ns),生成时间(ns),TPS,TPS基础,思考强度,输入,输出,思考,缓存读取,缓存创建,总Token数,缓存命中,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,价格来源,计费模式,价格Tier阈值,计费时段,计费时区",
   "export.pngTitle": "Token 用量统计",
   "export.pngRange": "范围：{range} · 导出：{time}",
   "export.visibleModels": "全部可见模型",
@@ -341,5 +341,15 @@
   "apiKey.sourceMissing": "未提供客户端 API Key",
   "apiKey.defaultSecretWarning": "当前使用公开默认密钥 123456。任何获得数据库或备份的人都可以解密其中保存的 API Key。请改用至少 32 字节的自定义密钥。",
   "apiKey.labelTooLong": "备注最多 120 个字符。",
-  "apiKey.saveFailed": "保存 API Key 备注失败。"
+  "apiKey.saveFailed": "保存 API Key 备注失败。",
+  "pricing.timeTitle": "峰谷定价",
+  "pricing.timeZone": "时区（IANA）",
+  "pricing.timeName": "时段名称",
+  "pricing.timeDays": "星期（1=周一…7=周日；留空为每天）",
+  "pricing.timeStart": "开始时间",
+  "pricing.timeEnd": "结束时间",
+  "pricing.timeAdd": "添加时段",
+  "pricing.timeHelp": "按请求时间计费，包含开始、不包含结束。跨午夜归属起始日；未命中使用基础/服务等级价格，上下文阶梯优先。修改后重新估算历史费用。",
+  "pricing.timeInvalid": "时间价格无效：请检查名称、时区、星期和时间（最多32个时段）。",
+  "pricing.timeOverlap": "价格时段重叠。"
 }

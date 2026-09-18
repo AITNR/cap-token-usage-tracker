@@ -253,7 +253,7 @@
   "pricing.unpriced": "Unpriced",
   "pricing.saved": "Saved",
   "pricing.notSet": "Not set",
-  "export.csvHeaders": "Time,Model,Source,Tier,Result,Time to first token (ns),Generation time (ns),TPS,TPS basis,Reasoning effort,Input,Output,Reasoning,Cache read,Cache creation,Total Tokens,Cache hit,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,Price source,Accounting mode,Price Tier threshold",
+  "export.csvHeaders": "Time,Model,Source,Tier,Result,Time to first token (ns),Generation time (ns),TPS,TPS basis,Reasoning effort,Input,Output,Reasoning,Cache read,Cache creation,Total Tokens,Cache hit,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,Price source,Accounting mode,Price Tier threshold,Price time period,Price time zone",
   "export.pngTitle": "Token Usage Analytics",
   "export.pngRange": "Range: {range} · Exported: {time}",
   "export.visibleModels": "All visible models",
@@ -341,5 +341,15 @@
   "apiKey.sourceMissing": "Client API Key was not provided",
   "apiKey.defaultSecretWarning": "The public default secret 123456 is active. Anyone who obtains the database or a backup can decrypt stored API Keys. Configure a custom secret of at least 32 bytes.",
   "apiKey.labelTooLong": "The label must be at most 120 characters.",
-  "apiKey.saveFailed": "Failed to save the API Key label."
+  "apiKey.saveFailed": "Failed to save the API Key label.",
+  "pricing.timeTitle": "Time pricing",
+  "pricing.timeZone": "Time zone (IANA)",
+  "pricing.timeName": "Period name",
+  "pricing.timeDays": "Weekdays (1=Mon…7=Sun; blank=every day)",
+  "pricing.timeStart": "Start",
+  "pricing.timeEnd": "End",
+  "pricing.timeAdd": "Add period",
+  "pricing.timeHelp": "Use request time; start included, end excluded. Overnight periods belong to the starting day. Unmatched periods use base/service prices; context tiers take precedence. Changes recalculate historical estimates.",
+  "pricing.timeInvalid": "Invalid time pricing: check names, zone, weekdays and times (maximum 32 periods).",
+  "pricing.timeOverlap": "Time periods overlap."
 }

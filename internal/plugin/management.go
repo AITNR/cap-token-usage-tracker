@@ -125,7 +125,7 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Method:      http.MethodPut,
 				Path:        "/plugins/" + pluginID + "/prices",
-				Description: "Persist per-model input, output, cache, and context-tier token prices.",
+				Description: "Persist per-model token prices, context tiers, and weekly time-of-use schedules.",
 			},
 			{
 				Method:      http.MethodPost,

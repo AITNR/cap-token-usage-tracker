@@ -2278,6 +2278,8 @@ func (a *storeActor) applyModelPriceSync(prices map[string]ModelPrice, settings 
 			continue
 		}
 		if exists {
+			price.TimeZone = current.TimeZone
+			price.TimeTiers = cloneTimeTiers(current.TimeTiers)
 			metadata.Updated++
 		} else {
 			metadata.Created++

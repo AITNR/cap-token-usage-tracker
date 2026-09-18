@@ -52,6 +52,9 @@ type ServiceTierPrice struct {
 
 // ModelPrice stores the active rates and optional synchronization provenance for one model.
 type ModelPrice struct {
+	timeLocation    *time.Location
+	TimeZone        string                      `json:"time_zone,omitempty"`
+	TimeTiers       []TimePriceTier             `json:"time_tiers,omitempty"`
 	Input           float64                     `json:"input"`
 	Output          float64                     `json:"output"`
 	CacheRead       float64                     `json:"cache_read"`
@@ -239,6 +242,9 @@ func normalizeModelPrice(model string, price ModelPrice) (ModelPrice, error) {
 		return ModelPrice{}, err
 	}
 	price.ContextTiers = tiers
+	if err := normalizeTimePricing(model, &price); err != nil {
+		return ModelPrice{}, err
+	}
 
 	if len(price.ServiceTiers) > maxServiceTierPrices {
 		return ModelPrice{}, fmt.Errorf("model %q must contain at most %d service tier prices", model, maxServiceTierPrices)
@@ -324,6 +330,9 @@ func tokenRatesZero(rates TokenRates) bool {
 }
 
 func sameEditableModelPrice(left, right ModelPrice) bool {
+	if !sameTimePricing(left, right) {
+		return false
+	}
 	if left.Input != right.Input || left.Output != right.Output || left.CacheRead != right.CacheRead || left.CacheCreation != right.CacheCreation || left.AccountingMode != right.AccountingMode || len(left.ContextTiers) != len(right.ContextTiers) || len(left.ServiceTiers) != len(right.ServiceTiers) {
 		return false
 	}
@@ -349,6 +358,7 @@ func sameEditableModelPrice(left, right ModelPrice) bool {
 func cloneModelPrices(input map[string]ModelPrice) map[string]ModelPrice {
 	result := make(map[string]ModelPrice, len(input))
 	for model, price := range input {
+		price.TimeTiers = cloneTimeTiers(price.TimeTiers)
 		price.ContextTiers = append([]ContextPriceTier(nil), price.ContextTiers...)
 		if len(price.ServiceTiers) > 0 {
 			price.ServiceTiers = make(map[string]ServiceTierPrice, len(price.ServiceTiers))

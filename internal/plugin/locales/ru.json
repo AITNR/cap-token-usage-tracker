@@ -253,7 +253,7 @@
   "pricing.unpriced": "Без цены",
   "pricing.saved": "Сохранено",
   "pricing.notSet": "Не задано",
-  "export.csvHeaders": "Time,Model,Source,Tier,Result,Time to first token (ns),Generation time (ns),TPS,TPS basis,Reasoning effort,Input,Output,Reasoning,Cache read,Cache creation,Total Tokens,Cache hit,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,Price source,Accounting mode,Price Tier threshold",
+  "export.csvHeaders": "Time,Model,Source,Tier,Result,Time to first token (ns),Generation time (ns),TPS,TPS basis,Reasoning effort,Input,Output,Reasoning,Cache read,Cache creation,Total Tokens,Cache hit,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,Price source,Accounting mode,Price Tier threshold,Тарифный период,Часовой пояс тарифа",
   "export.pngTitle": "Аналитика использования токенов",
   "export.pngRange": "Период: {range} · Экспортировано: {time}",
   "export.visibleModels": "Все видимые модели",
@@ -341,5 +341,15 @@
   "apiKey.sourceMissing": "Клиентский API Key не был предоставлен",
   "apiKey.defaultSecretWarning": "Используется общедоступный секрет по умолчанию 123456. Любой, кто получит базу данных или резервную копию, сможет расшифровать сохраненные API Key. Настройте собственный секрет длиной не менее 32 байт.",
   "apiKey.labelTooLong": "Метка должна содержать не более 120 символов.",
-  "apiKey.saveFailed": "Не удалось сохранить метку API Key."
+  "apiKey.saveFailed": "Не удалось сохранить метку API Key.",
+  "pricing.timeTitle": "Тарифы по времени",
+  "pricing.timeZone": "Часовой пояс (IANA)",
+  "pricing.timeName": "Название периода",
+  "pricing.timeDays": "Дни (1=пн…7=вс; пусто=ежедневно)",
+  "pricing.timeStart": "Начало",
+  "pricing.timeEnd": "Конец",
+  "pricing.timeAdd": "Добавить период",
+  "pricing.timeHelp": "Используется время запроса: начало включено, конец исключён. Ночной период относится к дню начала. Вне периодов действуют базовые тарифы; контекстные тарифы имеют приоритет. Изменения пересчитывают историю.",
+  "pricing.timeInvalid": "Проверьте название, пояс, дни и время (не более 32 периодов).",
+  "pricing.timeOverlap": "Периоды пересекаются."
 }

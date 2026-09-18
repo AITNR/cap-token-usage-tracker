@@ -253,7 +253,7 @@
   "pricing.unpriced": "未定價",
   "pricing.saved": "已保存",
   "pricing.notSet": "未設置",
-  "export.csvHeaders": "時間,模型名稱,來源,Tier,結果,首字延遲(ns),生成時間(ns),TPS,TPS基礎,思考強度,輸入,輸出,思考,快取讀取,快取創建,總Token數,快取命中,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,價格來源,計費模式,價格Tier閾值",
+  "export.csvHeaders": "時間,模型名稱,來源,Tier,結果,首字延遲(ns),生成時間(ns),TPS,TPS基礎,思考強度,輸入,輸出,思考,快取讀取,快取創建,總Token數,快取命中,Input USD,Output USD,Cache Read USD,Cache Creation USD,Total USD,價格來源,計費模式,價格Tier閾值,計費時段,計費時區",
   "export.pngTitle": "Token 用量統計",
   "export.pngRange": "範圍：{range} · 導出：{time}",
   "export.visibleModels": "全部可見模型",
@@ -341,5 +341,15 @@
   "apiKey.sourceMissing": "未提供用戶端 API Key",
   "apiKey.defaultSecretWarning": "目前使用公開預設密鑰 123456。任何取得資料庫或備份的人都可以解密其中儲存的 API Key。請改用至少 32 位元組的自訂密鑰。",
   "apiKey.labelTooLong": "備註最多 120 個字元。",
-  "apiKey.saveFailed": "儲存 API Key 備註失敗。"
+  "apiKey.saveFailed": "儲存 API Key 備註失敗。",
+  "pricing.timeTitle": "峰谷定價",
+  "pricing.timeZone": "時區（IANA）",
+  "pricing.timeName": "時段名稱",
+  "pricing.timeDays": "星期（1=週一…7=週日；留空為每天）",
+  "pricing.timeStart": "開始時間",
+  "pricing.timeEnd": "結束時間",
+  "pricing.timeAdd": "新增時段",
+  "pricing.timeHelp": "依請求時間計費，包含開始、不包含結束。跨午夜歸屬起始日；未命中使用基礎/服務等級價格，上下文階梯優先。修改後重新估算歷史費用。",
+  "pricing.timeInvalid": "時間價格無效：請檢查名稱、時區、星期與時間（最多32個時段）。",
+  "pricing.timeOverlap": "價格時段重疊。"
 }
