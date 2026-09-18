@@ -136,7 +136,14 @@ func requestTPSWithBasis(item RequestDetail, explicitTotal bool) (float64, strin
 	if denominator == 0 {
 		return 0, basis
 	}
-	return float64(outputTokens) / (float64(denominator) / float64(time.Second)), basis
+	tps := float64(outputTokens) / (float64(denominator) / float64(time.Second))
+	if basis == "latency_buffered" && tps > bufferedStreamMaxTPS {
+		// A short total latency cannot be a trustworthy estimate of model
+		// generation time either. Do not replace one explosive value with
+		// another; expose the measurement as unavailable instead.
+		return 0, "latency_unreliable"
+	}
+	return tps, basis
 }
 
 func requestTPS(item RequestDetail, explicitTotal bool) float64 {

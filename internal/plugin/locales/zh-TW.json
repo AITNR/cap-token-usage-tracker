@@ -161,6 +161,7 @@
   "table.generation": "生成時間",
   "table.tps": "TPS",
   "table.tpsBuffered": "上游串流疑似緩衝，TPS 使用總延遲估算",
+  "table.tpsUnreliable": "請求時序與 Token 數量不一致，TPS 無法可靠計算",
   "table.reasoningEffort": "思考強度",
   "table.input": "輸入",
   "table.output": "輸出",

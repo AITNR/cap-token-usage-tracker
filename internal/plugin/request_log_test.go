@@ -76,6 +76,25 @@ func TestRequestDetailForUsageDoesNotFlagSmallNormalStream(t *testing.T) {
 	}
 }
 
+func TestRequestDetailForUsageDoesNotInventTPSFromShortBufferedLatency(t *testing.T) {
+	usage := normalizedUsage{
+		Dimensions: Dimensions{Provider: "gemini", Model: "gemini-thinking"},
+		LatencyNS:  uint64(10 * time.Millisecond),
+		TTFTNS:     uint64(9 * time.Millisecond),
+		Counters: Counters{
+			OutputTokens:    400,
+			ReasoningTokens: 100,
+		},
+	}
+	item := requestDetailForUsage(usage, 1)
+	if item.TPS != 0 {
+		t.Fatalf("TPS = %v, want 0 for unreliable timing", item.TPS)
+	}
+	if item.TPSBasis != "latency_unreliable" {
+		t.Fatalf("TPS basis = %q, want latency_unreliable", item.TPSBasis)
+	}
+}
+
 func TestEffectiveOutputTokensForTPS(t *testing.T) {
 	tests := []struct {
 		name          string

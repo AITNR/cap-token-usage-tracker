@@ -161,6 +161,7 @@
   "table.generation": "Время генерации",
   "table.tps": "TPS",
   "table.tpsBuffered": "Поток upstream похож на буферизованный, TPS рассчитан по полной задержке",
+  "table.tpsUnreliable": "TPS недоступен: время запроса не согласуется с числом токенов",
   "table.reasoningEffort": "Интенсивность рассуждений",
   "table.input": "Ввод",
   "table.output": "Вывод",

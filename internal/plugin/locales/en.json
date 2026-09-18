@@ -161,6 +161,7 @@
   "table.generation": "Generation time",
   "table.tps": "TPS",
   "table.tpsBuffered": "TPS uses total latency because the upstream stream appears buffered",
+  "table.tpsUnreliable": "TPS is unavailable because the request timing is inconsistent with the token count",
   "table.reasoningEffort": "Reasoning effort",
   "table.input": "Input",
   "table.output": "Output",
