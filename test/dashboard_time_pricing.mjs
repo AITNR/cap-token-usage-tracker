@@ -7,7 +7,10 @@ if (!htmlPath || !chromePath) {
   throw new Error('usage: node test/dashboard_api_key_layout.mjs <dashboard-html-path> <google-chrome-path>');
 }
 
-const dashboardHTML = (await readFile(htmlPath,'utf8')).replace('function collectPricing(){', 'window.testCollect=()=>collectPricing();window.testReload=book=>{prices=book;renderPricingEditor();};function collectPricing(){');
+const dashboardHTML = await readFile(htmlPath, 'utf8');
+let savedPrices = {m:{input:4,output:8}};
+let revision = 1, saves = 0;
+let chunks = [];
 const resourceBase = '/v0/resource/plugins/api-key-layout-browser-test';
 const server = createServer((request, response) => {
   const url = new URL(request.url, 'http://127.0.0.1');
@@ -16,6 +19,14 @@ const server = createServer((request, response) => {
     response.end(JSON.stringify(value));
   };
 
+  if (url.pathname === `${resourceBase}/full-mode/prices/save`) {
+    if (url.searchParams.get('stage') === 'begin') { chunks = []; sendJSON({upload:'test-upload'}); return; }
+    if (url.searchParams.get('stage') === 'chunk') { chunks[Number(url.searchParams.get('index'))] = request.headers['x-full-mode-payload']; sendJSON({}); return; }
+    if (url.searchParams.get('stage') === 'commit') {
+      savedPrices = JSON.parse(Buffer.from(chunks.join(''), 'base64url').toString('utf8')).prices;
+      revision++; saves++; sendJSON({prices:savedPrices, revision}); return;
+    }
+  }
   if (url.pathname === `${resourceBase}/dashboard`) {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     response.end(dashboardHTML);
@@ -59,7 +70,7 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/prices` || url.pathname === `${resourceBase}/full-mode/prices`) {
-    sendJSON({ prices: {m:{input:4,output:8}}, revision: 1 });
+    sendJSON({ prices: savedPrices, revision });
     return;
   }
   sendJSON({});
@@ -81,13 +92,30 @@ try {
  const panel=page.locator('.time-pricing');await panel.locator('summary').click();
  await panel.locator('.time-zone').fill('Asia/Shanghai');await panel.locator('.add-time-tier').click();
  const row=panel.locator('.time-tier-row');await row.locator('.time-name').fill('night');await row.locator('.time-days').fill('1,7');await row.locator('.time-input').fill('1');
- const collected=await page.evaluate(()=>window.testCollect());
- if(collected.m.time_zone!=='Asia/Shanghai'||collected.m.time_tiers[0].input!==1||collected.m.time_tiers[0].days.join(',')!=='1,7')throw Error(JSON.stringify(collected));
- await page.evaluate(book=>window.testReload(book),collected);
- await panel.locator('summary').click();if(await panel.locator('.time-name').inputValue()!=='night')throw Error('round trip lost schedule');
+ async function saveAndReopen() {
+   await page.locator('#savePricing').click();
+   await page.locator('#pricingDialog').waitFor({state:'hidden'});
+   await page.locator('#pricingButton').click();
+   await panel.locator('summary').click();
+ }
+ async function checkFields() {
+   for (const [selector,value] of Object.entries({'.time-zone':'Asia/Shanghai','.time-name':'night','.time-days':'1,7','.time-input':'1','.time-start':'23:00','.time-end':'08:00'})) {
+     if(await panel.locator(selector).inputValue()!==value)throw Error('Lost field '+selector);
+   }
+ }
+ await saveAndReopen();await checkFields();
+ if(saves!==1||savedPrices.m.time_tiers[0].input!==1)throw Error('Save payload missing schedule');
+ // Repeat save to catch loss that could silently overwrite persisted settings.
+ await saveAndReopen();await checkFields();
+ await page.goto('about:blank');await page.goto(dashboardURL);await page.locator('#pricingButton').click();await panel.locator('summary').click();await checkFields();
  await panel.locator('.add-time-tier').click();await panel.locator('.time-name').nth(1).fill('overlap');
- const error=await page.evaluate(()=>{try{window.testCollect();return '';}catch(e){return e.message;}});if(!error)throw Error('overlap accepted');
+ await page.locator('#savePricing').click();
+ await page.waitForFunction(()=>document.getElementById('priceError').textContent.length>0);
+ if(saves!==2)throw Error('Overlap submitted');
  await panel.locator('.time-tier-row').nth(1).locator('button').click();
+ await panel.locator('.time-tier-row').locator('button').click();
+ await saveAndReopen();
+ if(await panel.locator('.time-tier-row').count()!==0||savedPrices.m.time_tiers.length!==0)throw Error('Deletion not saved');
  if(errors.length)throw Error(errors.join('\n'));
  await page.screenshot({path:htmlPath+'.png',fullPage:true});
  console.log('Time pricing browser round trip, overlap validation and deletion passed');
