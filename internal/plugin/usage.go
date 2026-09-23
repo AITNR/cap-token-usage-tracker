@@ -16,9 +16,17 @@ type normalizedUsage struct {
 	RequestedAt time.Time
 	LatencyNS   uint64
 	TTFTNS      uint64
-	Counters    Counters
-	authIndex   string
-	baseURL     string
+	// UpstreamTTFBNS is the gateway-measured upstream response header latency.
+	UpstreamTTFBNS uint64
+	// FirstPacketNS is the gateway-measured upstream first response body byte latency.
+	FirstPacketNS uint64
+	// ConnSetupNS is the gateway-measured DNS + TCP + TLS setup duration.
+	ConnSetupNS uint64
+	// ConnReused reports whether the upstream attempt reused a pooled connection.
+	ConnReused bool
+	Counters   Counters
+	authIndex  string
+	baseURL    string
 
 	// explicitTotalTokens records whether TotalTokens was supplied by the
 	// upstream record rather than filled in by decodeUsage.
@@ -83,6 +91,10 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 		RequestedAt:         requestedAt,
 		LatencyNS:           positiveDurationNS(root, "Latency", "latency", "latency_ns"),
 		TTFTNS:              positiveDurationNS(root, "TTFT", "ttft", "ttft_ns"),
+		UpstreamTTFBNS:      positiveDurationNS(root, "UpstreamTTFB", "upstream_ttfb", "upstream_ttfb_ns"),
+		FirstPacketNS:       positiveDurationNS(root, "FirstPacket", "first_packet", "first_packet_ns"),
+		ConnSetupNS:         positiveDurationNS(root, "ConnSetup", "conn_setup", "conn_setup_ns"),
+		ConnReused:          firstBool(root, "ConnReused", "conn_reused"),
 		authIndex:           strings.TrimSpace(firstString(root, "AuthIndex", "auth_index")),
 		baseURL:             baseURL,
 		explicitTotalTokens: explicitTotalTokens,

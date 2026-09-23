@@ -18,10 +18,18 @@ type RequestDetail struct {
 	Time     time.Time `json:"time"`
 	Dimensions
 	Counters
-	Result        string         `json:"result"`
-	LatencyNS     uint64         `json:"latency_ns"`
-	TTFTNS        uint64         `json:"ttft_ns"`
-	GenerationNS  uint64         `json:"generation_ns"`
+	Result       string `json:"result"`
+	LatencyNS    uint64 `json:"latency_ns"`
+	TTFTNS       uint64 `json:"ttft_ns"`
+	GenerationNS uint64 `json:"generation_ns"`
+	// UpstreamTTFBNS is the gateway-measured upstream response header latency.
+	UpstreamTTFBNS uint64 `json:"upstream_ttfb_ns"`
+	// FirstPacketNS is the gateway-measured upstream first response body byte latency.
+	FirstPacketNS uint64 `json:"first_packet_ns"`
+	// ConnSetupNS is the gateway-measured DNS + TCP + TLS setup duration.
+	ConnSetupNS uint64 `json:"conn_setup_ns"`
+	// ConnReused reports whether the upstream attempt reused a pooled connection.
+	ConnReused    bool           `json:"conn_reused"`
 	TPS           float64        `json:"tps"`
 	CacheHit      bool           `json:"cache_hit"`
 	EstimatedCost *EstimatedCost `json:"estimated_cost,omitempty"`
@@ -138,15 +146,19 @@ func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail
 		}
 	}
 	item := RequestDetail{
-		Sequence:     sequence,
-		Time:         usage.RequestedAt.UTC(),
-		Dimensions:   usage.Dimensions,
-		Counters:     usage.Counters,
-		Result:       result,
-		LatencyNS:    usage.LatencyNS,
-		TTFTNS:       usage.TTFTNS,
-		GenerationNS: generationNS,
-		CacheHit:     usage.Counters.CacheReadTokens > 0,
+		Sequence:       sequence,
+		Time:           usage.RequestedAt.UTC(),
+		Dimensions:     usage.Dimensions,
+		Counters:       usage.Counters,
+		Result:         result,
+		LatencyNS:      usage.LatencyNS,
+		TTFTNS:         usage.TTFTNS,
+		GenerationNS:   generationNS,
+		UpstreamTTFBNS: usage.UpstreamTTFBNS,
+		FirstPacketNS:  usage.FirstPacketNS,
+		ConnSetupNS:    usage.ConnSetupNS,
+		ConnReused:     usage.ConnReused,
+		CacheHit:       usage.Counters.CacheReadTokens > 0,
 	}
 	item.TPS = requestTPS(item, usage.explicitTotalTokens)
 	return item
