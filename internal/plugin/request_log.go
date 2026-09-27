@@ -9,10 +9,6 @@ import (
 const (
 	defaultRequestPageSize = 100
 	maxRequestPageSize     = 500
-
-	bufferedStreamMaxGenerationNS = uint64(time.Second)
-	bufferedStreamMinTokens       = uint64(200)
-	bufferedStreamMaxTPS          = 500.0
 )
 
 // RequestDetail contains metadata and usage counters for one model request.
@@ -27,7 +23,6 @@ type RequestDetail struct {
 	TTFTNS        uint64         `json:"ttft_ns"`
 	GenerationNS  uint64         `json:"generation_ns"`
 	TPS           float64        `json:"tps"`
-	TPSBasis      string         `json:"tps_basis,omitempty"`
 	CacheHit      bool           `json:"cache_hit"`
 	EstimatedCost *EstimatedCost `json:"estimated_cost,omitempty"`
 }
@@ -122,43 +117,12 @@ func effectiveOutputTokensForTPS(dimensions Dimensions, counters Counters, expli
 	return counters.OutputTokens
 }
 
-func requestTPSWithBasis(item RequestDetail, explicitTotal bool) (float64, string) {
+func requestTPS(item RequestDetail, explicitTotal bool) float64 {
 	if item.GenerationNS == 0 {
-		return 0, ""
+		return 0
 	}
 	outputTokens := effectiveOutputTokensForTPS(item.Dimensions, item.Counters, explicitTotal)
-	basis := "generation"
-	denominator := item.GenerationNS
-	if likelyBufferedStream(item, outputTokens) {
-		basis = "latency_buffered"
-		denominator = item.LatencyNS
-	}
-	if denominator == 0 {
-		return 0, basis
-	}
-	tps := float64(outputTokens) / (float64(denominator) / float64(time.Second))
-	if basis == "latency_buffered" && tps > bufferedStreamMaxTPS {
-		// A short total latency cannot be a trustworthy estimate of model
-		// generation time either. Do not replace one explosive value with
-		// another; expose the measurement as unavailable instead.
-		return 0, "latency_unreliable"
-	}
-	return tps, basis
-}
-
-func requestTPS(item RequestDetail, explicitTotal bool) float64 {
-	tps, _ := requestTPSWithBasis(item, explicitTotal)
-	return tps
-}
-
-func likelyBufferedStream(item RequestDetail, outputTokens uint64) bool {
-	if reasoningAccountingForDimensions(item.Dimensions) != reasoningAccountingSeparateFromOutput ||
-		item.TTFTNS == 0 || item.LatencyNS == 0 || item.GenerationNS == 0 || item.GenerationNS > bufferedStreamMaxGenerationNS ||
-		item.LatencyNS < item.GenerationNS {
-		return false
-	}
-	rawTPS := float64(outputTokens) / (float64(item.GenerationNS) / float64(time.Second))
-	return outputTokens > bufferedStreamMinTokens || rawTPS > bufferedStreamMaxTPS
+	return float64(outputTokens) / (float64(item.GenerationNS) / float64(time.Second))
 }
 
 func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail {
@@ -184,6 +148,6 @@ func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail
 		GenerationNS: generationNS,
 		CacheHit:     usage.Counters.CacheReadTokens > 0,
 	}
-	item.TPS, item.TPSBasis = requestTPSWithBasis(item, usage.explicitTotalTokens)
+	item.TPS = requestTPS(item, usage.explicitTotalTokens)
 	return item
 }
