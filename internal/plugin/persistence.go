@@ -824,8 +824,12 @@ func (a *storeActor) initialize() error {
 		if err := migrateUsageSources(hours, requests, version); err != nil {
 			return err
 		}
-		if err := migrateAPIKeyCryptoSchema(meta, hours, requests, version, now); err != nil {
-			return err
+		// Current databases are validated while reload decodes each record. Do not
+		// traverse the entire request history again just to confirm its schema.
+		if version < 8 {
+			if err := migrateAPIKeyCryptoSchema(meta, hours, requests, version, now); err != nil {
+				return err
+			}
 		}
 		loadedGenerations, loadErr := loadAPIKeyGenerations(meta)
 		if loadErr != nil {
@@ -845,7 +849,13 @@ func (a *storeActor) initialize() error {
 	a.generations = generations
 	a.activeGeneration = activeGeneration
 
-	return a.reload()
+	if err := a.reload(); err != nil {
+		return err
+	}
+	// Initialization already pruned expired records. The first flush must not
+	// immediately repeat the same full-history retention work.
+	a.lastPruneAt = now
+	return nil
 }
 
 // reload loads actor state from the current database handle without creating
@@ -883,9 +893,6 @@ func (a *storeActor) reload() error {
 		}
 		generations, err := loadAPIKeyGenerations(meta)
 		if err != nil {
-			return err
-		}
-		if err := validateAPIKeyGenerationReferences(hours, requests, generations); err != nil {
 			return err
 		}
 		a.generations = generations
@@ -963,6 +970,9 @@ func (a *storeActor) reload() error {
 				if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
 					return fmt.Errorf("decode dimensions: %w", err)
 				}
+				if err := validateAPIKeyGenerationReference(dimensions, generations); err != nil {
+					return err
+				}
 				var counters Counters
 				if err := json.Unmarshal(counterValue, &counters); err != nil {
 					return fmt.Errorf("decode counters: %w", err)
@@ -983,6 +993,9 @@ func (a *storeActor) reload() error {
 			var request RequestDetail
 			if err := json.Unmarshal(value, &request); err != nil {
 				return fmt.Errorf("decode request detail: %w", err)
+			}
+			if err := validateAPIKeyGenerationReference(request.Dimensions, generations); err != nil {
+				return err
 			}
 			ref := apiKeyRef(request.APIKeyGeneration, request.APIKeyHash)
 			if ref != "" && request.APIKey != "" {
@@ -1328,22 +1341,23 @@ func migrateLegacyAPIKeyRecords(hours, requests *bolt.Bucket, generation uint64)
 	})
 }
 
-func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) error {
-	validate := func(dimensions Dimensions) error {
-		if dimensions.APIKeyHash == "" {
-			if dimensions.APIKeyGeneration != 0 || dimensions.APIKey != "" {
-				return errors.New("API key generation or ciphertext exists without fingerprint")
-			}
-			return nil
-		}
-		if !validAPIKeyHash(dimensions.APIKeyHash) || dimensions.APIKeyGeneration == 0 {
-			return errors.New("API key fingerprint has no valid crypto generation")
-		}
-		if _, ok := generations[dimensions.APIKeyGeneration]; !ok {
-			return fmt.Errorf("API key references unknown crypto generation %d", dimensions.APIKeyGeneration)
+func validateAPIKeyGenerationReference(dimensions Dimensions, generations map[uint64]APIKeyCryptoGeneration) error {
+	if dimensions.APIKeyHash == "" {
+		if dimensions.APIKeyGeneration != 0 || dimensions.APIKey != "" {
+			return errors.New("API key generation or ciphertext exists without fingerprint")
 		}
 		return nil
 	}
+	if !validAPIKeyHash(dimensions.APIKeyHash) || dimensions.APIKeyGeneration == 0 {
+		return errors.New("API key fingerprint has no valid crypto generation")
+	}
+	if _, ok := generations[dimensions.APIKeyGeneration]; !ok {
+		return fmt.Errorf("API key references unknown crypto generation %d", dimensions.APIKeyGeneration)
+	}
+	return nil
+}
+
+func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) error {
 	if err := hours.ForEach(func(hourKey, value []byte) error {
 		if value != nil {
 			return nil
@@ -1354,7 +1368,7 @@ func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generation
 			if err := json.Unmarshal(key, &dimensions); err != nil {
 				return fmt.Errorf("decode dimensions while validating API key generation: %w", err)
 			}
-			return validate(dimensions)
+			return validateAPIKeyGenerationReference(dimensions, generations)
 		})
 	}); err != nil {
 		return err
@@ -1367,7 +1381,7 @@ func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generation
 		if err := json.Unmarshal(value, &request); err != nil {
 			return fmt.Errorf("decode request while validating API key generation: %w", err)
 		}
-		return validate(request.Dimensions)
+		return validateAPIKeyGenerationReference(request.Dimensions, generations)
 	})
 }
 
@@ -2028,6 +2042,11 @@ func (a *storeActor) record(usage normalizedUsage) error {
 		a.nextRequestSeq = 1
 	}
 	a.pendingRequests = append(a.pendingRequests, requestDetailForUsage(usage, a.nextRequestSeq))
+	// Imported/delayed usage can already be outside retention even though the
+	// database was pruned at startup. Make its next flush prune it immediately.
+	if usage.RequestedAt.Unix() < retentionCutoff(a.config, time.Now().UTC()) {
+		a.lastPruneAt = time.Time{}
+	}
 	if ref := apiKeyRef(aggregateDimensions.APIKeyGeneration, aggregateDimensions.APIKeyHash); ciphertext != "" && ref != "" {
 		a.apiKeyCiphertexts[ref] = ciphertext
 	}
@@ -2066,6 +2085,7 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 	}
 	var nextCiphertexts map[string]string
 	var nextLabels map[string]string
+	rebuiltKeyState := false
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
@@ -2111,6 +2131,11 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			return err
 		}
 		if shouldPrune {
+			// Checking the oldest keys is enough when nothing has expired. Avoid
+			// rebuilding the API-key index from every historical request each hour.
+			if !usageNeedsPruning(hours, requests, cutoff) {
+				return nil
+			}
 			if err := pruneHoursBucket(hours, cutoff); err != nil {
 				return err
 			}
@@ -2140,6 +2165,7 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			}
 			nextCiphertexts = ciphertexts
 			nextLabels = labels
+			rebuiltKeyState = true
 		}
 		return nil
 	})
@@ -2159,8 +2185,10 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			}
 		}
 		a.lastPruneAt = now
-		a.apiKeyCiphertexts = nextCiphertexts
-		a.apiKeyLabels = nextLabels
+		if rebuiltKeyState {
+			a.apiKeyCiphertexts = nextCiphertexts
+			a.apiKeyLabels = nextLabels
+		}
 	}
 	return nil
 }
@@ -2168,6 +2196,11 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 func (a *storeActor) reconfigure(config Config, crypto cryptoContext) error {
 	if config.DataPath != a.config.DataPath {
 		return errors.New("data_path changes require opening a new store")
+	}
+	// CPA applies the same effective configuration several times at startup.
+	// A no-op must not flush, invalidate retention state, or rotate generations.
+	if config == a.config && crypto == a.crypto {
+		return nil
 	}
 	if err := a.flush(time.Now().UTC(), true); err != nil {
 		a.lastFlushErr = err
@@ -2178,7 +2211,9 @@ func (a *storeActor) reconfigure(config Config, crypto cryptoContext) error {
 	previousPrune := a.lastPruneAt
 	a.config = config
 	a.crypto = crypto
-	a.lastPruneAt = time.Time{}
+	if config.RetentionDays != previous.RetentionDays {
+		a.lastPruneAt = time.Time{}
+	}
 	var generations map[uint64]APIKeyCryptoGeneration
 	var generation uint64
 	if err := a.db.Update(func(tx *bolt.Tx) error {
@@ -2572,6 +2607,26 @@ func (a *storeActor) queryExactStats(queryRange usageRange, filter usageFilter, 
 
 func retentionCutoff(config Config, now time.Time) int64 {
 	return now.UTC().Add(-time.Duration(config.RetentionDays) * 24 * time.Hour).Truncate(time.Minute).Unix()
+}
+
+func usageNeedsPruning(hours, requests *bolt.Bucket, cutoff int64) bool {
+	hourCursor := hours.Cursor()
+	for key, value := hourCursor.First(); key != nil; key, value = hourCursor.Next() {
+		if value == nil {
+			if decodeInt64(key) < cutoff {
+				return true
+			}
+			break
+		}
+	}
+	requestCutoff := time.Unix(cutoff, 0).UTC().UnixNano()
+	requestCursor := requests.Cursor()
+	for key, _ := requestCursor.First(); key != nil; key, _ = requestCursor.Next() {
+		if len(key) == 16 {
+			return decodeInt64(key[:8]) < requestCutoff
+		}
+	}
+	return false
 }
 
 func pruneHoursBucket(hours *bolt.Bucket, cutoff int64) error {

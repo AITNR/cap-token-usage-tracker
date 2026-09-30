@@ -84,8 +84,9 @@ func TestExactCustomStatsUseRequestBoundariesAndSourceFilter(t *testing.T) {
 	}
 	defer store.Close()
 
-	start := time.Date(2026, 8, 8, 10, 30, 25, 0, time.UTC)
-	end := time.Date(2026, 8, 8, 13, 45, 10, 0, time.UTC)
+	// Keep the fixture inside retention regardless of the date tests are run.
+	start := time.Now().UTC().Truncate(time.Hour).Add(-4*time.Hour + 30*time.Minute + 25*time.Second)
+	end := start.Add(3*time.Hour + 14*time.Minute + 45*time.Second)
 	for _, usage := range []normalizedUsage{
 		{Dimensions: Dimensions{Model: "before", Source: "codex"}, RequestedAt: start.Add(-time.Nanosecond), Counters: Counters{Requests: 1, TotalTokens: 1}},
 		{Dimensions: Dimensions{Model: "start", Source: "codex"}, RequestedAt: start, Counters: Counters{Requests: 1, TotalTokens: 2}},
