@@ -208,6 +208,85 @@ func TestSchemaNineAPIKeyCatalogBackfillsOnce(t *testing.T) {
 	}
 }
 
+func TestStableSchemaMissingCatalogStaysDegradedUntilExplicitRebuild(t *testing.T) {
+	config := testConfig(t)
+	config.APIKeySecret = "catalog-missing-secret-12345678901234567890"
+	config.SyncOnRecord = true
+	crypto, err := deriveCryptoContext(config.APIKeySecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openStoreWithCrypto(config, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := encryptedUsageForTest(t, crypto, "missing-catalog-key", "catalog-model", 3)
+	if err := store.Record(usage); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error { return tx.Bucket(metaBucket).Delete(apiKeyCatalogKey) }); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStoreWithCrypto(config, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	degradedStats, err := store.Query("retention")
+	if err != nil || degradedStats.Summary.Requests != 1 {
+		t.Fatalf("degraded catalog blocked primary stats: %+v, %v", degradedStats, err)
+	}
+	if _, err := store.ResolveAPIKeyHash(usage.Dimensions.APIKeyHash); err == nil {
+		t.Fatal("catalog-dependent resolve unexpectedly succeeded while degraded")
+	}
+	if err := store.RebuildAPIKeyCatalog(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResolveAPIKeyHash(usage.Dimensions.APIKeyHash); err != nil {
+		t.Fatalf("rebuilt catalog was not usable: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStableSchemaReloadReadsColdAggregateRange(t *testing.T) {
+	config := testConfig(t)
+	config.RetentionDays = 3
+	config.SyncOnRecord = true
+	store, err := openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	if err := store.Record(normalizedUsage{Dimensions: Dimensions{Model: "cold-model"}, RequestedAt: old, Counters: Counters{Requests: 1, TotalTokens: 7}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = openStore(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	stats, err := store.Query("retention")
+	if err != nil || stats.Summary.Requests != 1 || stats.Summary.TotalTokens != 7 {
+		t.Fatalf("cold aggregate was not loaded on demand: %+v, %v", stats.Summary, err)
+	}
+}
+
 func TestPruneRequestsBucketUpdatesCatalogWithoutScanningRetainedRecords(t *testing.T) {
 	db, err := bolt.Open(filepath.Join(t.TempDir(), "requests.db"), 0o600, nil)
 	if err != nil {
