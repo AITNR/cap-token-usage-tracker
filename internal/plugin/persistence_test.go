@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +73,194 @@ func TestStorePersistsAcrossRestartAndReset(t *testing.T) {
 	}
 	if stats.Summary.Requests != 0 || len(stats.Groups) != 0 {
 		t.Fatalf("reset did not persist: %+v", stats)
+	}
+}
+
+func TestStableSchemaReopenUsesAPIKeyCatalogWithoutDecodingRequests(t *testing.T) {
+	config := testConfig(t)
+	config.APIKeySecret = "catalog-reopen-secret-1234567890"
+	config.SyncOnRecord = true
+	crypto, err := deriveCryptoContext(config.APIKeySecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openStoreWithCrypto(config, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(encryptedUsageForTest(t, crypto, "catalog-client-key", "catalog-model", 7)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		requests := tx.Bucket(requestsBucket)
+		if requests == nil {
+			return errors.New("requests bucket is missing")
+		}
+		key, _ := requests.Cursor().First()
+		if key == nil {
+			return errors.New("request record is missing")
+		}
+		return requests.Put(key, []byte("not-json"))
+	}); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStoreWithCrypto(config, crypto)
+	if err != nil {
+		t.Fatalf("stable reopen decoded request records instead of using catalog: %v", err)
+	}
+	defer store.Close()
+	stats, err := store.Query("retention")
+	if err != nil || stats.Summary.Requests != 1 || len(stats.APIKeys) != 1 {
+		t.Fatalf("catalog-backed stats = %+v, %v", stats, err)
+	}
+}
+
+func TestSchemaNineAPIKeyCatalogBackfillsOnce(t *testing.T) {
+	config := testConfig(t)
+	config.APIKeySecret = "catalog-backfill-secret-12345678901234567890"
+	config.SyncOnRecord = true
+	crypto, err := deriveCryptoContext(config.APIKeySecret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := openStoreWithCrypto(config, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Record(encryptedUsageForTest(t, crypto, "backfill-client-key", "backfill-model", 3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metaBucket)
+		if meta == nil {
+			return errors.New("metadata bucket is missing")
+		}
+		if err := meta.Put(schemaKey, encodeUint64(9)); err != nil {
+			return err
+		}
+		return meta.Delete(apiKeyCatalogKey)
+	}); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = openStoreWithCrypto(config, crypto)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.Query("retention")
+	if err != nil || stats.Summary.Requests != 1 || len(stats.APIKeys) != 1 {
+		t.Fatalf("backfilled catalog stats = %+v, %v", stats, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err = bolt.Open(config.DataPath, 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(metaBucket)
+		if got := decodeUint64(meta.Get(schemaKey)); got != persistenceSchemaVersion {
+			return fmt.Errorf("schema version = %d", got)
+		}
+		catalog, err := loadAPIKeyCatalog(meta)
+		if err != nil {
+			return err
+		}
+		if len(catalog) != 1 {
+			return fmt.Errorf("catalog entries = %d", len(catalog))
+		}
+		for _, entry := range catalog {
+			if entry.Requests != 1 || entry.Hours != 1 || entry.Ciphertext == "" {
+				return fmt.Errorf("catalog entry = %+v", entry)
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPruneRequestsBucketUpdatesCatalogWithoutScanningRetainedRecords(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "requests.db"), 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	hash := strings.Repeat("a", 32)
+	ref := apiKeyRef(1, hash)
+	now := time.Now().UTC()
+	expired := now.Add(-2 * time.Hour)
+	retained := now.Add(time.Hour)
+	request := RequestDetail{
+		Sequence: 1,
+		Time:     expired,
+		Dimensions: Dimensions{
+			APIKey:           "ciphertext",
+			APIKeyHash:       hash,
+			APIKeyGeneration: 1,
+		},
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		requests, err := tx.CreateBucket(requestsBucket)
+		if err != nil {
+			return err
+		}
+		if err := requests.Put(encodeRequestKey(expired.UnixNano(), 1), encoded); err != nil {
+			return err
+		}
+		return requests.Put(encodeRequestKey(retained.UnixNano(), 2), []byte("not-json"))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	catalog := map[string]apiKeyCatalogEntry{ref: {Ciphertext: "ciphertext", Requests: 1}}
+	if err := db.Update(func(tx *bolt.Tx) error {
+		return pruneRequestsBucket(tx.Bucket(requestsBucket), now.UnixNano(), catalog)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := catalog[ref]; ok {
+		t.Fatalf("expired request remained in catalog: %+v", catalog)
+	}
+	if err := db.View(func(tx *bolt.Tx) error {
+		requests := tx.Bucket(requestsBucket)
+		if requests.Get(encodeRequestKey(retained.UnixNano(), 2)) == nil {
+			return errors.New("retained request was deleted")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

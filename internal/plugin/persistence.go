@@ -35,9 +35,12 @@ var (
 	apiKeyGenerationsKey    = []byte("api_key_crypto_generations")
 	apiKeyNextGenerationKey = []byte("api_key_next_generation")
 	apiKeyLabelsKey         = []byte("api_key_labels")
+	apiKeyCatalogKey        = []byte("api_key_catalog")
 )
 
-const persistenceSchemaVersion uint64 = 9
+const persistenceSchemaVersion uint64 = 10
+
+const usageSourcesSchemaVersion uint64 = 9
 
 const (
 	maxAPIKeyLabels     = 10_000
@@ -242,8 +245,16 @@ type storeActor struct {
 	dashboardPreferences DashboardPreferences
 	apiKeyCiphertexts    map[string]string
 	apiKeyLabels         map[string]string
+	apiKeyCatalog        map[string]apiKeyCatalogEntry
+	persistedAggregates  map[aggregateKey]struct{}
 	activeGeneration     uint64
 	generations          map[uint64]APIKeyCryptoGeneration
+}
+
+type apiKeyCatalogEntry struct {
+	Ciphertext string `json:"ciphertext,omitempty"`
+	Hours      uint64 `json:"hours"`
+	Requests   uint64 `json:"requests"`
 }
 
 func openStore(config Config) (*Store, error) {
@@ -275,6 +286,7 @@ func openStoreWithCrypto(config Config, crypto cryptoContext) (*Store, error) {
 		dashboardPreferences: defaultDashboardPreferences(),
 		apiKeyCiphertexts:    make(map[string]string),
 		apiKeyLabels:         make(map[string]string),
+		apiKeyCatalog:        make(map[string]apiKeyCatalogEntry),
 	}
 	if err := actor.initialize(); err != nil {
 		_ = db.Close()
@@ -781,6 +793,7 @@ func (a *storeActor) initialize() error {
 	now := time.Now().UTC()
 	var generations map[uint64]APIKeyCryptoGeneration
 	var activeGeneration uint64
+	var catalog map[string]apiKeyCatalogEntry
 	if err := a.db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists(metaBucket)
 		if err != nil {
@@ -797,6 +810,13 @@ func (a *storeActor) initialize() error {
 		version := decodeUint64(meta.Get(schemaKey))
 		if version > persistenceSchemaVersion {
 			return fmt.Errorf("unsupported database schema version %d", version)
+		}
+		if version >= persistenceSchemaVersion {
+			var err error
+			catalog, err = loadAPIKeyCatalog(meta)
+			if err != nil {
+				return err
+			}
 		}
 		if err := migratePriceMetadata(meta, version); err != nil {
 			return err
@@ -815,10 +835,10 @@ func (a *storeActor) initialize() error {
 		if err := meta.Put(sinceKey, encodeInt64(since.UnixNano())); err != nil {
 			return err
 		}
-		if err := pruneHoursBucket(hours, cutoff); err != nil {
+		if err := pruneHoursBucket(hours, cutoff, catalog); err != nil {
 			return err
 		}
-		if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano()); err != nil {
+		if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano(), catalog); err != nil {
 			return err
 		}
 		if err := migrateUsageSources(hours, requests, version); err != nil {
@@ -838,12 +858,30 @@ func (a *storeActor) initialize() error {
 		}
 		activeGeneration = activatedGeneration
 		generations = activatedGenerations
+		if version < persistenceSchemaVersion || len(meta.Get(apiKeyCatalogKey)) == 0 {
+			var err error
+			catalog, err = buildAPIKeyCatalog(hours, requests, generations)
+			if err != nil {
+				return err
+			}
+			if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+				return err
+			}
+		} else {
+			if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+				return err
+			}
+		}
+		if err := pruneAPIKeyLabelsToCatalog(meta, catalog); err != nil {
+			return err
+		}
 		return meta.Put(schemaKey, encodeUint64(persistenceSchemaVersion))
 	}); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
 	a.generations = generations
 	a.activeGeneration = activeGeneration
+	a.apiKeyCatalog = catalog
 
 	return a.reload()
 }
@@ -867,10 +905,11 @@ func (a *storeActor) reload() error {
 	a.dashboardPreferences = defaultDashboardPreferences()
 	a.apiKeyCiphertexts = make(map[string]string)
 	a.apiKeyLabels = make(map[string]string)
+	a.apiKeyCatalog = make(map[string]apiKeyCatalogEntry)
+	a.persistedAggregates = make(map[aggregateKey]struct{})
 	a.generations = make(map[uint64]APIKeyCryptoGeneration)
 	a.activeGeneration = 0
 
-	retainedHashes := make(map[string]struct{})
 	err := a.db.View(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
@@ -883,9 +922,6 @@ func (a *storeActor) reload() error {
 		}
 		generations, err := loadAPIKeyGenerations(meta)
 		if err != nil {
-			return err
-		}
-		if err := validateAPIKeyGenerationReferences(hours, requests, generations); err != nil {
 			return err
 		}
 		a.generations = generations
@@ -923,6 +959,16 @@ func (a *storeActor) reload() error {
 				return fmt.Errorf("validate API key labels: %w", err)
 			}
 			a.apiKeyLabels = cloneStringMap(labels)
+		}
+		catalog, err := loadAPIKeyCatalog(meta)
+		if err != nil {
+			return err
+		}
+		a.apiKeyCatalog = catalog
+		for ref, entry := range catalog {
+			if entry.Ciphertext != "" {
+				a.apiKeyCiphertexts[ref] = entry.Ciphertext
+			}
 		}
 		a.priceRevision = decodeUint64(meta.Get(modelPriceRevisionKey))
 		if a.priceRevision == 0 && len(a.modelPrices) > 0 {
@@ -968,38 +1014,21 @@ func (a *storeActor) reload() error {
 					return fmt.Errorf("decode counters: %w", err)
 				}
 				a.data[aggregateKey{Hour: hour, Dimensions: dimensions}] = counters
-				if ref := apiKeyRef(dimensions.APIKeyGeneration, dimensions.APIKeyHash); ref != "" {
-					retainedHashes[ref] = struct{}{}
-				}
+				a.persistedAggregates[aggregateKey{Hour: hour, Dimensions: dimensions}] = struct{}{}
 				return nil
 			})
 		}); err != nil {
 			return err
 		}
-		return requests.ForEach(func(_, value []byte) error {
-			if value == nil {
-				return errors.New("request bucket contains nested bucket")
-			}
-			var request RequestDetail
-			if err := json.Unmarshal(value, &request); err != nil {
-				return fmt.Errorf("decode request detail: %w", err)
-			}
-			ref := apiKeyRef(request.APIKeyGeneration, request.APIKeyHash)
-			if ref != "" && request.APIKey != "" {
-				a.apiKeyCiphertexts[ref] = request.APIKey
-			}
-			if ref != "" {
-				retainedHashes[ref] = struct{}{}
-			}
-			return nil
-		})
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	for hash := range a.apiKeyLabels {
-		if _, retained := retainedHashes[hash]; !retained {
-			return fmt.Errorf("API key label references data outside retention: %s", hash)
+	for ref := range a.apiKeyLabels {
+		entry, retained := a.apiKeyCatalog[ref]
+		if !retained || (entry.Hours == 0 && entry.Requests == 0) {
+			return fmt.Errorf("API key label references data outside retention: %s", ref)
 		}
 	}
 	return nil
@@ -1119,6 +1148,160 @@ func saveAPIKeyGenerations(meta *bolt.Bucket, generations map[uint64]APIKeyCrypt
 	return nil
 }
 
+func cloneAPIKeyCatalog(values map[string]apiKeyCatalogEntry) map[string]apiKeyCatalogEntry {
+	cloned := make(map[string]apiKeyCatalogEntry, len(values))
+	for ref, entry := range values {
+		cloned[ref] = entry
+	}
+	return cloned
+}
+
+func loadAPIKeyCatalog(meta *bolt.Bucket) (map[string]apiKeyCatalogEntry, error) {
+	catalog := make(map[string]apiKeyCatalogEntry)
+	raw := meta.Get(apiKeyCatalogKey)
+	if len(raw) == 0 {
+		return catalog, nil
+	}
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return nil, fmt.Errorf("decode API key catalog: %w", err)
+	}
+	for ref, entry := range catalog {
+		if _, _, ok := parseAPIKeyRef(ref); !ok {
+			return nil, fmt.Errorf("invalid API key catalog reference %q", ref)
+		}
+		if entry.Hours == 0 && entry.Requests == 0 {
+			return nil, fmt.Errorf("API key catalog reference %q has no retained data", ref)
+		}
+	}
+	return catalog, nil
+}
+
+func saveAPIKeyCatalog(meta *bolt.Bucket, catalog map[string]apiKeyCatalogEntry) error {
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		return fmt.Errorf("encode API key catalog: %w", err)
+	}
+	return meta.Put(apiKeyCatalogKey, encoded)
+}
+
+func pruneAPIKeyLabelsToCatalog(meta *bolt.Bucket, catalog map[string]apiKeyCatalogEntry) error {
+	raw := meta.Get(apiKeyLabelsKey)
+	if len(raw) == 0 {
+		return nil
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(raw, &labels); err != nil {
+		return fmt.Errorf("decode API key labels: %w", err)
+	}
+	if err := validateAPIKeyLabels(labels); err != nil {
+		return err
+	}
+	for ref := range labels {
+		entry, ok := catalog[ref]
+		if !ok || (entry.Hours == 0 && entry.Requests == 0) {
+			delete(labels, ref)
+		}
+	}
+	if len(labels) == 0 {
+		return meta.Delete(apiKeyLabelsKey)
+	}
+	encoded, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	return meta.Put(apiKeyLabelsKey, encoded)
+}
+
+func updateAPIKeyCatalogEntry(catalog map[string]apiKeyCatalogEntry, dimensions Dimensions, source string, delta int) error {
+	ref := apiKeyRef(dimensions.APIKeyGeneration, dimensions.APIKeyHash)
+	if ref == "" {
+		if dimensions.APIKey != "" || dimensions.APIKeyHash != "" || dimensions.APIKeyGeneration != 0 {
+			return errors.New("API key catalog reference is invalid")
+		}
+		return nil
+	}
+	entry := catalog[ref]
+	switch source {
+	case "hours":
+		if delta > 0 {
+			entry.Hours += uint64(delta)
+		} else if entry.Hours < uint64(-delta) {
+			return fmt.Errorf("API key catalog hours count underflow for %s", ref)
+		} else {
+			entry.Hours -= uint64(-delta)
+		}
+	case "requests":
+		if delta > 0 {
+			entry.Requests += uint64(delta)
+		} else if entry.Requests < uint64(-delta) {
+			return fmt.Errorf("API key catalog request count underflow for %s", ref)
+		} else {
+			entry.Requests -= uint64(-delta)
+		}
+	default:
+		return fmt.Errorf("unknown API key catalog source %q", source)
+	}
+	if dimensions.APIKey != "" && (delta > 0 || entry.Ciphertext == "") {
+		entry.Ciphertext = dimensions.APIKey
+	}
+	if entry.Hours == 0 && entry.Requests == 0 {
+		delete(catalog, ref)
+	} else {
+		catalog[ref] = entry
+	}
+	return nil
+}
+
+func buildAPIKeyCatalog(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) (map[string]apiKeyCatalogEntry, error) {
+	catalog := make(map[string]apiKeyCatalogEntry)
+	validate := func(dimensions Dimensions) error {
+		if err := validateAPIKeyDimensions(dimensions, generations); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := hours.ForEach(func(hourKey, value []byte) error {
+		if value != nil {
+			return nil
+		}
+		hour := hours.Bucket(hourKey)
+		if hour == nil {
+			return nil
+		}
+		return hour.ForEach(func(key, value []byte) error {
+			if value == nil {
+				return errors.New("hour bucket contains nested bucket")
+			}
+			var dimensions Dimensions
+			if err := json.Unmarshal(key, &dimensions); err != nil {
+				return fmt.Errorf("decode dimensions while building API key catalog: %w", err)
+			}
+			if err := validate(dimensions); err != nil {
+				return err
+			}
+			return updateAPIKeyCatalogEntry(catalog, dimensions, "hours", 1)
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := requests.ForEach(func(_, value []byte) error {
+		if value == nil {
+			return errors.New("request bucket contains nested bucket")
+		}
+		var request RequestDetail
+		if err := json.Unmarshal(value, &request); err != nil {
+			return fmt.Errorf("decode request while building API key catalog: %w", err)
+		}
+		if err := validate(request.Dimensions); err != nil {
+			return err
+		}
+		return updateAPIKeyCatalogEntry(catalog, request.Dimensions, "requests", 1)
+	}); err != nil {
+		return nil, err
+	}
+	return catalog, nil
+}
+
 func findAPIKeyGeneration(generations map[uint64]APIKeyCryptoGeneration, crypto cryptoContext) uint64 {
 	if !crypto.enabled {
 		return 0
@@ -1176,11 +1359,7 @@ func activateAPIKeyGeneration(meta *bolt.Bucket, generations map[uint64]APIKeyCr
 
 func migrateAPIKeyCryptoSchema(meta, hours, requests *bolt.Bucket, version uint64, now time.Time) error {
 	if version >= 8 {
-		generations, err := loadAPIKeyGenerations(meta)
-		if err != nil {
-			return err
-		}
-		return validateAPIKeyGenerationReferences(hours, requests, generations)
+		return nil
 	}
 	hasData, err := databaseHasAPIKeyData(hours, requests)
 	if err != nil {
@@ -1242,7 +1421,7 @@ func migrateAPIKeyCryptoSchema(meta, hours, requests *bolt.Bucket, version uint6
 	if err := meta.Delete(apiKeyHashVersionKey); err != nil {
 		return err
 	}
-	return validateAPIKeyGenerationReferences(hours, requests, generations)
+	return nil
 }
 
 func migrateLegacyAPIKeyRecords(hours, requests *bolt.Bucket, generation uint64) error {
@@ -1328,21 +1507,25 @@ func migrateLegacyAPIKeyRecords(hours, requests *bolt.Bucket, generation uint64)
 	})
 }
 
-func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) error {
-	validate := func(dimensions Dimensions) error {
-		if dimensions.APIKeyHash == "" {
-			if dimensions.APIKeyGeneration != 0 || dimensions.APIKey != "" {
-				return errors.New("API key generation or ciphertext exists without fingerprint")
-			}
-			return nil
-		}
-		if !validAPIKeyHash(dimensions.APIKeyHash) || dimensions.APIKeyGeneration == 0 {
-			return errors.New("API key fingerprint has no valid crypto generation")
-		}
-		if _, ok := generations[dimensions.APIKeyGeneration]; !ok {
-			return fmt.Errorf("API key references unknown crypto generation %d", dimensions.APIKeyGeneration)
+func validateAPIKeyDimensions(dimensions Dimensions, generations map[uint64]APIKeyCryptoGeneration) error {
+	if dimensions.APIKeyHash == "" {
+		if dimensions.APIKeyGeneration != 0 || dimensions.APIKey != "" {
+			return errors.New("API key generation or ciphertext exists without fingerprint")
 		}
 		return nil
+	}
+	if !validAPIKeyHash(dimensions.APIKeyHash) || dimensions.APIKeyGeneration == 0 {
+		return errors.New("API key fingerprint has no valid crypto generation")
+	}
+	if _, ok := generations[dimensions.APIKeyGeneration]; !ok {
+		return fmt.Errorf("API key references unknown crypto generation %d", dimensions.APIKeyGeneration)
+	}
+	return nil
+}
+
+func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) error {
+	validate := func(dimensions Dimensions) error {
+		return validateAPIKeyDimensions(dimensions, generations)
 	}
 	if err := hours.ForEach(func(hourKey, value []byte) error {
 		if value != nil {
@@ -1839,7 +2022,7 @@ func migrateUsageSources(hours, requests *bolt.Bucket, version uint64) error {
 		return RequestDetail{Sequence: request.Sequence, Time: request.Time, Dimensions: request.Dimensions, Counters: request.Counters, Result: request.Result, LatencyNS: request.LatencyNS, TTFTNS: request.TTFTNS, GenerationNS: request.GenerationNS, TPS: request.TPS, CacheHit: request.CacheHit, EstimatedCost: request.EstimatedCost}
 	}
 
-	if version >= persistenceSchemaVersion {
+	if version >= usageSourcesSchemaVersion {
 		return nil
 	}
 	if hours != nil {
@@ -2066,12 +2249,20 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 	}
 	var nextCiphertexts map[string]string
 	var nextLabels map[string]string
+	var nextCatalog map[string]apiKeyCatalogEntry
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
 		requests := tx.Bucket(requestsBucket)
 		if meta == nil || hours == nil || requests == nil {
 			return errors.New("database buckets are missing")
+		}
+		catalog, err := loadAPIKeyCatalog(meta)
+		if err != nil {
+			return err
+		}
+		if len(catalog) == 0 && len(a.apiKeyCatalog) > 0 {
+			catalog = cloneAPIKeyCatalog(a.apiKeyCatalog)
 		}
 		for key := range a.dirty {
 			hourBucket, err := hours.CreateBucketIfNotExists(encodeInt64(key.Hour))
@@ -2089,6 +2280,11 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			if err := hourBucket.Put(dimensions, counters); err != nil {
 				return err
 			}
+			if _, existed := a.persistedAggregates[key]; !existed {
+				if err := updateAPIKeyCatalogEntry(catalog, key.Dimensions, "hours", 1); err != nil {
+					return err
+				}
+			}
 		}
 		for _, request := range a.pendingRequests {
 			encoded, err := json.Marshal(request)
@@ -2096,6 +2292,9 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 				return err
 			}
 			if err := requests.Put(encodeRequestKey(request.Time.UnixNano(), request.Sequence), encoded); err != nil {
+				return err
+			}
+			if err := updateAPIKeyCatalogEntry(catalog, request.Dimensions, "requests", 1); err != nil {
 				return err
 			}
 		}
@@ -2111,20 +2310,23 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			return err
 		}
 		if shouldPrune {
-			if err := pruneHoursBucket(hours, cutoff); err != nil {
+			if err := pruneHoursBucket(hours, cutoff, catalog); err != nil {
 				return err
 			}
-			if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano()); err != nil {
+			if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano(), catalog); err != nil {
 				return err
 			}
-			retained, ciphertexts, err := retainedAPIKeyState(hours, requests)
-			if err != nil {
-				return err
+			ciphertexts := make(map[string]string, len(catalog))
+			for ref, entry := range catalog {
+				if entry.Hours > 0 || entry.Requests > 0 {
+					ciphertexts[ref] = entry.Ciphertext
+				}
 			}
 			labels := cloneStringMap(a.apiKeyLabels)
-			for hash := range labels {
-				if _, ok := retained[hash]; !ok {
-					delete(labels, hash)
+			for ref := range labels {
+				entry, ok := catalog[ref]
+				if !ok || (entry.Hours == 0 && entry.Requests == 0) {
+					delete(labels, ref)
 				}
 			}
 			encoded, err := json.Marshal(labels)
@@ -2138,8 +2340,17 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			} else if err := meta.Put(apiKeyLabelsKey, encoded); err != nil {
 				return err
 			}
+			if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+				return err
+			}
 			nextCiphertexts = ciphertexts
 			nextLabels = labels
+			nextCatalog = catalog
+		} else if len(a.pendingRequests) > 0 || len(a.dirty) > 0 {
+			if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+				return err
+			}
+			nextCatalog = catalog
 		}
 		return nil
 	})
@@ -2147,7 +2358,14 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 		return fmt.Errorf("flush database: %w", err)
 	}
 
+	dirtyKeys := make([]aggregateKey, 0, len(a.dirty))
+	for key := range a.dirty {
+		dirtyKeys = append(dirtyKeys, key)
+	}
 	clear(a.dirty)
+	for _, key := range dirtyKeys {
+		a.persistedAggregates[key] = struct{}{}
+	}
 	a.pendingRequests = a.pendingRequests[:0]
 	a.pending = 0
 	a.lastFlushErr = nil
@@ -2156,11 +2374,16 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 		for key := range a.data {
 			if key.Hour < cutoff {
 				delete(a.data, key)
+				delete(a.persistedAggregates, key)
 			}
 		}
 		a.lastPruneAt = now
 		a.apiKeyCiphertexts = nextCiphertexts
 		a.apiKeyLabels = nextLabels
+		a.apiKeyCatalog = nextCatalog
+	}
+	if nextCatalog != nil && !shouldPrune {
+		a.apiKeyCatalog = nextCatalog
 	}
 	return nil
 }
@@ -2410,6 +2633,9 @@ func (a *storeActor) reset() error {
 		if err := meta.Delete(apiKeyLabelsKey); err != nil {
 			return err
 		}
+		if err := meta.Delete(apiKeyCatalogKey); err != nil {
+			return err
+		}
 		return meta.Delete(lastUsedKey)
 	}); err != nil {
 		return fmt.Errorf("reset database: %w", err)
@@ -2424,6 +2650,8 @@ func (a *storeActor) reset() error {
 	a.lastUsed = time.Time{}
 	a.apiKeyCiphertexts = make(map[string]string)
 	a.apiKeyLabels = make(map[string]string)
+	a.apiKeyCatalog = make(map[string]apiKeyCatalogEntry)
+	a.persistedAggregates = make(map[aggregateKey]struct{})
 	a.generations = make(map[uint64]APIKeyCryptoGeneration)
 	a.activeGeneration = 0
 	if a.crypto.enabled {
@@ -2576,17 +2804,30 @@ func retentionCutoff(config Config, now time.Time) int64 {
 	return now.UTC().Add(-time.Duration(config.RetentionDays) * 24 * time.Hour).Truncate(time.Minute).Unix()
 }
 
-func pruneHoursBucket(hours *bolt.Bucket, cutoff int64) error {
-	var expired [][]byte
-	if err := hours.ForEach(func(key, value []byte) error {
-		if value == nil && decodeInt64(key) < cutoff {
-			expired = append(expired, append([]byte(nil), key...))
+func pruneHoursBucket(hours *bolt.Bucket, cutoff int64, catalog map[string]apiKeyCatalogEntry) error {
+	cursor := hours.Cursor()
+	for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+		if value != nil {
+			continue
 		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	for _, key := range expired {
+		if decodeInt64(key) >= cutoff {
+			break
+		}
+		hour := hours.Bucket(key)
+		if hour != nil && catalog != nil {
+			if err := hour.ForEach(func(dimensionKey, value []byte) error {
+				if value == nil {
+					return errors.New("hour bucket contains nested bucket")
+				}
+				var dimensions Dimensions
+				if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
+					return fmt.Errorf("decode dimensions while pruning API key catalog: %w", err)
+				}
+				return updateAPIKeyCatalogEntry(catalog, dimensions, "hours", -1)
+			}); err != nil {
+				return err
+			}
+		}
 		if err := hours.DeleteBucket(key); err != nil {
 			return err
 		}
@@ -2601,7 +2842,7 @@ func encodeRequestKey(unixNano int64, sequence uint64) []byte {
 	return result
 }
 
-func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64) error {
+func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64, catalog map[string]apiKeyCatalogEntry) error {
 	cursor := requests.Cursor()
 	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
 		if len(key) != 16 {
@@ -2609,6 +2850,16 @@ func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64) error {
 		}
 		if decodeInt64(key[:8]) >= cutoffUnixNano {
 			break
+		}
+		if catalog != nil {
+			value := requests.Get(key)
+			var request RequestDetail
+			if err := json.Unmarshal(value, &request); err != nil {
+				return fmt.Errorf("decode request while pruning API key catalog: %w", err)
+			}
+			if err := updateAPIKeyCatalogEntry(catalog, request.Dimensions, "requests", -1); err != nil {
+				return err
+			}
 		}
 		if err := cursor.Delete(); err != nil {
 			return err
