@@ -171,11 +171,13 @@ plugins:
 
 重置统计入口只在完整模式可用，需要当前完整模式会话和显式确认。
 
-表格偏好、Token 显示单位和时间范围保存在插件数据库中。`token_display_mode` 支持 `full`、`k`、`m`、`B`，普通模式和完整模式共用该偏好。自定义时间按浏览器本地时区选择，再转换为 UTC RFC3339 时间戳请求。
+表格偏好、Token 显示单位和时间范围保存在插件数据库中。`token_display_mode` 支持 `full`、`k`、`m`、`B`，普通模式和完整模式共用该偏好。自定义时间按浏览器本地时区选择，再转换为 UTC RFC3339 时间戳请求。页面打开或刷新时，如果距离上次成功打开已满 15 分钟，保存的时间范围会自动恢复为浏览器本地当天；15 分钟内重新打开则保留原选择。该打开时间与日期范围一样由同一插件数据库共享。
 
 ### 模型价格与费用估算
 
 模型价格入口只在完整模式显示。所有价格单位均为每 100 万 Token 的美元价格，支持 Input、Output、Cache Read、Cache Creation、Context Tier、Service Tier 独立价格及其 Context Tier，以及 `input_excludes_cache` 和 `input_includes_cache` 两种计费方式。所有价格为 0 的模型按免费模型处理。
+
+支持在模型的“峰谷定价”折叠区配置时区、星期和时间段（最多 32 个），按请求原始时间选价。未命中时使用基础或 Service Tier 价格；Context Tier 优先于时间价格。跨午夜归属起始日，时间区间包含开始、不包含结束。修改配置会重新估算历史费用。详见 [峰谷定价说明](docs/issue-78-time-of-use-pricing-plan.md)。
 
 价格可手工维护，也可从 models.dev 同步。同步先读取 CLIProxyAPI `/v1/models` 当前返回的模型，再根据提供商优先级、忽略后缀和显式模型映射匹配 models.dev。
 
@@ -468,7 +470,7 @@ Without an explicit `data_path`, the plugin resolves the database in this order:
 
 Both modes support preset or custom date-time ranges, source filtering, trend granularity and zoom, model drill-down, full, k, m, or B token units (`B = 1,000,000,000`), currency units, table columns and sorting, manual refresh, 15-second automatic refresh, and preset/custom table page sizes. Statistics reset is available only in full mode and requires the active session plus explicit confirmation.
 
-Table preferences, the selected token display unit, and the selected range are stored in the plugin database. `token_display_mode` accepts `full`, `k`, `m`, or `B`, and normal and full modes share the preference. Custom browser-local times are converted to UTC RFC3339 timestamps for requests.
+Table preferences, the selected token display unit, and the selected range are stored in the plugin database. `token_display_mode` accepts `full`, `k`, `m`, or `B`, and normal and full modes share the preference. Custom browser-local times are converted to UTC RFC3339 timestamps for requests. On open or reload, if at least 15 minutes have elapsed since the last successful open, the saved range resets to the browser's local today; reopening within 15 minutes keeps the saved range. The open timestamp, like the selected range, is shared by clients using the same plugin database.
 
 ### Model Pricing and Cost Estimation
 

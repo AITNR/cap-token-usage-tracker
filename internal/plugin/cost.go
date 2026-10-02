@@ -13,6 +13,8 @@ import (
 
 // EstimatedCost is calculated from one persisted request using the current model price.
 type EstimatedCost struct {
+	PriceTimeTier         string  `json:"price_time_tier,omitempty"`
+	PriceTimeZone         string  `json:"price_time_zone,omitempty"`
 	Priced                bool    `json:"priced"`
 	Source                string  `json:"source,omitempty"`
 	AccountingMode        string  `json:"accounting_mode,omitempty"`
@@ -119,6 +121,19 @@ type modelPriceResolver struct {
 
 // newModelPriceResolver builds the normalized fallback index once per price-book snapshot.
 func newModelPriceResolver(prices map[string]ModelPrice, settings PriceSyncSettings) modelPriceResolver {
+	prices = cloneModelPrices(prices)
+	for name, price := range prices {
+		if len(price.TimeTiers) > 0 {
+			zone := price.TimeZone
+			if zone == "" {
+				zone = "UTC"
+			}
+			if zone != "Local" {
+				price.timeLocation, _ = time.LoadLocation(zone)
+			}
+			prices[name] = price
+		}
+	}
 	resolver := modelPriceResolver{exact: prices}
 	normalizedSettings, err := normalizePriceSyncSettings(settings)
 	if err != nil {
@@ -438,16 +453,25 @@ func estimateRequestCostWithResolver(request RequestDetail, resolver modelPriceR
 		contextTiers = schedule.ContextTiers
 		priceServiceTier = serviceTier
 	}
+	timeTier, timeZone := "", ""
+	if tier, ok := selectTimePriceTier(price, request.Time); ok {
+		rates = tier.TokenRates
+		timeTier = tier.Name
+		timeZone = price.TimeZone
+	}
 	var selectedThreshold uint64
 	for _, tier := range contextTiers {
 		if contextTokens > tier.Threshold && tier.Threshold >= selectedThreshold {
 			rates = tier.tokenRates()
+			timeTier, timeZone = "", ""
 			selectedThreshold = tier.Threshold
 		}
 	}
 
 	result := EstimatedCost{
 		Priced:                true,
+		PriceTimeTier:         timeTier,
+		PriceTimeZone:         timeZone,
 		Source:                price.Source,
 		AccountingMode:        mode,
 		PriceServiceTier:      priceServiceTier,

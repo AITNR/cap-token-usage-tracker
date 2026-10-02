@@ -832,6 +832,7 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		HiddenRequestColumns: []string{"model", "source"},
 		TimeRangeMode:        "last_7_days",
 		TokenDisplayMode:     "B",
+		LastDashboardOpenAt:  "2026-08-23T04:00:00Z",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -841,7 +842,7 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		t.Fatalf("management preferences save response = %+v body=%s", response, response.Body)
 	}
 	var saved DashboardPreferences
-	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || len(saved.HiddenRequestColumns) != 2 || saved.TimeRangeMode != "last_7_days" || saved.TokenDisplayMode != "B" {
+	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || len(saved.HiddenRequestColumns) != 2 || saved.TimeRangeMode != "last_7_days" || saved.TokenDisplayMode != "B" || saved.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
 		t.Fatalf("saved preferences payload = %s, err = %v", response.Body, err)
 	}
 
@@ -856,7 +857,7 @@ func TestDashboardPreferencesManagementSaveRoute(t *testing.T) {
 		t.Fatalf("resource preferences read response = %+v body=%s", response, response.Body)
 	}
 	saved = DashboardPreferences{}
-	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || saved.TokenDisplayMode != "B" {
+	if err := json.Unmarshal(response.Body, &saved); err != nil || saved.RequestPageSize != 25 || saved.DimensionPageSize != 50 || saved.TokenDisplayMode != "B" || saved.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
 		t.Fatalf("stored preferences payload = %s, err = %v", response.Body, err)
 	}
 

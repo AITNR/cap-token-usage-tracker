@@ -35,9 +35,17 @@ var (
 	apiKeyGenerationsKey    = []byte("api_key_crypto_generations")
 	apiKeyNextGenerationKey = []byte("api_key_next_generation")
 	apiKeyLabelsKey         = []byte("api_key_labels")
+	apiKeyCatalogKey        = []byte("api_key_catalog")
+	observedModelsKey       = []byte("observed_models")
 )
 
-const persistenceSchemaVersion uint64 = 9
+const persistenceSchemaVersion uint64 = 10
+
+const usageSourcesSchemaVersion uint64 = 9
+
+// aggregateHotWindow bounds the amount of aggregate data restored into memory.
+// Older data remains available through actor-owned range reads.
+const aggregateHotWindow = 24 * time.Hour
 
 const (
 	maxAPIKeyLabels     = 10_000
@@ -168,6 +176,7 @@ type configResult struct {
 	err         error
 }
 type closeCommand struct{ resp chan error }
+type rebuildAPIKeyCatalogCommand struct{ resp chan error }
 
 const maxDatabaseBackupBytes = 64 << 20
 
@@ -242,8 +251,99 @@ type storeActor struct {
 	dashboardPreferences DashboardPreferences
 	apiKeyCiphertexts    map[string]string
 	apiKeyLabels         map[string]string
+	apiKeyCatalog        map[string]apiKeyCatalogEntry
+	persistedAggregates  map[aggregateKey]struct{}
+	observedModelCounts  map[string]uint64
+	observedModelsReady  bool
+	apiKeyCatalogHealthy bool
 	activeGeneration     uint64
 	generations          map[uint64]APIKeyCryptoGeneration
+}
+
+type apiKeyCatalogEntry struct {
+	Ciphertext string `json:"ciphertext,omitempty"`
+	Hours      uint64 `json:"hours"`
+	Requests   uint64 `json:"requests"`
+}
+
+func loadObservedModels(meta *bolt.Bucket) (map[string]uint64, error) {
+	models := make(map[string]uint64)
+	raw := meta.Get(observedModelsKey)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(raw, &models); err != nil {
+		return nil, fmt.Errorf("decode observed models: %w", err)
+	}
+	for model, count := range models {
+		if strings.TrimSpace(model) == "" || count == 0 {
+			return nil, errors.New("observed models index contains invalid entry")
+		}
+	}
+	return models, nil
+}
+
+func saveObservedModels(meta *bolt.Bucket, models map[string]uint64) error {
+	if len(models) == 0 {
+		return meta.Delete(observedModelsKey)
+	}
+	encoded, err := json.Marshal(models)
+	if err != nil {
+		return fmt.Errorf("encode observed models: %w", err)
+	}
+	return meta.Put(observedModelsKey, encoded)
+}
+
+func updateObservedModelCount(models map[string]uint64, dimensions Dimensions, delta int) error {
+	model := strings.TrimSpace(dimensions.Model)
+	if model == "" || models == nil {
+		return nil
+	}
+	count := models[model]
+	if delta > 0 {
+		models[model] = count + uint64(delta)
+		return nil
+	}
+	decrement := uint64(-delta)
+	if count < decrement {
+		return fmt.Errorf("observed model count underflow for %q", model)
+	}
+	count -= decrement
+	if count == 0 {
+		delete(models, model)
+	} else {
+		models[model] = count
+	}
+	return nil
+}
+
+func buildObservedModels(hours *bolt.Bucket, cutoff int64) (map[string]uint64, error) {
+	models := make(map[string]uint64)
+	if err := hours.ForEach(func(hourKey, value []byte) error {
+		if value != nil {
+			return nil
+		}
+		if decodeInt64(hourKey) < cutoff {
+			return nil
+		}
+		hour := hours.Bucket(hourKey)
+		if hour == nil {
+			return nil
+		}
+		return hour.ForEach(func(dimensionKey, value []byte) error {
+			if value == nil {
+				return errors.New("hour bucket contains nested bucket")
+			}
+			var dimensions Dimensions
+			if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
+				return fmt.Errorf("decode dimensions while building observed models: %w", err)
+			}
+			return updateObservedModelCount(models, dimensions, 1)
+		})
+	}); err != nil {
+		return nil, err
+	}
+	return models, nil
 }
 
 func openStore(config Config) (*Store, error) {
@@ -275,6 +375,9 @@ func openStoreWithCrypto(config Config, crypto cryptoContext) (*Store, error) {
 		dashboardPreferences: defaultDashboardPreferences(),
 		apiKeyCiphertexts:    make(map[string]string),
 		apiKeyLabels:         make(map[string]string),
+		apiKeyCatalog:        make(map[string]apiKeyCatalogEntry),
+		observedModelCounts:  make(map[string]uint64),
+		apiKeyCatalogHealthy: true,
 	}
 	if err := actor.initialize(); err != nil {
 		_ = db.Close()
@@ -415,6 +518,17 @@ func (s *Store) ResolveAPIKeyHash(hash string) (string, error) {
 	}
 	result := <-resp
 	return result.ref, result.err
+}
+
+// RebuildAPIKeyCatalog explicitly rebuilds the derived API-key index. It is
+// intentionally separate from store initialization so a missing or damaged
+// index never turns registration into an unbounded scan.
+func (s *Store) RebuildAPIKeyCatalog() error {
+	resp := make(chan error, 1)
+	if err := s.send(rebuildAPIKeyCatalogCommand{resp: resp}); err != nil {
+		return err
+	}
+	return <-resp
 }
 
 func (s *Store) SaveDashboardPreferences(preferences DashboardPreferences) (DashboardPreferences, error) {
@@ -661,15 +775,20 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- queryResult{err: withStatus(400, "%v", err)}
 					continue
 				}
+				data, err := actor.loadAggregates(item.queryRange)
+				if err != nil {
+					item.resp <- queryResult{err: err}
+					continue
+				}
 				switch item.mode {
 				case statsQueryInitial:
-					item.resp <- queryResult{initial: buildInitialStatsForRange(actor.data, actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
+					item.resp <- queryResult{initial: buildInitialStatsForRange(data, actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
 				case statsQueryTrend:
-					item.resp <- queryResult{trend: buildStatsTrendForRange(actor.data, actor.since, item.queryRange, item.filter, now)}
+					item.resp <- queryResult{trend: buildStatsTrendForRange(data, actor.since, item.queryRange, item.filter, now)}
 				case statsQueryGroups:
-					item.resp <- queryResult{groups: buildGroupsForRange(actor.data, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
+					item.resp <- queryResult{groups: buildGroupsForRange(data, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)}
 				default:
-					stats := buildStatsForRangeWithFilter(actor.data, actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)
+					stats := buildStatsForRangeWithFilter(data, actor.since, actor.lastUsed, item.queryRange, item.filter, now, actor.apiKeyCiphertexts)
 					item.resp <- queryResult{stats: stats}
 				}
 			case requestQueryCommand:
@@ -687,6 +806,10 @@ func (s *Store) run(actor *storeActor) {
 				preferences, err := actor.saveDashboardPreferences(item.preferences)
 				item.resp <- preferencesResult{preferences: preferences, err: err}
 			case labelQueryCommand:
+				if !actor.apiKeyCatalogHealthy {
+					item.resp <- labelQueryResult{err: withStatus(503, "API key catalog requires an explicit rebuild")}
+					continue
+				}
 				item.resp <- labelQueryResult{labels: cloneStringMap(actor.apiKeyLabels)}
 			case labelSetCommand:
 				item.resp <- actor.setAPIKeyLabel(item.hash, item.label)
@@ -707,7 +830,8 @@ func (s *Store) run(actor *storeActor) {
 					item.resp <- observedModelsResult{err: err}
 					continue
 				}
-				item.resp <- observedModelsResult{models: actor.observedModels(item.now)}
+				models, err := actor.observedModels(item.now)
+				item.resp <- observedModelsResult{models: models, err: err}
 			case costSnapshotCommand:
 				now := time.Now().UTC()
 				if err := actor.flush(now, true); err != nil {
@@ -770,6 +894,8 @@ func (s *Store) run(actor *storeActor) {
 				closeErr := actor.db.Close()
 				item.resp <- errors.Join(flushErr, closeErr)
 				return
+			case rebuildAPIKeyCatalogCommand:
+				item.resp <- actor.rebuildAPIKeyCatalog()
 			}
 		case now := <-ticker.C:
 			actor.lastFlushErr = actor.flush(now.UTC(), false)
@@ -781,6 +907,9 @@ func (a *storeActor) initialize() error {
 	now := time.Now().UTC()
 	var generations map[uint64]APIKeyCryptoGeneration
 	var activeGeneration uint64
+	var catalog map[string]apiKeyCatalogEntry
+	var observedModels map[string]uint64
+	var catalogHealthy = true
 	if err := a.db.Update(func(tx *bolt.Tx) error {
 		meta, err := tx.CreateBucketIfNotExists(metaBucket)
 		if err != nil {
@@ -797,6 +926,20 @@ func (a *storeActor) initialize() error {
 		version := decodeUint64(meta.Get(schemaKey))
 		if version > persistenceSchemaVersion {
 			return fmt.Errorf("unsupported database schema version %d", version)
+		}
+		if version >= persistenceSchemaVersion {
+			var err error
+			catalog, err = loadAPIKeyCatalog(meta)
+			if err != nil {
+				catalogHealthy = false
+				catalog = make(map[string]apiKeyCatalogEntry)
+			} else if len(meta.Get(apiKeyCatalogKey)) == 0 {
+				catalogHealthy = false
+			}
+			observedModels, err = loadObservedModels(meta)
+			if err != nil {
+				observedModels = nil
+			}
 		}
 		if err := migratePriceMetadata(meta, version); err != nil {
 			return err
@@ -815,10 +958,14 @@ func (a *storeActor) initialize() error {
 		if err := meta.Put(sinceKey, encodeInt64(since.UnixNano())); err != nil {
 			return err
 		}
-		if err := pruneHoursBucket(hours, cutoff); err != nil {
+		catalogForUpdate := catalog
+		if !catalogHealthy {
+			catalogForUpdate = nil
+		}
+		if err := pruneHoursBucketWithModels(hours, cutoff, catalogForUpdate, observedModels); err != nil {
 			return err
 		}
-		if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano()); err != nil {
+		if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano(), catalogForUpdate); err != nil {
 			return err
 		}
 		if err := migrateUsageSources(hours, requests, version); err != nil {
@@ -838,12 +985,40 @@ func (a *storeActor) initialize() error {
 		}
 		activeGeneration = activatedGeneration
 		generations = activatedGenerations
+		if version < persistenceSchemaVersion {
+			var err error
+			catalog, err = buildAPIKeyCatalog(hours, requests, generations)
+			if err != nil {
+				return err
+			}
+			catalogHealthy = true
+			if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+				return err
+			}
+		} else if len(meta.Get(apiKeyCatalogKey)) == 0 {
+			catalogHealthy = false
+			catalog = make(map[string]apiKeyCatalogEntry)
+		}
+		if catalogHealthy {
+			if err := pruneAPIKeyLabelsToCatalog(meta, catalog); err != nil {
+				return err
+			}
+		}
+		if observedModels != nil {
+			if err := saveObservedModels(meta, observedModels); err != nil {
+				return err
+			}
+		}
 		return meta.Put(schemaKey, encodeUint64(persistenceSchemaVersion))
 	}); err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
 	a.generations = generations
 	a.activeGeneration = activeGeneration
+	a.apiKeyCatalog = catalog
+	a.apiKeyCatalogHealthy = catalogHealthy
+	a.observedModelCounts = observedModels
+	a.observedModelsReady = observedModels != nil
 
 	return a.reload()
 }
@@ -867,10 +1042,14 @@ func (a *storeActor) reload() error {
 	a.dashboardPreferences = defaultDashboardPreferences()
 	a.apiKeyCiphertexts = make(map[string]string)
 	a.apiKeyLabels = make(map[string]string)
+	a.apiKeyCatalog = make(map[string]apiKeyCatalogEntry)
+	a.persistedAggregates = make(map[aggregateKey]struct{})
+	a.observedModelCounts = make(map[string]uint64)
+	a.observedModelsReady = false
+	a.apiKeyCatalogHealthy = true
 	a.generations = make(map[uint64]APIKeyCryptoGeneration)
 	a.activeGeneration = 0
 
-	retainedHashes := make(map[string]struct{})
 	err := a.db.View(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
@@ -883,9 +1062,6 @@ func (a *storeActor) reload() error {
 		}
 		generations, err := loadAPIKeyGenerations(meta)
 		if err != nil {
-			return err
-		}
-		if err := validateAPIKeyGenerationReferences(hours, requests, generations); err != nil {
 			return err
 		}
 		a.generations = generations
@@ -924,6 +1100,21 @@ func (a *storeActor) reload() error {
 			}
 			a.apiKeyLabels = cloneStringMap(labels)
 		}
+		catalog, err := loadAPIKeyCatalog(meta)
+		if err != nil {
+			// The catalog is derived state. Keep the primary aggregate/request data
+			// readable and disable catalog-dependent operations until a rebuild.
+			a.apiKeyCatalogHealthy = false
+			catalog = make(map[string]apiKeyCatalogEntry)
+		} else if len(meta.Get(apiKeyCatalogKey)) == 0 {
+			a.apiKeyCatalogHealthy = false
+		}
+		a.apiKeyCatalog = catalog
+		for ref, entry := range catalog {
+			if entry.Ciphertext != "" {
+				a.apiKeyCiphertexts[ref] = entry.Ciphertext
+			}
+		}
 		a.priceRevision = decodeUint64(meta.Get(modelPriceRevisionKey))
 		if a.priceRevision == 0 && len(a.modelPrices) > 0 {
 			a.priceRevision = 1
@@ -949,16 +1140,18 @@ func (a *storeActor) reload() error {
 		if raw := meta.Get(lastUsedKey); len(raw) > 0 {
 			a.lastUsed = time.Unix(0, decodeInt64(raw)).UTC()
 		}
-		if err := hours.ForEach(func(hourKey, value []byte) error {
+		hotStart := time.Now().UTC().Add(-aggregateHotWindow).Truncate(time.Minute).Unix()
+		cursor := hours.Cursor()
+		for hourKey, value := cursor.Seek(encodeInt64(hotStart)); hourKey != nil; hourKey, value = cursor.Next() {
 			if value != nil {
-				return nil
+				continue
 			}
 			hourBucket := hours.Bucket(hourKey)
 			if hourBucket == nil {
-				return nil
+				continue
 			}
 			hour := decodeInt64(hourKey)
-			return hourBucket.ForEach(func(dimensionKey, counterValue []byte) error {
+			if err := hourBucket.ForEach(func(dimensionKey, counterValue []byte) error {
 				var dimensions Dimensions
 				if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
 					return fmt.Errorf("decode dimensions: %w", err)
@@ -968,39 +1161,35 @@ func (a *storeActor) reload() error {
 					return fmt.Errorf("decode counters: %w", err)
 				}
 				a.data[aggregateKey{Hour: hour, Dimensions: dimensions}] = counters
-				if ref := apiKeyRef(dimensions.APIKeyGeneration, dimensions.APIKeyHash); ref != "" {
-					retainedHashes[ref] = struct{}{}
-				}
+				a.persistedAggregates[aggregateKey{Hour: hour, Dimensions: dimensions}] = struct{}{}
 				return nil
-			})
-		}); err != nil {
-			return err
+			}); err != nil {
+				return err
+			}
 		}
-		return requests.ForEach(func(_, value []byte) error {
-			if value == nil {
-				return errors.New("request bucket contains nested bucket")
-			}
-			var request RequestDetail
-			if err := json.Unmarshal(value, &request); err != nil {
-				return fmt.Errorf("decode request detail: %w", err)
-			}
-			ref := apiKeyRef(request.APIKeyGeneration, request.APIKeyHash)
-			if ref != "" && request.APIKey != "" {
-				a.apiKeyCiphertexts[ref] = request.APIKey
-			}
-			if ref != "" {
-				retainedHashes[ref] = struct{}{}
-			}
-			return nil
-		})
+		models, err := loadObservedModels(meta)
+		if err == nil {
+			a.observedModelCounts = models
+			a.observedModelsReady = true
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	for hash := range a.apiKeyLabels {
-		if _, retained := retainedHashes[hash]; !retained {
-			return fmt.Errorf("API key label references data outside retention: %s", hash)
+	for ref := range a.apiKeyLabels {
+		if !a.apiKeyCatalogHealthy {
+			break
 		}
+		entry, retained := a.apiKeyCatalog[ref]
+		if !retained || (entry.Hours == 0 && entry.Requests == 0) {
+			return fmt.Errorf("API key label references data outside retention: %s", ref)
+		}
+	}
+	if !a.observedModelsReady {
+		// A missing model index is valid legacy state. It is rebuilt lazily by
+		// ObservedModels so opening the database stays bounded by the hot window.
+		a.observedModelCounts = nil
 	}
 	return nil
 }
@@ -1119,6 +1308,205 @@ func saveAPIKeyGenerations(meta *bolt.Bucket, generations map[uint64]APIKeyCrypt
 	return nil
 }
 
+func cloneAPIKeyCatalog(values map[string]apiKeyCatalogEntry) map[string]apiKeyCatalogEntry {
+	cloned := make(map[string]apiKeyCatalogEntry, len(values))
+	for ref, entry := range values {
+		cloned[ref] = entry
+	}
+	return cloned
+}
+
+func loadAPIKeyCatalog(meta *bolt.Bucket) (map[string]apiKeyCatalogEntry, error) {
+	catalog := make(map[string]apiKeyCatalogEntry)
+	raw := meta.Get(apiKeyCatalogKey)
+	if len(raw) == 0 {
+		return catalog, nil
+	}
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		return nil, fmt.Errorf("decode API key catalog: %w", err)
+	}
+	for ref, entry := range catalog {
+		if _, _, ok := parseAPIKeyRef(ref); !ok {
+			return nil, fmt.Errorf("invalid API key catalog reference %q", ref)
+		}
+		if entry.Hours == 0 && entry.Requests == 0 {
+			return nil, fmt.Errorf("API key catalog reference %q has no retained data", ref)
+		}
+	}
+	return catalog, nil
+}
+
+func saveAPIKeyCatalog(meta *bolt.Bucket, catalog map[string]apiKeyCatalogEntry) error {
+	encoded, err := json.Marshal(catalog)
+	if err != nil {
+		return fmt.Errorf("encode API key catalog: %w", err)
+	}
+	return meta.Put(apiKeyCatalogKey, encoded)
+}
+
+func pruneAPIKeyLabelsToCatalog(meta *bolt.Bucket, catalog map[string]apiKeyCatalogEntry) error {
+	raw := meta.Get(apiKeyLabelsKey)
+	if len(raw) == 0 {
+		return nil
+	}
+	var labels map[string]string
+	if err := json.Unmarshal(raw, &labels); err != nil {
+		return fmt.Errorf("decode API key labels: %w", err)
+	}
+	if err := validateAPIKeyLabels(labels); err != nil {
+		return err
+	}
+	for ref := range labels {
+		entry, ok := catalog[ref]
+		if !ok || (entry.Hours == 0 && entry.Requests == 0) {
+			delete(labels, ref)
+		}
+	}
+	if len(labels) == 0 {
+		return meta.Delete(apiKeyLabelsKey)
+	}
+	encoded, err := json.Marshal(labels)
+	if err != nil {
+		return err
+	}
+	return meta.Put(apiKeyLabelsKey, encoded)
+}
+
+func updateAPIKeyCatalogEntry(catalog map[string]apiKeyCatalogEntry, dimensions Dimensions, source string, delta int) error {
+	ref := apiKeyRef(dimensions.APIKeyGeneration, dimensions.APIKeyHash)
+	if ref == "" {
+		if dimensions.APIKey != "" || dimensions.APIKeyHash != "" || dimensions.APIKeyGeneration != 0 {
+			return errors.New("API key catalog reference is invalid")
+		}
+		return nil
+	}
+	entry := catalog[ref]
+	switch source {
+	case "hours":
+		if delta > 0 {
+			entry.Hours += uint64(delta)
+		} else if entry.Hours < uint64(-delta) {
+			return fmt.Errorf("API key catalog hours count underflow for %s", ref)
+		} else {
+			entry.Hours -= uint64(-delta)
+		}
+	case "requests":
+		if delta > 0 {
+			entry.Requests += uint64(delta)
+		} else if entry.Requests < uint64(-delta) {
+			return fmt.Errorf("API key catalog request count underflow for %s", ref)
+		} else {
+			entry.Requests -= uint64(-delta)
+		}
+	default:
+		return fmt.Errorf("unknown API key catalog source %q", source)
+	}
+	if dimensions.APIKey != "" && (delta > 0 || entry.Ciphertext == "") {
+		entry.Ciphertext = dimensions.APIKey
+	}
+	if entry.Hours == 0 && entry.Requests == 0 {
+		delete(catalog, ref)
+	} else {
+		catalog[ref] = entry
+	}
+	return nil
+}
+
+func buildAPIKeyCatalog(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) (map[string]apiKeyCatalogEntry, error) {
+	catalog := make(map[string]apiKeyCatalogEntry)
+	validate := func(dimensions Dimensions) error {
+		if err := validateAPIKeyDimensions(dimensions, generations); err != nil {
+			return err
+		}
+		return nil
+	}
+	if err := hours.ForEach(func(hourKey, value []byte) error {
+		if value != nil {
+			return nil
+		}
+		hour := hours.Bucket(hourKey)
+		if hour == nil {
+			return nil
+		}
+		return hour.ForEach(func(key, value []byte) error {
+			if value == nil {
+				return errors.New("hour bucket contains nested bucket")
+			}
+			var dimensions Dimensions
+			if err := json.Unmarshal(key, &dimensions); err != nil {
+				return fmt.Errorf("decode dimensions while building API key catalog: %w", err)
+			}
+			if err := validate(dimensions); err != nil {
+				return err
+			}
+			return updateAPIKeyCatalogEntry(catalog, dimensions, "hours", 1)
+		})
+	}); err != nil {
+		return nil, err
+	}
+	if err := requests.ForEach(func(_, value []byte) error {
+		if value == nil {
+			return errors.New("request bucket contains nested bucket")
+		}
+		var request RequestDetail
+		if err := json.Unmarshal(value, &request); err != nil {
+			return fmt.Errorf("decode request while building API key catalog: %w", err)
+		}
+		if err := validate(request.Dimensions); err != nil {
+			return err
+		}
+		return updateAPIKeyCatalogEntry(catalog, request.Dimensions, "requests", 1)
+	}); err != nil {
+		return nil, err
+	}
+	return catalog, nil
+}
+
+func (a *storeActor) rebuildAPIKeyCatalog() error {
+	var catalog map[string]apiKeyCatalogEntry
+	var ciphertexts map[string]string
+	err := a.db.Update(func(tx *bolt.Tx) error {
+		hours := tx.Bucket(hoursBucket)
+		requests := tx.Bucket(requestsBucket)
+		meta := tx.Bucket(metaBucket)
+		if hours == nil || requests == nil || meta == nil {
+			return errors.New("database buckets are missing")
+		}
+		var err error
+		catalog, err = buildAPIKeyCatalog(hours, requests, a.generations)
+		if err != nil {
+			return err
+		}
+		if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+			return err
+		}
+		if err := pruneAPIKeyLabelsToCatalog(meta, catalog); err != nil {
+			return err
+		}
+		ciphertexts = make(map[string]string, len(catalog))
+		for ref, entry := range catalog {
+			if entry.Ciphertext != "" {
+				ciphertexts[ref] = entry.Ciphertext
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("rebuild API key catalog: %w", err)
+	}
+	a.apiKeyCatalog = catalog
+	a.apiKeyCiphertexts = ciphertexts
+	labels := cloneStringMap(a.apiKeyLabels)
+	for ref := range labels {
+		if _, ok := catalog[ref]; !ok {
+			delete(labels, ref)
+		}
+	}
+	a.apiKeyLabels = labels
+	a.apiKeyCatalogHealthy = true
+	return nil
+}
+
 func findAPIKeyGeneration(generations map[uint64]APIKeyCryptoGeneration, crypto cryptoContext) uint64 {
 	if !crypto.enabled {
 		return 0
@@ -1176,11 +1564,7 @@ func activateAPIKeyGeneration(meta *bolt.Bucket, generations map[uint64]APIKeyCr
 
 func migrateAPIKeyCryptoSchema(meta, hours, requests *bolt.Bucket, version uint64, now time.Time) error {
 	if version >= 8 {
-		generations, err := loadAPIKeyGenerations(meta)
-		if err != nil {
-			return err
-		}
-		return validateAPIKeyGenerationReferences(hours, requests, generations)
+		return nil
 	}
 	hasData, err := databaseHasAPIKeyData(hours, requests)
 	if err != nil {
@@ -1242,7 +1626,7 @@ func migrateAPIKeyCryptoSchema(meta, hours, requests *bolt.Bucket, version uint6
 	if err := meta.Delete(apiKeyHashVersionKey); err != nil {
 		return err
 	}
-	return validateAPIKeyGenerationReferences(hours, requests, generations)
+	return nil
 }
 
 func migrateLegacyAPIKeyRecords(hours, requests *bolt.Bucket, generation uint64) error {
@@ -1328,21 +1712,25 @@ func migrateLegacyAPIKeyRecords(hours, requests *bolt.Bucket, generation uint64)
 	})
 }
 
-func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) error {
-	validate := func(dimensions Dimensions) error {
-		if dimensions.APIKeyHash == "" {
-			if dimensions.APIKeyGeneration != 0 || dimensions.APIKey != "" {
-				return errors.New("API key generation or ciphertext exists without fingerprint")
-			}
-			return nil
-		}
-		if !validAPIKeyHash(dimensions.APIKeyHash) || dimensions.APIKeyGeneration == 0 {
-			return errors.New("API key fingerprint has no valid crypto generation")
-		}
-		if _, ok := generations[dimensions.APIKeyGeneration]; !ok {
-			return fmt.Errorf("API key references unknown crypto generation %d", dimensions.APIKeyGeneration)
+func validateAPIKeyDimensions(dimensions Dimensions, generations map[uint64]APIKeyCryptoGeneration) error {
+	if dimensions.APIKeyHash == "" {
+		if dimensions.APIKeyGeneration != 0 || dimensions.APIKey != "" {
+			return errors.New("API key generation or ciphertext exists without fingerprint")
 		}
 		return nil
+	}
+	if !validAPIKeyHash(dimensions.APIKeyHash) || dimensions.APIKeyGeneration == 0 {
+		return errors.New("API key fingerprint has no valid crypto generation")
+	}
+	if _, ok := generations[dimensions.APIKeyGeneration]; !ok {
+		return fmt.Errorf("API key references unknown crypto generation %d", dimensions.APIKeyGeneration)
+	}
+	return nil
+}
+
+func validateAPIKeyGenerationReferences(hours, requests *bolt.Bucket, generations map[uint64]APIKeyCryptoGeneration) error {
+	validate := func(dimensions Dimensions) error {
+		return validateAPIKeyDimensions(dimensions, generations)
 	}
 	if err := hours.ForEach(func(hourKey, value []byte) error {
 		if value != nil {
@@ -1436,6 +1824,9 @@ func (a *storeActor) hasRetainedAPIKeyRef(ref string) bool {
 }
 
 func (a *storeActor) resolveAPIKeyHash(hash string) (string, error) {
+	if !a.apiKeyCatalogHealthy {
+		return "", withStatus(503, "API key catalog requires an explicit rebuild")
+	}
 	if !validAPIKeyHash(hash) {
 		return "", withStatus(400, "api_key_hash must be 32 lowercase hexadecimal characters")
 	}
@@ -1480,6 +1871,9 @@ func (a *storeActor) saveAPIKeyLabels(labels map[string]string) error {
 }
 
 func (a *storeActor) setAPIKeyLabel(ref, label string) error {
+	if !a.apiKeyCatalogHealthy {
+		return withStatus(503, "API key catalog requires an explicit rebuild")
+	}
 	if err := validateAPIKeyLabel(ref, label); err != nil {
 		return withStatus(400, "%v", err)
 	}
@@ -1839,7 +2233,7 @@ func migrateUsageSources(hours, requests *bolt.Bucket, version uint64) error {
 		return RequestDetail{Sequence: request.Sequence, Time: request.Time, Dimensions: request.Dimensions, Counters: request.Counters, Result: request.Result, LatencyNS: request.LatencyNS, TTFTNS: request.TTFTNS, GenerationNS: request.GenerationNS, TPS: request.TPS, CacheHit: request.CacheHit, EstimatedCost: request.EstimatedCost}
 	}
 
-	if version >= persistenceSchemaVersion {
+	if version >= usageSourcesSchemaVersion {
 		return nil
 	}
 	if hours != nil {
@@ -2066,12 +2460,30 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 	}
 	var nextCiphertexts map[string]string
 	var nextLabels map[string]string
+	var nextCatalog map[string]apiKeyCatalogEntry
+	var nextObservedModels map[string]uint64
 	err := a.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(metaBucket)
 		hours := tx.Bucket(hoursBucket)
 		requests := tx.Bucket(requestsBucket)
 		if meta == nil || hours == nil || requests == nil {
 			return errors.New("database buckets are missing")
+		}
+		catalog, err := loadAPIKeyCatalog(meta)
+		if err != nil {
+			if a.apiKeyCatalogHealthy {
+				return err
+			}
+			catalog = nil
+		}
+		if len(catalog) == 0 && len(a.apiKeyCatalog) > 0 {
+			catalog = cloneAPIKeyCatalog(a.apiKeyCatalog)
+		}
+		if a.observedModelsReady {
+			nextObservedModels = make(map[string]uint64, len(a.observedModelCounts))
+			for model, count := range a.observedModelCounts {
+				nextObservedModels[model] = count
+			}
 		}
 		for key := range a.dirty {
 			hourBucket, err := hours.CreateBucketIfNotExists(encodeInt64(key.Hour))
@@ -2086,8 +2498,21 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			if err != nil {
 				return err
 			}
+			existed := hourBucket.Get(dimensions) != nil
 			if err := hourBucket.Put(dimensions, counters); err != nil {
 				return err
+			}
+			if !existed {
+				if nextObservedModels != nil && key.Hour >= cutoff {
+					if err := updateObservedModelCount(nextObservedModels, key.Dimensions, 1); err != nil {
+						return err
+					}
+				}
+				if catalog != nil {
+					if err := updateAPIKeyCatalogEntry(catalog, key.Dimensions, "hours", 1); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		for _, request := range a.pendingRequests {
@@ -2097,6 +2522,11 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			}
 			if err := requests.Put(encodeRequestKey(request.Time.UnixNano(), request.Sequence), encoded); err != nil {
 				return err
+			}
+			if catalog != nil {
+				if err := updateAPIKeyCatalogEntry(catalog, request.Dimensions, "requests", 1); err != nil {
+					return err
+				}
 			}
 		}
 		if err := meta.Put(sinceKey, encodeInt64(nextSince.UnixNano())); err != nil {
@@ -2111,35 +2541,54 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 			return err
 		}
 		if shouldPrune {
-			if err := pruneHoursBucket(hours, cutoff); err != nil {
+			if err := pruneHoursBucketWithModels(hours, cutoff, catalog, nextObservedModels); err != nil {
 				return err
 			}
-			if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano()); err != nil {
+			if err := pruneRequestsBucket(requests, time.Unix(cutoff, 0).UTC().UnixNano(), catalog); err != nil {
 				return err
 			}
-			retained, ciphertexts, err := retainedAPIKeyState(hours, requests)
-			if err != nil {
-				return err
-			}
-			labels := cloneStringMap(a.apiKeyLabels)
-			for hash := range labels {
-				if _, ok := retained[hash]; !ok {
-					delete(labels, hash)
+			if catalog != nil {
+				ciphertexts := make(map[string]string, len(catalog))
+				for ref, entry := range catalog {
+					if entry.Hours > 0 || entry.Requests > 0 {
+						ciphertexts[ref] = entry.Ciphertext
+					}
 				}
-			}
-			encoded, err := json.Marshal(labels)
-			if err != nil {
-				return err
-			}
-			if len(labels) == 0 {
-				if err := meta.Delete(apiKeyLabelsKey); err != nil {
+				labels := cloneStringMap(a.apiKeyLabels)
+				for ref := range labels {
+					entry, ok := catalog[ref]
+					if !ok || (entry.Hours == 0 && entry.Requests == 0) {
+						delete(labels, ref)
+					}
+				}
+				encoded, err := json.Marshal(labels)
+				if err != nil {
 					return err
 				}
-			} else if err := meta.Put(apiKeyLabelsKey, encoded); err != nil {
+				if len(labels) == 0 {
+					if err := meta.Delete(apiKeyLabelsKey); err != nil {
+						return err
+					}
+				} else if err := meta.Put(apiKeyLabelsKey, encoded); err != nil {
+					return err
+				}
+				if err := saveAPIKeyCatalog(meta, catalog); err != nil {
+					return err
+				}
+				nextCiphertexts = ciphertexts
+				nextLabels = labels
+				nextCatalog = catalog
+			}
+		} else if catalog != nil && (len(a.pendingRequests) > 0 || len(a.dirty) > 0) {
+			if err := saveAPIKeyCatalog(meta, catalog); err != nil {
 				return err
 			}
-			nextCiphertexts = ciphertexts
-			nextLabels = labels
+			nextCatalog = catalog
+		}
+		if nextObservedModels != nil {
+			if err := saveObservedModels(meta, nextObservedModels); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
@@ -2147,7 +2596,14 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 		return fmt.Errorf("flush database: %w", err)
 	}
 
+	dirtyKeys := make([]aggregateKey, 0, len(a.dirty))
+	for key := range a.dirty {
+		dirtyKeys = append(dirtyKeys, key)
+	}
 	clear(a.dirty)
+	for _, key := range dirtyKeys {
+		a.persistedAggregates[key] = struct{}{}
+	}
 	a.pendingRequests = a.pendingRequests[:0]
 	a.pending = 0
 	a.lastFlushErr = nil
@@ -2156,11 +2612,22 @@ func (a *storeActor) flush(now time.Time, force bool) error {
 		for key := range a.data {
 			if key.Hour < cutoff {
 				delete(a.data, key)
+				delete(a.persistedAggregates, key)
 			}
 		}
 		a.lastPruneAt = now
-		a.apiKeyCiphertexts = nextCiphertexts
-		a.apiKeyLabels = nextLabels
+		if nextCatalog != nil {
+			a.apiKeyCiphertexts = nextCiphertexts
+			a.apiKeyLabels = nextLabels
+			a.apiKeyCatalog = nextCatalog
+		}
+	}
+	if nextCatalog != nil && !shouldPrune {
+		a.apiKeyCatalog = nextCatalog
+	}
+	if nextObservedModels != nil {
+		a.observedModelCounts = nextObservedModels
+		a.observedModelsReady = true
 	}
 	return nil
 }
@@ -2204,6 +2671,13 @@ func (a *storeActor) reconfigure(config Config, crypto cryptoContext) error {
 }
 
 func (a *storeActor) saveDashboardPreferences(preferences DashboardPreferences) (DashboardPreferences, error) {
+	// Legacy clients omit this field; preserve it and prevent an older tab's
+	// delayed save from moving the most recent open time backwards.
+	previous, previousErr := time.Parse(time.RFC3339, a.dashboardPreferences.LastDashboardOpenAt)
+	next, nextErr := time.Parse(time.RFC3339, preferences.LastDashboardOpenAt)
+	if previousErr == nil && (nextErr != nil || next.Before(previous)) {
+		preferences.LastDashboardOpenAt = a.dashboardPreferences.LastDashboardOpenAt
+	}
 	encoded, err := json.Marshal(preferences)
 	if err != nil {
 		return DashboardPreferences{}, fmt.Errorf("encode dashboard preferences: %w", err)
@@ -2278,6 +2752,8 @@ func (a *storeActor) applyModelPriceSync(prices map[string]ModelPrice, settings 
 			continue
 		}
 		if exists {
+			price.TimeZone = current.TimeZone
+			price.TimeTiers = cloneTimeTiers(current.TimeTiers)
 			metadata.Updated++
 		} else {
 			metadata.Created++
@@ -2348,15 +2824,18 @@ func (a *storeActor) persistPriceBook(prices map[string]ModelPrice, settings Pri
 	return nil
 }
 
-func (a *storeActor) observedModels(now time.Time) []string {
-	seen := make(map[string]struct{})
-	cutoff := retentionCutoff(a.config, now)
-	for key := range a.data {
-		if key.Hour < cutoff {
-			continue
+func (a *storeActor) observedModels(now time.Time) ([]string, error) {
+	if !a.observedModelsReady {
+		models, err := a.rebuildObservedModels()
+		if err != nil {
+			return nil, err
 		}
-		model := strings.TrimSpace(key.Dimensions.Model)
-		if model != "" {
+		a.observedModelCounts = models
+		a.observedModelsReady = true
+	}
+	seen := make(map[string]struct{}, len(a.observedModelCounts))
+	for model, count := range a.observedModelCounts {
+		if count > 0 && strings.TrimSpace(model) != "" {
 			seen[model] = struct{}{}
 		}
 	}
@@ -2365,7 +2844,30 @@ func (a *storeActor) observedModels(now time.Time) []string {
 		models = append(models, model)
 	}
 	sort.Strings(models)
-	return models
+	return models, nil
+}
+
+func (a *storeActor) rebuildObservedModels() (map[string]uint64, error) {
+	var models map[string]uint64
+	err := a.db.Update(func(tx *bolt.Tx) error {
+		hours := tx.Bucket(hoursBucket)
+		meta := tx.Bucket(metaBucket)
+		if hours == nil || meta == nil {
+			return errors.New("database buckets are missing")
+		}
+		var err error
+		models, err = buildObservedModels(hours, retentionCutoff(a.config, time.Now().UTC()))
+		if err != nil {
+			return err
+		}
+		return saveObservedModels(meta, models)
+	})
+	if err != nil {
+		return nil, fmt.Errorf("rebuild observed models: %w", err)
+	}
+	a.observedModelCounts = models
+	a.observedModelsReady = true
+	return models, nil
 }
 
 func (a *storeActor) reset() error {
@@ -2408,6 +2910,12 @@ func (a *storeActor) reset() error {
 		if err := meta.Delete(apiKeyLabelsKey); err != nil {
 			return err
 		}
+		if err := meta.Delete(apiKeyCatalogKey); err != nil {
+			return err
+		}
+		if err := meta.Delete(observedModelsKey); err != nil {
+			return err
+		}
 		return meta.Delete(lastUsedKey)
 	}); err != nil {
 		return fmt.Errorf("reset database: %w", err)
@@ -2422,6 +2930,11 @@ func (a *storeActor) reset() error {
 	a.lastUsed = time.Time{}
 	a.apiKeyCiphertexts = make(map[string]string)
 	a.apiKeyLabels = make(map[string]string)
+	a.apiKeyCatalog = make(map[string]apiKeyCatalogEntry)
+	a.persistedAggregates = make(map[aggregateKey]struct{})
+	a.observedModelCounts = make(map[string]uint64)
+	a.observedModelsReady = true
+	a.apiKeyCatalogHealthy = true
 	a.generations = make(map[uint64]APIKeyCryptoGeneration)
 	a.activeGeneration = 0
 	if a.crypto.enabled {
@@ -2514,6 +3027,77 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 	return page, nil
 }
 
+// loadAggregates returns the complete aggregate view for a range. Hot buckets
+// use the actor's in-memory state; cold buckets are read directly from bbolt.
+// Dirty keys always win over persisted values so unflushed records are not
+// lost or double-counted.
+func (a *storeActor) loadAggregates(queryRange usageRange) (map[aggregateKey]Counters, error) {
+	data := make(map[aggregateKey]Counters)
+	start := int64(0)
+	if !queryRange.Start.IsZero() {
+		start = queryRange.Start.UTC().Truncate(time.Minute).Unix()
+	}
+	end := int64(0)
+	if !queryRange.End.IsZero() {
+		end = queryRange.End.UTC().Truncate(time.Minute).Unix()
+	}
+	for key, counters := range a.data {
+		if key.Hour >= start && (end == 0 || key.Hour < end) {
+			data[key] = counters
+		}
+	}
+	err := a.db.View(func(tx *bolt.Tx) error {
+		hours := tx.Bucket(hoursBucket)
+		if hours == nil {
+			return errors.New("hours bucket is missing")
+		}
+		cursor := hours.Cursor()
+		key, value := cursor.First()
+		if !queryRange.Start.IsZero() {
+			key, value = cursor.Seek(encodeInt64(start))
+		}
+		for ; key != nil; key, value = cursor.Next() {
+			if value != nil {
+				continue
+			}
+			minute := decodeInt64(key)
+			if end != 0 && minute >= end {
+				break
+			}
+			bucket := hours.Bucket(key)
+			if bucket == nil {
+				continue
+			}
+			if err := bucket.ForEach(func(dimensionKey, counterValue []byte) error {
+				if counterValue == nil {
+					return errors.New("aggregate bucket contains nested bucket")
+				}
+				var dimensions Dimensions
+				if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
+					return fmt.Errorf("decode dimensions: %w", err)
+				}
+				aggregate := aggregateKey{Hour: minute, Dimensions: dimensions}
+				if _, dirty := a.dirty[aggregate]; dirty {
+					return nil
+				}
+				var counters Counters
+				if err := json.Unmarshal(counterValue, &counters); err != nil {
+					return fmt.Errorf("decode counters: %w", err)
+				}
+				data[aggregate] = counters
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load aggregate range: %w", err)
+	}
+	return data, nil
+}
+
 func requiresExactStats(queryRange usageRange) bool {
 	return queryRange.Name == "custom" &&
 		(queryRange.Start.Second() != 0 || queryRange.Start.Nanosecond() != 0 ||
@@ -2574,19 +3158,49 @@ func retentionCutoff(config Config, now time.Time) int64 {
 	return now.UTC().Add(-time.Duration(config.RetentionDays) * 24 * time.Hour).Truncate(time.Minute).Unix()
 }
 
-func pruneHoursBucket(hours *bolt.Bucket, cutoff int64) error {
-	var expired [][]byte
-	if err := hours.ForEach(func(key, value []byte) error {
-		if value == nil && decodeInt64(key) < cutoff {
-			expired = append(expired, append([]byte(nil), key...))
+func pruneHoursBucket(hours *bolt.Bucket, cutoff int64, catalog map[string]apiKeyCatalogEntry) error {
+	cursor := hours.Cursor()
+	for key, value := cursor.First(); key != nil; key, value = cursor.Next() {
+		if value != nil {
+			continue
 		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	for _, key := range expired {
+		if decodeInt64(key) >= cutoff {
+			break
+		}
+		hour := hours.Bucket(key)
+		if hour != nil && catalog != nil {
+			if err := hour.ForEach(func(dimensionKey, value []byte) error {
+				if value == nil {
+					return errors.New("hour bucket contains nested bucket")
+				}
+				var dimensions Dimensions
+				if err := json.Unmarshal(dimensionKey, &dimensions); err != nil {
+					return fmt.Errorf("decode dimensions while pruning API key catalog: %w", err)
+				}
+				return updateAPIKeyCatalogEntry(catalog, dimensions, "hours", -1)
+			}); err != nil {
+				return err
+			}
+		}
 		if err := hours.DeleteBucket(key); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func pruneHoursBucketWithModels(hours *bolt.Bucket, cutoff int64, catalog map[string]apiKeyCatalogEntry, models map[string]uint64) error {
+	if err := pruneHoursBucket(hours, cutoff, catalog); err != nil {
+		return err
+	}
+	if models != nil {
+		rebuilt, err := buildObservedModels(hours, cutoff)
+		if err != nil {
+			return err
+		}
+		clear(models)
+		for model, count := range rebuilt {
+			models[model] = count
 		}
 	}
 	return nil
@@ -2599,7 +3213,7 @@ func encodeRequestKey(unixNano int64, sequence uint64) []byte {
 	return result
 }
 
-func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64) error {
+func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64, catalog map[string]apiKeyCatalogEntry) error {
 	cursor := requests.Cursor()
 	for key, _ := cursor.First(); key != nil; key, _ = cursor.Next() {
 		if len(key) != 16 {
@@ -2607,6 +3221,16 @@ func pruneRequestsBucket(requests *bolt.Bucket, cutoffUnixNano int64) error {
 		}
 		if decodeInt64(key[:8]) >= cutoffUnixNano {
 			break
+		}
+		if catalog != nil {
+			value := requests.Get(key)
+			var request RequestDetail
+			if err := json.Unmarshal(value, &request); err != nil {
+				return fmt.Errorf("decode request while pruning API key catalog: %w", err)
+			}
+			if err := updateAPIKeyCatalogEntry(catalog, request.Dimensions, "requests", -1); err != nil {
+				return err
+			}
 		}
 		if err := cursor.Delete(); err != nil {
 			return err

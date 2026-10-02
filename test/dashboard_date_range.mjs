@@ -4,9 +4,9 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
@@ -15,6 +15,8 @@ const resourceBase = '/v0/resource/plugins/calendar-browser-test';
 const timezoneId = scenario === 'los-angeles-dst' ? 'America/Los_Angeles' : 'UTC';
 const initialRange = scenario === 'los-angeles-dst'
   ? { start: '2026-08-23T07:00:00.000Z', end: '2026-08-24T07:00:00.000Z' }
+  : ['recent-open', 'expired-open'].includes(scenario)
+  ? { start: '2026-08-20T01:02:03.000Z', end: '2026-08-21T04:05:06.000Z' }
   : { start: '2026-08-23T00:00:00.000Z', end: '2026-08-24T00:00:00.000Z' };
 const emptyInitial = {
   generated_at: '2026-08-23T00:00:00.000Z',
@@ -32,6 +34,15 @@ const tokenUnitInitial = {
 };
 const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : emptyInitial;
 const savedTokenDisplayModes = [];
+const initialStatsURLs = [];
+let persistedPreferences = {
+  time_range_mode: 'custom', time_range_start: initialRange.start, time_range_end: initialRange.end,
+  request_page_size: 25, dimension_page_size: 50,
+  hidden_request_columns: ['model'], hidden_dimension_columns: ['provider'],
+  token_display_mode: scenario === 'token-unit' ? 'B' : 'full',
+  last_dashboard_open_at: scenario === 'recent-open' ? '2026-08-23T11:50:00.000Z'
+    : scenario === 'expired-open' ? '2026-08-23T11:44:00.000Z' : '',
+};
 
 async function setTimePickerValue(page, boundary, values) {
   for (const [part, value] of Object.entries(values)) {
@@ -57,23 +68,25 @@ const server = createServer((request, response) => {
   if (url.pathname === `${resourceBase}/preferences`) {
     if (url.searchParams.get('save') === '1') {
       savedTokenDisplayModes.push(url.searchParams.get('token_display_mode'));
-      sendJSON({
+      persistedPreferences = {
         request_page_size: url.searchParams.get('request_page_size'),
         dimension_page_size: url.searchParams.get('dimension_page_size'),
         time_range_mode: url.searchParams.get('time_range_mode'),
         token_display_mode: url.searchParams.get('token_display_mode'),
-      });
+        last_dashboard_open_at: url.searchParams.get('last_dashboard_open_at'),
+        time_range_start: url.searchParams.get('time_range_start'),
+        time_range_end: url.searchParams.get('time_range_end'),
+        hidden_request_columns: url.searchParams.getAll('hidden_request_column'),
+        hidden_dimension_columns: url.searchParams.getAll('hidden_dimension_column'),
+      };
+      sendJSON(persistedPreferences);
       return;
     }
-    sendJSON({
-      time_range_mode: 'custom',
-      time_range_start: initialRange.start,
-      time_range_end: initialRange.end,
-      token_display_mode: scenario === 'token-unit' ? 'B' : 'full',
-    });
+    sendJSON(persistedPreferences);
     return;
   }
   if (url.pathname === `${resourceBase}/stats/initial`) {
+    initialStatsURLs.push(url.toString());
     sendJSON(initialPayload);
     return;
   }
@@ -141,7 +154,8 @@ try {
         tokenButton.click(),
       ]);
     }
-    if (JSON.stringify(savedTokenDisplayModes) !== JSON.stringify(['full', 'k', 'm', 'B'])) {
+    const toggledModes = savedTokenDisplayModes.slice(-4);
+    if (JSON.stringify(toggledModes) !== JSON.stringify(['full', 'k', 'm', 'B'])) {
       throw new Error(`expected saved token display modes full,k,m,B, got ${savedTokenDisplayModes.join(',')}`);
     }
     if (await tokenButton.textContent() !== 'B' || await totalTokens.textContent() !== '1.23B') {
@@ -149,6 +163,33 @@ try {
     }
   }
 
+  if (scenario === 'recent-open' || scenario === 'expired-open') {
+    const initialURL = new URL(initialStatsURLs[0]);
+    const expectedStart = scenario === 'expired-open'
+      ? '2026-08-23T00:00:00.000Z'
+      : initialRange.start;
+    const expectedEnd = scenario === 'expired-open'
+      ? '2026-08-24T00:00:00.000Z'
+      : initialRange.end;
+    if (initialURL.searchParams.get('start') !== expectedStart || initialURL.searchParams.get('end') !== expectedEnd) {
+      throw new Error(`expected ${scenario} initial range ${expectedStart}..${expectedEnd}, got ${initialURL.searchParams.get('start')}..${initialURL.searchParams.get('end')}`);
+    }
+    if (persistedPreferences.time_range_start !== expectedStart || persistedPreferences.time_range_end !== expectedEnd
+      || !persistedPreferences.last_dashboard_open_at.startsWith('2026-08-23T12:00:00.')
+      || persistedPreferences.request_page_size !== '25' || persistedPreferences.dimension_page_size !== '50'
+      || persistedPreferences.hidden_request_columns.join(',') !== 'model'
+      || persistedPreferences.hidden_dimension_columns.join(',') !== 'provider') {
+      throw new Error(`incorrect persisted open state: ${JSON.stringify(persistedPreferences)}`);
+    }
+    const reloaded = page.waitForResponse(response => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
+    await page.reload();
+    const reloadedURL = new URL((await reloaded).url());
+    if (reloadedURL.searchParams.get('start') !== expectedStart || reloadedURL.searchParams.get('end') !== expectedEnd) {
+      throw new Error(`saved range lost on reload: ${reloadedURL}`);
+    }
+  }
+
+  if (!['recent-open', 'expired-open'].includes(scenario)) {
   await page.locator('#rangeButton').click();
   if (scenario === 'quick-preset') {
     await page.locator('[data-range-preset="last_30_days"]').click();
@@ -269,6 +310,7 @@ try {
     if (confirmed.searchParams.get('end') !== '2026-08-24T00:00:00.000Z') {
       throw new Error(`expected reverse-selection end=2026-08-24T00:00:00.000Z, got ${confirmed.searchParams.get('end')}`);
     }
+  }
   }
   if (pageErrors.length) {
     throw pageErrors[0];

@@ -103,3 +103,11 @@ func TestDashboardDateRangeCalendarAmericaLosAngelesDSTInBrowser(t *testing.T) {
 func TestDashboardTokenUnitCyclesThroughBillionsInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "token-unit", "dashboard token-unit browser regression failed")
 }
+
+func TestDashboardDateRangeKeepsSavedRangeWhenRecentlyOpenedInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "recent-open", "dashboard recent-open date range browser regression failed")
+}
+
+func TestDashboardDateRangeResetsToTodayAfterInactivityInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "expired-open", "dashboard expired-open date range browser regression failed")
+}

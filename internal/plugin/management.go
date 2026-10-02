@@ -125,7 +125,7 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			{
 				Method:      http.MethodPut,
 				Path:        "/plugins/" + pluginID + "/prices",
-				Description: "Persist per-model input, output, cache, and context-tier token prices.",
+				Description: "Persist per-model token prices, context tiers, and weekly time-of-use schedules.",
 			},
 			{
 				Method:      http.MethodPost,
@@ -786,7 +786,7 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 	allowed := map[string]struct{}{
 		"save": {}, "request_page_size": {}, "dimension_page_size": {},
 		"hidden_request_column": {}, "hidden_dimension_column": {}, "time_range_mode": {},
-		"token_display_mode": {}, "time_range_start": {}, "time_range_end": {},
+		"token_display_mode": {}, "time_range_start": {}, "time_range_end": {}, "last_dashboard_open_at": {},
 	}
 	for key := range query {
 		if _, ok := allowed[key]; !ok {
@@ -820,6 +820,10 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 	if err != nil {
 		return DashboardPreferences{}, err
 	}
+	lastDashboardOpenAt, err := optionalDashboardPreference(query, "last_dashboard_open_at")
+	if err != nil {
+		return DashboardPreferences{}, err
+	}
 	return DashboardPreferences{
 		RequestPageSize:        requestPageSize,
 		DimensionPageSize:      dimensionPageSize,
@@ -829,6 +833,7 @@ func dashboardPreferencesFromQuery(query map[string][]string) (DashboardPreferen
 		TokenDisplayMode:       tokenDisplayMode,
 		TimeRangeStart:         timeRangeStart,
 		TimeRangeEnd:           timeRangeEnd,
+		LastDashboardOpenAt:    lastDashboardOpenAt,
 	}, nil
 }
 
