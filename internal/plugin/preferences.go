@@ -29,6 +29,7 @@ type DashboardPreferences struct {
 	TokenDisplayMode       string   `json:"token_display_mode"`
 	TimeRangeStart         string   `json:"time_range_start,omitempty"`
 	TimeRangeEnd           string   `json:"time_range_end,omitempty"`
+	LastDashboardOpenAt    string   `json:"last_dashboard_open_at,omitempty"`
 }
 
 var requestColumnKeys = []string{
@@ -98,6 +99,12 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 		}
 		start, end = input.TimeRangeStart, input.TimeRangeEnd
 	}
+	lastDashboardOpenAt := ""
+	if input.LastDashboardOpenAt != "" {
+		if lastOpen, err := time.Parse(time.RFC3339, input.LastDashboardOpenAt); err == nil {
+			lastDashboardOpenAt = lastOpen.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	return DashboardPreferences{
 		RequestPageSize:        input.RequestPageSize,
 		DimensionPageSize:      input.DimensionPageSize,
@@ -107,6 +114,7 @@ func normalizeDashboardPreferences(input DashboardPreferences) (DashboardPrefere
 		TokenDisplayMode:       tokenDisplayMode,
 		TimeRangeStart:         start,
 		TimeRangeEnd:           end,
+		LastDashboardOpenAt:    lastDashboardOpenAt,
 	}, nil
 }
 

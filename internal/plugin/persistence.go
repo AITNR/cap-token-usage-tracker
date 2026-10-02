@@ -2671,6 +2671,13 @@ func (a *storeActor) reconfigure(config Config, crypto cryptoContext) error {
 }
 
 func (a *storeActor) saveDashboardPreferences(preferences DashboardPreferences) (DashboardPreferences, error) {
+	// Legacy clients omit this field; preserve it and prevent an older tab's
+	// delayed save from moving the most recent open time backwards.
+	previous, previousErr := time.Parse(time.RFC3339, a.dashboardPreferences.LastDashboardOpenAt)
+	next, nextErr := time.Parse(time.RFC3339, preferences.LastDashboardOpenAt)
+	if previousErr == nil && (nextErr != nil || next.Before(previous)) {
+		preferences.LastDashboardOpenAt = a.dashboardPreferences.LastDashboardOpenAt
+	}
 	encoded, err := json.Marshal(preferences)
 	if err != nil {
 		return DashboardPreferences{}, fmt.Errorf("encode dashboard preferences: %w", err)

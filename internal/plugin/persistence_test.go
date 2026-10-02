@@ -541,12 +541,13 @@ func TestDashboardPreferencesPersistAcrossRestartAndStatsReset(t *testing.T) {
 		TokenDisplayMode:       "B",
 		TimeRangeStart:         "2026-07-01",
 		TimeRangeEnd:           "2026-08-05",
+		LastDashboardOpenAt:    "2026-08-23T04:00:00Z",
 	}
 	saved, err := store.SaveDashboardPreferences(want)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.RequestPageSize != 50 || saved.DimensionPageSize != 200 || len(saved.HiddenRequestColumns) != 2 || saved.HiddenRequestColumns[0] != "model" || saved.HiddenRequestColumns[1] != "source" || saved.TokenDisplayMode != "B" || saved.TimeRangeStart != "2026-07-01" || saved.TimeRangeEnd != "2026-08-05" {
+	if saved.RequestPageSize != 50 || saved.DimensionPageSize != 200 || len(saved.HiddenRequestColumns) != 2 || saved.HiddenRequestColumns[0] != "model" || saved.HiddenRequestColumns[1] != "source" || saved.TokenDisplayMode != "B" || saved.TimeRangeStart != "2026-07-01" || saved.TimeRangeEnd != "2026-08-05" || saved.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
 		t.Fatalf("normalized preferences = %+v", saved)
 	}
 	if err := store.Close(); err != nil {
@@ -559,8 +560,19 @@ func TestDashboardPreferencesPersistAcrossRestartAndStatsReset(t *testing.T) {
 	}
 	defer store.Close()
 	loaded, err := store.QueryDashboardPreferences()
-	if err != nil || loaded.RequestPageSize != 50 || loaded.DimensionPageSize != 200 || len(loaded.HiddenDimensionColumns) != 1 || loaded.HiddenDimensionColumns[0] != "provider" || loaded.TimeRangeMode != "custom" || loaded.TokenDisplayMode != "B" || loaded.TimeRangeStart != "2026-07-01" {
+	if err != nil || loaded.RequestPageSize != 50 || loaded.DimensionPageSize != 200 || len(loaded.HiddenDimensionColumns) != 1 || loaded.HiddenDimensionColumns[0] != "provider" || loaded.TimeRangeMode != "custom" || loaded.TokenDisplayMode != "B" || loaded.TimeRangeStart != "2026-07-01" || loaded.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
 		t.Fatalf("preferences after restart = %+v, %v", loaded, err)
+	}
+	legacySave := loaded
+	legacySave.LastDashboardOpenAt = ""
+	legacySaved, err := store.SaveDashboardPreferences(legacySave)
+	if err != nil || legacySaved.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
+		t.Fatalf("legacy save cleared open time: %+v, %v", legacySaved, err)
+	}
+	legacySave.LastDashboardOpenAt = "2026-08-22T04:00:00Z"
+	legacySaved, err = store.SaveDashboardPreferences(legacySave)
+	if err != nil || legacySaved.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
+		t.Fatalf("delayed save moved open time backwards: %+v, %v", legacySaved, err)
 	}
 	if err := store.Reset(); err != nil {
 		t.Fatal(err)

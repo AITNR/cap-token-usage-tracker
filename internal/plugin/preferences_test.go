@@ -42,3 +42,21 @@ func TestDashboardPreferencesNormalizeTokenDisplayMode(t *testing.T) {
 		t.Fatal("unsupported token display mode was accepted")
 	}
 }
+
+func TestDashboardPreferencesNormalizeLastDashboardOpenAt(t *testing.T) {
+	value := defaultDashboardPreferences()
+	value.LastDashboardOpenAt = "2026-08-23T12:00:00+08:00"
+	normalized, err := normalizeDashboardPreferences(value)
+	if err != nil {
+		t.Fatalf("last dashboard open time rejected: %v", err)
+	}
+	if normalized.LastDashboardOpenAt != "2026-08-23T04:00:00Z" {
+		t.Fatalf("normalized last dashboard open time = %q", normalized.LastDashboardOpenAt)
+	}
+
+	value.LastDashboardOpenAt = "not-a-time"
+	normalized, err = normalizeDashboardPreferences(value)
+	if err != nil || normalized.LastDashboardOpenAt != "" {
+		t.Fatalf("invalid last dashboard open time was not ignored: %+v, %v", normalized, err)
+	}
+}
