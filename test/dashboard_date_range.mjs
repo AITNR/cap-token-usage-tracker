@@ -4,13 +4,16 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open|trend-total|trend-total-full]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open', 'trend-total', 'trend-total-full'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
-const dashboardHTML = await readFile(htmlPath);
+let dashboardHTML = await readFile(htmlPath, 'utf8');
+if (scenario.startsWith('trend-total')) {
+  dashboardHTML = dashboardHTML.replace('function trendNumber(value)', "window.__trendTest={pointStackTotal:pointStackTotal,trendGeometry:trendGeometry,trendBusinessTotal:trendBusinessTotal,trendCacheReadTokens:trendCacheReadTokens,exportPNG:typeof exportPNG==='function'?exportPNG:null,disableDownload:function(){downloadBlob=function(){};}};function trendNumber(value)");
+}
 const resourceBase = '/v0/resource/plugins/calendar-browser-test';
 const timezoneId = scenario === 'los-angeles-dst' ? 'America/Los_Angeles' : 'UTC';
 const initialRange = scenario === 'los-angeles-dst'
@@ -32,7 +35,19 @@ const tokenUnitInitial = {
   sources: [],
   bucket_seconds: 86400,
 };
-const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : emptyInitial;
+const trendTotalInitial = {
+  generated_at: '2026-08-23T00:00:00.000Z',
+  last_used: '2026-08-23T12:00:00.000Z',
+  models: [],
+  series: [{
+    hour: '2026-08-23T12:00:00Z', requests: 1,
+    input_tokens: 100, output_tokens: 20, reasoning_tokens: 5,
+    cache_read_tokens: 80, cache_creation_tokens: 0, total_tokens: 125,
+  }],
+  sources: [],
+  bucket_seconds: 86400,
+};
+const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : scenario.startsWith('trend-total') ? trendTotalInitial : emptyInitial;
 const savedTokenDisplayModes = [];
 const initialStatsURLs = [];
 let persistedPreferences = {
@@ -85,13 +100,23 @@ const server = createServer((request, response) => {
     sendJSON(persistedPreferences);
     return;
   }
+  if (url.pathname === `${resourceBase}/full-mode/data`) {
+    sendJSON({ api_key_tracking_enabled: false, api_key_labels: {} });
+    return;
+  }
   if (url.pathname === `${resourceBase}/stats/initial`) {
     initialStatsURLs.push(url.toString());
     sendJSON(initialPayload);
     return;
   }
   if (url.pathname === `${resourceBase}/stats/trends`) {
-    sendJSON({ model_series: [], bucket_seconds: 86400 });
+    sendJSON(scenario.startsWith('trend-total') ? {
+      model_series: [{
+        hour: '2026-08-23T12:00:00Z', model: 'browser-test', requests: 1,
+        input_tokens: 100, output_tokens: 20, reasoning_tokens: 5,
+        cache_read_tokens: 80, cache_creation_tokens: 0, total_tokens: 125,
+      }], bucket_seconds: 86400,
+    } : { model_series: [], bucket_seconds: 86400 });
     return;
   }
   if (url.pathname === `${resourceBase}/stats/groups` || url.pathname === `${resourceBase}/requests`) {
@@ -125,7 +150,7 @@ try {
   page.on('pageerror', (error) => pageErrors.push(error));
 
   await page.clock.install({ time: new Date('2026-08-23T12:00:00.000Z') });
-  await page.goto(dashboardURL, { waitUntil: 'domcontentloaded' });
+  await page.goto(dashboardURL + (scenario === 'trend-total-full' ? '#session=browser-test-session' : ''), { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
 
   if (scenario === 'token-unit') {
@@ -161,6 +186,96 @@ try {
     if (await tokenButton.textContent() !== 'B' || await totalTokens.textContent() !== '1.23B') {
       throw new Error(`expected token unit cycle to return to B, got ${await tokenButton.textContent()} / ${await totalTokens.textContent()}`);
     }
+  }
+
+  if (scenario.startsWith('trend-total')) {
+    await page.locator('#chart rect.bar-input').waitFor();
+    const populatedHitIndex = await page.locator('#chart .bar-hit').evaluateAll((nodes) => nodes.findIndex((node) => !node.getAttribute('aria-label').includes('该时间段内没有请求')));
+    const matchingHit = populatedHitIndex >= 0 ? page.locator('#chart .bar-hit').nth(populatedHitIndex) : null;
+    if (!matchingHit) throw new Error('could not locate hit target for populated trend bar');
+    await page.locator('#chart rect.bar-input').waitFor();
+    const rects = page.locator('#chart rect.bar-input, #chart rect.bar-cache-read, #chart rect.bar-output');
+    if (await rects.count() !== 3) throw new Error(`expected input/cache/output SVG bars, got ${await rects.count()}`);
+    const geometry = await rects.evaluateAll((nodes) => nodes.map((node) => ({
+      className: node.getAttribute('class'), y: Number(node.getAttribute('y')), height: Number(node.getAttribute('height')),
+    })));
+    const input = geometry.find((item) => item.className === 'bar-input');
+    const cache = geometry.find((item) => item.className === 'bar-cache-read');
+    const output = geometry.find((item) => item.className === 'bar-output');
+    if (!input || !cache || !output || !(cache.y === input.y && cache.y + cache.height <= input.y + input.height)
+      || !(output.y < input.y && output.y + output.height <= input.y)) {
+      throw new Error(`cache must overlay input and output must sit above it: ${JSON.stringify(geometry)}`);
+    }
+    const axisLabels = await page.locator('#chart text.axis-label').allTextContents();
+    if (!axisLabels.includes('120')) throw new Error(`expected geometric Y-axis maximum 120, got ${axisLabels.join(',')}`);
+    await matchingHit.hover();
+    const tooltipText = await page.locator('#tooltip').textContent();
+    if (!tooltipText.includes('125')) throw new Error(`expected backend total 125 in tooltip, got ${tooltipText}`);
+
+    const edgeResults = await page.evaluate(() => {
+      const { pointStackTotal, trendGeometry, trendBusinessTotal, trendCacheReadTokens } = window.__trendTest;
+      const point = { input: 100, output: 20, cacheRead: 80, total: 125 };
+      return {
+        original: pointStackTotal({ input: 48342180, output: 168768, cacheRead: 46221824 }),
+        overCache: trendGeometry({ input: 100, output: 20, cacheRead: 150 }, true, true, true),
+        zeroInput: trendGeometry({ input: 0, output: 20, cacheRead: 80 }, true, true, true),
+        onlyCache: trendGeometry(point, false, false, true),
+        allHidden: trendGeometry(point, false, false, false),
+        zeroTotal: trendBusinessTotal({ input: 100, output: 20, total: 0 }),
+        missingTotal: trendBusinessTotal({ input: 100, output: 20 }),
+        legacyCache: trendCacheReadTokens({ cache_read_tokens: 0, cached_tokens: 40 }),
+      };
+    });
+    if (edgeResults.original !== 48510948 || edgeResults.overCache.total !== 120 || edgeResults.overCache.cacheHeight !== 100
+      || edgeResults.zeroInput.total !== 20 || edgeResults.zeroInput.cacheHeight !== 0 || edgeResults.onlyCache.total !== 80
+      || edgeResults.allHidden.total !== 0 || edgeResults.zeroTotal !== 0 || edgeResults.missingTotal !== 120 || edgeResults.legacyCache !== 40) {
+      throw new Error('trend boundary calculations failed: ' + JSON.stringify(edgeResults));
+    }
+
+    const verifyPNG = async (expectedInputHeight, expectedCacheHeight, expectedOutputHeight, expectedMax) => {
+      if (scenario !== 'trend-total-full') return;
+      const draws = await page.evaluate(async () => {
+        const records = [], original = CanvasRenderingContext2D.prototype.fillRect;
+        const style = getComputedStyle(document.documentElement);
+        const colors = ['--input-color', '--cache-read-color', '--output-color'].map((key) => style.getPropertyValue(key).trim());
+        CanvasRenderingContext2D.prototype.fillRect = function(x, y, width, height) {
+          if (width <= 34 && height > 0 && colors.includes(this.fillStyle)) records.push({ color: this.fillStyle, y, height });
+          return original.call(this, x, y, width, height);
+        };
+        window.__trendTest.disableDownload();
+        try { await window.__trendTest.exportPNG(); } finally {
+          CanvasRenderingContext2D.prototype.fillRect = original;
+          // Canvas encoding callback can execute later; keep the test download stub installed.
+        }
+        return { records, colors };
+      });
+      const [inputColor, cacheColor, outputColor] = draws.colors;
+      const near = (a, b) => Math.abs(a - b) < 1e-7;
+      const check = (color, tokens, y) => {
+        const rect = draws.records.find((record) => record.color === color);
+        if (tokens === 0) { if (rect) throw new Error('unexpected hidden PNG bar: ' + JSON.stringify(rect)); return; }
+        if (!rect || !near(rect.height, tokens / expectedMax * 452) || !near(rect.y, y)) {
+          throw new Error('PNG geometry mismatch: ' + JSON.stringify({ rect, tokens, expectedMax, y }));
+        }
+      };
+      const baseHeight = expectedInputHeight || expectedCacheHeight;
+      check(inputColor, expectedInputHeight, 834 - baseHeight / expectedMax * 452);
+      check(cacheColor, expectedCacheHeight, 834 - baseHeight / expectedMax * 452);
+      check(outputColor, expectedOutputHeight, 834 - (baseHeight + expectedOutputHeight) / expectedMax * 452);
+    };
+    await verifyPNG(100, 80, 20, 120);
+
+    await page.locator('.series-key-button[data-series="cacheRead"]').click();
+    if (await page.locator('#chart rect.bar-cache-read').count() !== 0) throw new Error('hidden cache series must remove cache overlay');
+    if (!(await page.locator('#chart text.axis-label').allTextContents()).includes('120')) throw new Error('hiding cache must not change geometric maximum');
+    await verifyPNG(100, 0, 20, 120);
+    await page.locator('.series-key-button[data-series="input"]').click();
+    const hiddenInputGeometry = await page.locator('#chart rect.bar-output').evaluate((node) => ({ y: Number(node.getAttribute('y')), height: Number(node.getAttribute('height')) }));
+    if (await page.locator('#chart rect.bar-cache-read').count() !== 0 || hiddenInputGeometry.height <= 0) throw new Error('hidden input/cache boundary rendered incorrectly');
+    await page.locator('.series-key-button[data-series="cacheRead"]').click();
+    const cacheOnly = await page.locator('#chart rect.bar-cache-read').evaluate((node) => ({ y: Number(node.getAttribute('y')), height: Number(node.getAttribute('height')) }));
+    const outputWithCache = await page.locator('#chart rect.bar-output').evaluate((node) => ({ y: Number(node.getAttribute('y')), height: Number(node.getAttribute('height')) }));
+    if (!(cacheOnly.height > 0 && outputWithCache.y < cacheOnly.y)) throw new Error(`cache-only geometry must be below output: ${JSON.stringify({ cacheOnly, outputWithCache })}`);
   }
 
   if (scenario === 'recent-open' || scenario === 'expired-open') {
