@@ -65,7 +65,11 @@ func runDashboardDateRangeBrowserTest(t *testing.T, scenario, description string
 	}
 
 	htmlPath := filepath.Join(t.TempDir(), "dashboard.html")
-	if err := os.WriteFile(htmlPath, dashboardResponse().Body, 0o600); err != nil {
+	html := dashboardResponse().Body
+	if scenario == "trend-total-full" {
+		html = fullDashboardResponse().Body
+	}
+	if err := os.WriteFile(htmlPath, html, 0o600); err != nil {
 		t.Fatalf("write dashboard response body: %v", err)
 	}
 
@@ -110,4 +114,12 @@ func TestDashboardDateRangeKeepsSavedRangeWhenRecentlyOpenedInBrowser(t *testing
 
 func TestDashboardDateRangeResetsToTodayAfterInactivityInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "expired-open", "dashboard expired-open date range browser regression failed")
+}
+
+func TestDashboardTrendTotalAndCacheGeometryInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "trend-total", "dashboard trend total/cache geometry browser regression failed")
+}
+
+func TestDashboardTrendTotalAndPNGGeometryInFullModeInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "trend-total-full", "full-mode trend total/PNG geometry browser regression failed")
 }
