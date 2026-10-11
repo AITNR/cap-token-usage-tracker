@@ -18,6 +18,21 @@ func TestDashboardPreferencesAllowCacheHitRateColumn(t *testing.T) {
 	}
 }
 
+func TestDashboardPreferencesAllowDurationAndEndToEndTpsColumns(t *testing.T) {
+	preferences, err := normalizeDashboardPreferences(DashboardPreferences{
+		RequestPageSize:        10,
+		DimensionPageSize:      10,
+		HiddenRequestColumns:   []string{"latency_ns", "end_to_end_tps"},
+		HiddenDimensionColumns: []string{},
+		TimeRangeMode:          "custom",
+	})
+	if err != nil {
+		t.Fatalf("duration and end-to-end TPS columns rejected by preferences: %v", err)
+	}
+	if len(preferences.HiddenRequestColumns) != 2 || preferences.HiddenRequestColumns[0] != "latency_ns" || preferences.HiddenRequestColumns[1] != "end_to_end_tps" {
+		t.Fatalf("new request columns were not retained: %+v", preferences)
+	}
+}
 func TestDashboardPreferencesNormalizeTokenDisplayMode(t *testing.T) {
 	for _, mode := range []string{"full", "k", "m", "B"} {
 		preferences, err := normalizeDashboardPreferences(DashboardPreferences{

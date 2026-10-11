@@ -4,13 +4,16 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open|trend-total|trend-total-full]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open|trend-total|trend-total-full|request-tps-full]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open', 'trend-total', 'trend-total-full'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open', 'trend-total', 'trend-total-full', 'request-tps-full'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
 let dashboardHTML = await readFile(htmlPath, 'utf8');
+if (scenario === 'request-tps-full') {
+  dashboardHTML = dashboardHTML.replace('function requestTimingTitle(item)', "window.__reqTest={requestColumns:requestColumns,requestSortValue:requestSortValue,requestDataCell:requestDataCell,sortedRequestItems:sortedRequestItems,setRequestSort:setRequestSort,visibleRequestColumns:visibleRequestColumns,duration:duration,exportCSV:exportCSV,overrideDownload:function(fn){downloadBlob=fn;}};function requestTimingTitle(item)");
+}
 if (scenario.startsWith('trend-total')) {
   dashboardHTML = dashboardHTML.replace('function trendNumber(value)', "window.__trendTest={pointStackTotal:pointStackTotal,trendGeometry:trendGeometry,trendBusinessTotal:trendBusinessTotal,trendCacheReadTokens:trendCacheReadTokens,exportPNG:typeof exportPNG==='function'?exportPNG:null,disableDownload:function(){downloadBlob=function(){};}};function trendNumber(value)");
 }
@@ -47,7 +50,29 @@ const trendTotalInitial = {
   sources: [],
   bucket_seconds: 86400,
 };
-const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : scenario.startsWith('trend-total') ? trendTotalInitial : emptyInitial;
+const requestTpsItems = [
+  {
+    sequence: 2, time: '2026-08-23T11:00:00.000Z', model: 'browser-stream', provider: 'openai-compatible-demo',
+    executor_type: 'OpenAICompatExecutor', source: 'demo', service_tier: 'default', result: '成功', failed: false,
+    stream: true, ttft_ns: 2000000000, latency_ns: 10000000000, generation_ns: 8000000000, tps: 25, end_to_end_tps: 20,
+    reasoning_effort: '', input_tokens: 100, output_tokens: 190, reasoning_tokens: 10, cache_read_tokens: 0,
+    cache_creation_tokens: 0, total_tokens: 200, cache_hit: false,
+  },
+  {
+    sequence: 1, time: '2026-08-23T10:00:00.000Z', model: 'browser-buffered', provider: 'gemini',
+    executor_type: 'GeminiExecutor', source: 'demo', service_tier: 'default', result: '成功', failed: false,
+    stream: true, ttft_ns: 9000000000, latency_ns: 10000000000, generation_ns: 1000000000, tps: 1000, end_to_end_tps: 100,
+    reasoning_effort: '', input_tokens: 100, output_tokens: 200, reasoning_tokens: 800, cache_read_tokens: 0,
+    cache_creation_tokens: 0, total_tokens: 1100, cache_hit: false,
+  },
+];
+const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : scenario.startsWith('trend-total') ? trendTotalInitial : scenario === 'request-tps-full' ? {
+  generated_at: '2026-08-23T00:00:00.000Z',
+  last_used: '2026-08-23T12:00:00.000Z',
+  models: [{ model: 'browser-stream', requests: 2, input_tokens: 200, output_tokens: 390, reasoning_tokens: 810, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 1300 }],
+  sources: ['demo'],
+  bucket_seconds: 86400,
+} : emptyInitial;
 const savedTokenDisplayModes = [];
 const initialStatsURLs = [];
 let persistedPreferences = {
@@ -119,8 +144,12 @@ const server = createServer((request, response) => {
     } : { model_series: [], bucket_seconds: 86400 });
     return;
   }
-  if (url.pathname === `${resourceBase}/stats/groups` || url.pathname === `${resourceBase}/requests`) {
+  if (url.pathname === `${resourceBase}/stats/groups`) {
     sendJSON({ items: [], total: 0 });
+    return;
+  }
+  if (url.pathname === `${resourceBase}/requests`) {
+    sendJSON(scenario === 'request-tps-full' ? { items: requestTpsItems, total: requestTpsItems.length, offset: 0, limit: 100 } : { items: [], total: 0 });
     return;
   }
   if (url.pathname === `${resourceBase}/costs`) {
@@ -150,7 +179,7 @@ try {
   page.on('pageerror', (error) => pageErrors.push(error));
 
   await page.clock.install({ time: new Date('2026-08-23T12:00:00.000Z') });
-  await page.goto(dashboardURL + (scenario === 'trend-total-full' ? '#session=browser-test-session' : ''), { waitUntil: 'domcontentloaded' });
+  await page.goto(dashboardURL + (scenario.endsWith('-full') ? '#session=browser-test-session' : ''), { waitUntil: 'domcontentloaded' });
   await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/stats/initial`);
 
   if (scenario === 'token-unit') {
@@ -278,6 +307,72 @@ try {
     if (!(cacheOnly.height > 0 && outputWithCache.y < cacheOnly.y)) throw new Error(`cache-only geometry must be below output: ${JSON.stringify({ cacheOnly, outputWithCache })}`);
   }
 
+  if (scenario === 'request-tps-full') {
+    await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/requests`);
+    await page.locator('#requestRows td[data-column]').first().waitFor();
+    await page.locator('#requestColumnsButton').click();
+    await page.locator('#requestColumnsShowAll').click();
+    const headers = await page.locator('#requestHeaders th').evaluateAll((nodes) => nodes.map((node) => node.dataset.column));
+    for (const expected of ['tps', 'latency_ns', 'end_to_end_tps']) {
+      if (!headers.includes(expected)) throw new Error(`request header ${expected} missing: ${headers.join(',')}`);
+    }
+    const rows = await page.locator('#requestRows tr').evaluateAll((nodes) => nodes.map((row) => {
+      const cells = {};
+      row.querySelectorAll('td[data-column]').forEach((td) => { cells[td.dataset.column] = td.textContent; });
+      return cells;
+    }));
+    const streamRow = rows.find((row) => row.model === 'browser-stream');
+    const bufferedRow = rows.find((row) => row.model === 'browser-buffered');
+    if (!streamRow || !bufferedRow) throw new Error(`request rows missing: ${JSON.stringify(rows)}`);
+    if (streamRow.tps !== '25.00' || streamRow.end_to_end_tps !== '20.00') {
+      throw new Error(`stream row TPS columns wrong: ${JSON.stringify(streamRow)}`);
+    }
+    if (streamRow.latency_ns !== '10.00s') throw new Error(`stream row total duration wrong: ${JSON.stringify(streamRow)}`);
+    if (bufferedRow.tps !== '1000.00' || bufferedRow.end_to_end_tps !== '100.00') {
+      throw new Error(`buffered row must keep streaming TPS separate from end-to-end: ${JSON.stringify(bufferedRow)}`);
+    }
+
+    const sortChecks = await page.evaluate(() => {
+      const { requestSortValue, requestDataCell } = window.__reqTest;
+      const streamItem = { stream: true, latency_ns: 10000000000, end_to_end_tps: 20, generation_ns: 8000000000, tps: 25 };
+      const hiddenItem = { stream: false, latency_ns: 10000000000, end_to_end_tps: 20, generation_ns: 8000000000, tps: 1000 };
+      const row = document.createElement('tr');
+      const cell = requestDataCell(row, streamItem, { key: 'end_to_end_tps', label: 'table.endToEndTps', numeric: true });
+      const durationCell = requestDataCell(document.createElement('tr'), streamItem, { key: 'latency_ns', label: 'table.totalDuration', numeric: true });
+      return {
+        sortLatency: requestSortValue(streamItem, 'latency_ns'),
+        sortEndToEnd: requestSortValue(streamItem, 'end_to_end_tps'),
+        cellText: cell.textContent,
+        cellTitle: cell.title,
+        durationTitle: durationCell.title,
+        unknownTitle: requestDataCell(document.createElement('tr'), hiddenItem, { key: 'generation_ns', label: 'table.generation', numeric: true }).title,
+      };
+    });
+    if (sortChecks.sortLatency !== 10000000000 || sortChecks.sortEndToEnd !== 20) {
+      throw new Error(`request sort values wrong: ${JSON.stringify(sortChecks)}`);
+    }
+    if (sortChecks.cellText !== '20.00') throw new Error(`end-to-end cell text wrong: ${JSON.stringify(sortChecks)}`);
+    if (sortChecks.cellTitle === '' || sortChecks.cellTitle === sortChecks.unknownTitle) {
+      throw new Error(`stream timing tooltip must differ from unknown: ${JSON.stringify(sortChecks)}`);
+    }
+
+    const csv = await page.evaluate(async () => {
+      window.__capturedCSV = null;
+      window.__reqTest.overrideDownload(function(blob, name) { window.__capturedCSV = { blob: blob, name: name }; });
+      await window.__reqTest.exportCSV();
+      return await window.__capturedCSV.blob.text();
+    });
+    const lines = csv.replace(/^\uFEFF/, '').split('\r\n');
+    const header = lines[0].replace(/^"|"$/g, '').split('","');
+    const tpsIndex = header.indexOf('TPS');
+    if (tpsIndex < 0 || header[tpsIndex + 1] !== '总耗时(ns)' || header[tpsIndex + 2] !== '端到端 TPS') {
+      throw new Error(`CSV header must add duration and end-to-end TPS after TPS: ${lines[0]}`);
+    }
+    const dataRow = lines.find((line) => line.includes('browser-stream')).replace(/^"|"$/g, '').split('","');
+    if (dataRow[tpsIndex + 1] !== '10000000000' || dataRow[tpsIndex + 2] !== '20.0000') {
+      throw new Error(`CSV values wrong: ${lines.find((line) => line.includes('browser-stream'))}`);
+    }
+  }
   if (scenario === 'recent-open' || scenario === 'expired-open') {
     const initialURL = new URL(initialStatsURLs[0]);
     const expectedStart = scenario === 'expired-open'

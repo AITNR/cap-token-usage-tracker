@@ -66,7 +66,7 @@ func runDashboardDateRangeBrowserTest(t *testing.T, scenario, description string
 
 	htmlPath := filepath.Join(t.TempDir(), "dashboard.html")
 	html := dashboardResponse().Body
-	if scenario == "trend-total-full" {
+	if scenario == "trend-total-full" || scenario == "request-tps-full" {
 		html = fullDashboardResponse().Body
 	}
 	if err := os.WriteFile(htmlPath, html, 0o600); err != nil {
@@ -80,6 +80,9 @@ func runDashboardDateRangeBrowserTest(t *testing.T, scenario, description string
 	}
 }
 
+func TestDashboardRequestDetailTpsColumnsInBrowser(t *testing.T) {
+	runDashboardDateRangeBrowserTest(t, "request-tps-full", "dashboard request-detail TPS columns browser regression failed")
+}
 func TestDashboardDateRangeCalendarEndIsExclusiveInBrowser(t *testing.T) {
 	runDashboardDateRangeBrowserTest(t, "exclusive", "dashboard calendar browser regression failed")
 }

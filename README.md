@@ -85,6 +85,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 
 - 分钟级聚合维度和计数
 - 逐请求时间、模型、来源、服务层级、结果、延迟、推理强度和 Token 计数
+- 逐请求新增总耗时与端到端 TPS 列：总耗时复用宿主记录的 latency_ns，端到端 TPS 与流式 TPS 共用分子、以总耗时为分母
 - API Key 加密密文、带密钥指纹、加密代际和用户设置的显示标签
 - 经过清理的认证账号显示信息
 - 模型价格、Context Tier、服务层级价格和同步元数据
@@ -254,6 +255,8 @@ X-Full-Mode-Session: <session-token>
 
 逐请求明细中的 TPS 以生成时间（`latency_ns - ttft_ns`）为分母。对 Gemini、Vertex、AI Studio、Antigravity 和 Interactions 等独立思考协议，分子为 `output_tokens + reasoning_tokens`；对 OpenAI 兼容、Anthropic 等已将 reasoning 计入 output 的协议，分子仍为 `output_tokens`。
 
+逐请求明细另提供两列派生指标。**总耗时**直接复用宿主记录的 `latency_ns`，即从宿主创建用量记录到请求结束的整次时长；宿主在重试或切换凭据时按每次尝试分别计时，因此该值不包含同一次客户端请求的多次上游尝试。**端到端 TPS** = 有效输出 ÷ `latency_ns`（秒），分子与上述流式 TPS 完全一致，因此独立思考协议的 reasoning 口径相同；它包含首字等待，可用于在缓冲流式下与流式 TPS 对照。当 `latency_ns` 为 0 或缺少有效输出时该列为 0，前端显示为 0.00。响应或 CSV 中的 `stream` 字段来自宿主 UsageRecord 的 `Stream` 标志，用于标注流式/非流式；早于该字段的宿主或历史记录为 `false`，表示未知而非非流式。
+
 重置请求正文：
 
 ```json
@@ -339,6 +342,7 @@ The plugin does not store prompts, request bodies, or model response bodies. Whe
 - Persistent aggregation by UTC minute with per-request usage metadata
 - Grouping by model, provider, executor, alias, source, auth type, service tier, reasoning effort, and failure status
 - Request, failure, input/output/reasoning/cache token, latency, TTFT, generation-time, TPS, and cache-hit statistics
+- Per-request total duration and end-to-end TPS columns: total duration reuses the host-recorded latency_ns, and end-to-end TPS shares the streaming numerator over total duration
 - Today, last 5 hours, last 7 days, last 30 days, current month, and custom local date-time ranges
 - Minute, hour, day, week, and month trend aggregation with wheel zoom and pan
 - Token trends, model share, cost trends, model efficiency, and paginated request details
@@ -544,6 +548,8 @@ Management API routes:
 Statistics, request, and cost resources accept `range`, or `start` and `end`, plus filters such as `source`. Full mode also accepts repeated `api_key_ref` values and applies their union. The request resource additionally accepts `offset`, `limit`, `model`, and `result`. `/stats/groups` additionally accepts `offset`, `limit`, `sort`, `direction`, `model`, and repeated `exclude_model`; pages are limited to 500 rows. `Groups` rows in statistics and dimension statistics do not split by failure state: each provider, executor, model, alias, source, API key, auth type, service tier, and reasoning-effort combination has one row; `failed`/`failure_status` are always `false`/`0` in those rows, failures are counted in `failed_requests`, and per-request status remains available from `/requests`.
 
 TPS in per-request details uses generation time (`latency_ns - ttft_ns`) as its denominator. For separate-reasoning protocols such as Gemini, Vertex, AI Studio, Antigravity, and Interactions, the numerator is `output_tokens + reasoning_tokens`; for protocols that already include reasoning in output, including OpenAI-compatible APIs and Anthropic, the numerator remains `output_tokens`.
+
+Per-request details expose two additional derived columns. **Total duration** reuses the host-recorded `latency_ns`: the full time from when the host created the usage record until the request finished. The host times each retry or credential switch as a separate attempt, so the value does not cover multiple upstream attempts of a single client request. **End-to-end TPS** = effective output ÷ `latency_ns` (seconds), using exactly the same numerator as the streaming TPS above, so separate-reasoning accounting is identical; it includes first-token wait and is the comparable rate to read alongside the streaming TPS under buffered streaming. When `latency_ns` is 0 or there is no effective output, the column is 0 and the dashboard renders 0.00. The `stream` field in responses and CSV comes from the host UsageRecord `Stream` flag and annotates streaming versus non-streaming; hosts that predate the field, and historical records, report `false`, meaning unknown rather than non-streaming.
 
 Reset body:
 

@@ -288,6 +288,11 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`{passive:false,capture:true}`,
 		`生成时间`,
 		`缓存命中`,
+		`{key:'latency_ns',label:'table.totalDuration',numeric:true},`,
+		`{key:'end_to_end_tps',label:'table.endToEndTps',numeric:true},`,
+		`case 'latency_ns':return Number(item.latency_ns||0);case 'end_to_end_tps':return Number(item.end_to_end_tps||0);`,
+		`record.latency_ns,Number(record.end_to_end_tps||0).toFixed(4),`,
+		`function requestTimingTitle(item)`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing analytics feature %q", required)
@@ -1191,6 +1196,10 @@ func TestDashboardLocalesCatalog(t *testing.T) {
 		"chart.noRequests",
 		"trend.cacheHitRate",
 		"table.cacheHitRate",
+		"table.totalDuration",
+		"table.endToEndTps",
+		"requestTiming.streaming",
+		"requestTiming.nonStreaming",
 		"sourceFilter.label",
 		"sourceFilter.all",
 		"range.quickRanges",

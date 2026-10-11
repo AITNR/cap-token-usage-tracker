@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -126,6 +127,102 @@ func TestRequestTPSWithoutGenerationTime(t *testing.T) {
 	}
 }
 
+func TestRequestEndToEndTPSUsesHostLatencyDenominator(t *testing.T) {
+	usage := normalizedUsage{
+		Dimensions:          Dimensions{Provider: "gemini", Model: "gemini-thinking"},
+		RequestedAt:         time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC),
+		LatencyNS:           uint64(2250 * time.Millisecond),
+		TTFTNS:              uint64(250 * time.Millisecond),
+		Stream:              true,
+		explicitTotalTokens: true,
+		Counters: Counters{
+			Requests:        1,
+			InputTokens:     100,
+			OutputTokens:    50,
+			ReasoningTokens: 600,
+			TotalTokens:     750,
+		},
+	}
+	item := requestDetailForUsage(usage, 1)
+	// The streaming numerator is unchanged: output + separate reasoning over the
+	// post-first-token window.
+	if item.TPS != 325 {
+		t.Fatalf("TPS = %v, want 325", item.TPS)
+	}
+	if !item.Stream {
+		t.Fatal("stream flag was not persisted from the host record")
+	}
+	// End-to-end TPS shares the numerator but divides by total latency, so it can
+	// never exceed the streaming rate.
+	const wantEndToEnd = 650.0 / 2.25
+	if diff := item.EndToEndTPS - wantEndToEnd; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("EndToEndTPS = %v, want %v", item.EndToEndTPS, wantEndToEnd)
+	}
+	if item.EndToEndTPS >= item.TPS {
+		t.Fatalf("end-to-end TPS %v must not exceed streaming TPS %v", item.EndToEndTPS, item.TPS)
+	}
+}
+
+func TestRequestEndToEndTPSWithoutLatency(t *testing.T) {
+	item := RequestDetail{
+		Dimensions: Dimensions{Provider: "gemini"},
+		Counters:   Counters{OutputTokens: 100, ReasoningTokens: 100},
+	}
+	if got := requestEndToEndTPS(item, false); got != 0 {
+		t.Fatalf("EndToEndTPS = %v, want 0", got)
+	}
+}
+
+func TestRequestEndToEndTPSWithoutTTFTStillComputes(t *testing.T) {
+	// A non-streaming or TTFT-less record still has a usable end-to-end rate,
+	// even though the streaming TPS falls back to the same denominator.
+	item := RequestDetail{
+		Dimensions:   Dimensions{Provider: "openai-compatible-demo"},
+		LatencyNS:    uint64(10 * time.Second),
+		GenerationNS: uint64(10 * time.Second),
+		Counters:     Counters{OutputTokens: 200, TotalTokens: 200},
+	}
+	if got := requestEndToEndTPS(item, false); got != 20 {
+		t.Fatalf("EndToEndTPS = %v, want 20", got)
+	}
+}
+
+func TestDecodeUsageReadsStreamFlag(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	for _, test := range []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{name: "stream true", raw: `{"provider":"custom","Stream":true}`, want: true},
+		{name: "stream false", raw: `{"provider":"custom","Stream":false}`, want: false},
+		{name: "snake case alias", raw: `{"provider":"custom","stream":true}`, want: true},
+		{name: "absent field is not stream", raw: `{"provider":"custom"}`, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			usage, err := decodeUsage([]byte(test.raw), now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if usage.Stream != test.want {
+				t.Fatalf("stream = %v, want %v", usage.Stream, test.want)
+			}
+		})
+	}
+}
+
+func TestFirstBoolPresentDistinguishesAbsentFromFalse(t *testing.T) {
+	root := map[string]json.RawMessage{}
+	value, ok := firstBoolPresent(root, "Stream")
+	if ok || value {
+		t.Fatalf("absent field reported value=%v present=%v", value, ok)
+	}
+	root["Stream"] = json.RawMessage(`false`)
+	value, ok = firstBoolPresent(root, "Stream")
+	if !ok || value {
+		t.Fatalf("explicit false reported value=%v present=%v", value, ok)
+	}
+}
 func TestDecodeUsageTracksExplicitTotal(t *testing.T) {
 	raw := []byte(`{"provider":"custom","detail":{"input_tokens":10,"output_tokens":20,"reasoning_tokens":5,"total_tokens":35}}`)
 	usage, err := decodeUsage(raw, time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC))

@@ -3002,6 +3002,7 @@ func (a *storeActor) queryRequests(queryRange usageRange, offset, limit int, mod
 			// the conservative unknown-provider path here; known protocol
 			// semantics still correct historical separate-reasoning records.
 			item.TPS = requestTPS(item, false)
+			item.EndToEndTPS = requestEndToEndTPS(item, false)
 			if model != "" && !modelFilterMatches(model, item.Model) {
 				continue
 			}
