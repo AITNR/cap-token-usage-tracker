@@ -4,15 +4,15 @@ import { chromium } from 'playwright-core';
 
 const [htmlPath, chromePath, scenario = 'exclusive'] = process.argv.slice(2);
 if (!htmlPath || !chromePath) {
-  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open|trend-total|trend-total-full|request-tps-full]');
+  throw new Error('usage: node test/dashboard_date_range.mjs <dashboard-html-path> <google-chrome-path> [exclusive|end-time|end-time-reset|quick-preset|reverse|los-angeles-dst|token-unit|recent-open|expired-open|trend-total|trend-total-full|request-tps-full|reasoning-effort-full]');
 }
-if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open', 'trend-total', 'trend-total-full', 'request-tps-full'].includes(scenario)) {
+if (!['exclusive', 'end-time', 'end-time-reset', 'quick-preset', 'reverse', 'los-angeles-dst', 'token-unit', 'recent-open', 'expired-open', 'trend-total', 'trend-total-full', 'request-tps-full', 'reasoning-effort-full'].includes(scenario)) {
   throw new Error(`unknown dashboard date-range browser scenario: ${scenario}`);
 }
 
 let dashboardHTML = await readFile(htmlPath, 'utf8');
-if (scenario === 'request-tps-full') {
-  dashboardHTML = dashboardHTML.replace('function requestTimingTitle(item)', "window.__reqTest={requestColumns:requestColumns,requestSortValue:requestSortValue,requestDataCell:requestDataCell,sortedRequestItems:sortedRequestItems,setRequestSort:setRequestSort,visibleRequestColumns:visibleRequestColumns,duration:duration,exportCSV:exportCSV,overrideDownload:function(fn){downloadBlob=fn;}};function requestTimingTitle(item)");
+if (scenario === 'request-tps-full' || scenario === 'reasoning-effort-full') {
+  dashboardHTML = dashboardHTML.replace('function requestTimingTitle(item)', "window.__reqTest={requestColumns:requestColumns,requestSortValue:requestSortValue,requestDataCell:requestDataCell,sortedRequestItems:sortedRequestItems,setRequestSort:setRequestSort,visibleRequestColumns:visibleRequestColumns,duration:duration,exportCSV:exportCSV,overrideDownload:function(fn){downloadBlob=fn;},reasoningEffortFromModel:reasoningEffortFromModel,reasoningEffortDisplay:reasoningEffortDisplay,reasoningEffortCell:reasoningEffortCell};function requestTimingTitle(item)");
 }
 if (scenario.startsWith('trend-total')) {
   dashboardHTML = dashboardHTML.replace('function trendNumber(value)', "window.__trendTest={pointStackTotal:pointStackTotal,trendGeometry:trendGeometry,trendBusinessTotal:trendBusinessTotal,trendCacheReadTokens:trendCacheReadTokens,exportPNG:typeof exportPNG==='function'?exportPNG:null,disableDownload:function(){downloadBlob=function(){};}};function trendNumber(value)");
@@ -59,6 +59,27 @@ const requestTpsItems = [
     cache_creation_tokens: 0, total_tokens: 200, cache_hit: false,
   },
   {
+    sequence: 3, time: '2026-08-23T11:30:00.000Z', model: 'gemini-3.8-flash-high', provider: 'openai-compatible-demo',
+    executor_type: 'OpenAICompatExecutor', source: 'demo', service_tier: 'default', result: '成功', failed: false,
+    stream: true, ttft_ns: 2000000000, latency_ns: 10000000000, generation_ns: 8000000000, tps: 25, end_to_end_tps: 20,
+    reasoning_effort: '', input_tokens: 100, output_tokens: 190, reasoning_tokens: 10, cache_read_tokens: 0,
+    cache_creation_tokens: 0, total_tokens: 200, cache_hit: false,
+  },
+  {
+    sequence: 4, time: '2026-08-23T11:40:00.000Z', model: 'qwen-max', provider: 'openai-compatible-demo',
+    executor_type: 'OpenAICompatExecutor', source: 'demo', service_tier: 'default', result: '成功', failed: false,
+    stream: true, ttft_ns: 2000000000, latency_ns: 10000000000, generation_ns: 8000000000, tps: 25, end_to_end_tps: 20,
+    reasoning_effort: '', input_tokens: 100, output_tokens: 190, reasoning_tokens: 0, cache_read_tokens: 0,
+    cache_creation_tokens: 0, total_tokens: 200, cache_hit: false,
+  },
+  {
+    sequence: 5, time: '2026-08-23T11:50:00.000Z', model: 'gemini-3.8-flash-low', provider: 'openai-compatible-demo',
+    executor_type: 'OpenAICompatExecutor', source: 'demo', service_tier: 'default', result: '成功', failed: false,
+    stream: true, ttft_ns: 2000000000, latency_ns: 10000000000, generation_ns: 8000000000, tps: 25, end_to_end_tps: 20,
+    reasoning_effort: 'medium', input_tokens: 100, output_tokens: 190, reasoning_tokens: 10, cache_read_tokens: 0,
+    cache_creation_tokens: 0, total_tokens: 200, cache_hit: false,
+  },
+  {
     sequence: 1, time: '2026-08-23T10:00:00.000Z', model: 'browser-buffered', provider: 'gemini',
     executor_type: 'GeminiExecutor', source: 'demo', service_tier: 'default', result: '成功', failed: false,
     stream: true, ttft_ns: 9000000000, latency_ns: 10000000000, generation_ns: 1000000000, tps: 1000, end_to_end_tps: 100,
@@ -66,7 +87,7 @@ const requestTpsItems = [
     cache_creation_tokens: 0, total_tokens: 1100, cache_hit: false,
   },
 ];
-const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : scenario.startsWith('trend-total') ? trendTotalInitial : scenario === 'request-tps-full' ? {
+const initialPayload = scenario === 'token-unit' ? tokenUnitInitial : scenario.startsWith('trend-total') ? trendTotalInitial : scenario === 'request-tps-full' || scenario === 'reasoning-effort-full' ? {
   generated_at: '2026-08-23T00:00:00.000Z',
   last_used: '2026-08-23T12:00:00.000Z',
   models: [{ model: 'browser-stream', requests: 2, input_tokens: 200, output_tokens: 390, reasoning_tokens: 810, cache_read_tokens: 0, cache_creation_tokens: 0, total_tokens: 1300 }],
@@ -149,7 +170,7 @@ const server = createServer((request, response) => {
     return;
   }
   if (url.pathname === `${resourceBase}/requests`) {
-    sendJSON(scenario === 'request-tps-full' ? { items: requestTpsItems, total: requestTpsItems.length, offset: 0, limit: 100 } : { items: [], total: 0 });
+    sendJSON(scenario === 'request-tps-full' || scenario === 'reasoning-effort-full' ? { items: requestTpsItems, total: requestTpsItems.length, offset: 0, limit: 100 } : { items: [], total: 0 });
     return;
   }
   if (url.pathname === `${resourceBase}/costs`) {
@@ -373,6 +394,77 @@ try {
       throw new Error(`CSV values wrong: ${lines.find((line) => line.includes('browser-stream'))}`);
     }
   }
+  if (scenario === 'reasoning-effort-full') {
+    await page.waitForResponse((response) => new URL(response.url()).pathname === `${resourceBase}/requests`);
+    await page.locator('#requestRows td[data-column]').first().waitFor();
+    await page.locator('#requestColumnsButton').click();
+    await page.locator('#requestColumnsShowAll').click();
+    const cells = await page.locator('#requestRows tr').evaluateAll((nodes) => nodes.map((row) => {
+      const out = {};
+      row.querySelectorAll('td[data-column]').forEach((td) => { out[td.dataset.column] = td.textContent; });
+      return out;
+    }));
+    const byModel = Object.create(null);
+    cells.forEach((row) => { byModel[row.model] = row; });
+    if (byModel['gemini-3.8-flash-low'].reasoning_effort !== 'medium') {
+      throw new Error('host-reported effort must not be overridden: ' + JSON.stringify(byModel['gemini-3.8-flash-low']));
+    }
+    if (byModel['gemini-3.8-flash-high'].reasoning_effort !== 'high*') {
+      throw new Error('dash suffix effort was not derived: ' + JSON.stringify(byModel['gemini-3.8-flash-high']));
+    }
+    if (byModel['qwen-max'].reasoning_effort !== '—') {
+      throw new Error('qwen-max must not be read as a thinking level: ' + JSON.stringify(byModel['qwen-max']));
+    }
+    const probe = await page.evaluate(() => {
+      const { reasoningEffortFromModel, reasoningEffortDisplay, reasoningEffortCell } = window.__reqTest;
+      const cellFor = (item) => reasoningEffortCell(document.createElement('tr'), item);
+      const derived = cellFor({ model: 'gemini-3.8-flash-medium', reasoning_effort: '' });
+      const hostWins = cellFor({ model: 'gemini-3.8-flash-high', reasoning_effort: 'low' });
+      return {
+        fromHigh: reasoningEffortFromModel('gemini-3.8-flash-high'),
+        fromXhigh: reasoningEffortFromModel('gpt-5.2-xhigh'),
+        fromMinimal: reasoningEffortFromModel('m-minimal'),
+        maxName: reasoningEffortFromModel('qwen-max'),
+        qvqMax: reasoningEffortFromModel('qvq-max'),
+        imageMax: reasoningEffortFromModel('qwen-image-max'),
+        uppercase: reasoningEffortFromModel('gemini-3.8-FLASH-HIGH'),
+        bareHigh: reasoningEffortFromModel('high'),
+        empty: reasoningEffortFromModel(''),
+        displayHost: reasoningEffortDisplay({ model: 'x', reasoning_effort: 'HIGH' }),
+        displayDerived: reasoningEffortDisplay({ model: 'gemini-3.8-flash-low', reasoning_effort: '' }),
+        derivedText: derived.textContent,
+        derivedMarker: derived.textContent.indexOf('*') === derived.textContent.length - 1,
+        hostText: hostWins.textContent,
+      };
+    });
+    const expected = {
+      fromHigh: 'high', fromXhigh: 'xhigh', fromMinimal: 'minimal',
+      maxName: '', qvqMax: '', imageMax: '', uppercase: 'high', bareHigh: '', empty: '',
+    };
+    for (const key of Object.keys(expected)) {
+      if (probe[key] !== expected[key]) throw new Error(`reasoningEffortFromModel ${key} = ${JSON.stringify(probe[key])}, want ${JSON.stringify(expected[key])}`);
+    }
+    if (probe.displayHost.text !== 'HIGH' || probe.displayHost.derived) throw new Error('host effort must pass through unchanged: ' + JSON.stringify(probe.displayHost));
+    if (probe.displayDerived.text !== 'low' || !probe.displayDerived.derived) throw new Error('derived display wrong: ' + JSON.stringify(probe.displayDerived));
+    if (probe.derivedText !== 'medium*' || !probe.derivedMarker) throw new Error('derived cell must be marked: ' + JSON.stringify(probe));
+    if (probe.hostText !== 'low') throw new Error('host effort must win in the cell: ' + JSON.stringify(probe));
+
+    const csv = await page.evaluate(async () => {
+      window.__capturedCSV = null;
+      window.__reqTest.overrideDownload(function(blob, name) { window.__capturedCSV = { blob: blob, name: name }; });
+      await window.__reqTest.exportCSV();
+      return await window.__capturedCSV.blob.text();
+    });
+    const lines = csv.replace(/^\uFEFF/, '').split('\r\n');
+    const header = lines[0].replace(/^"|"$/g, '').split('","');
+    const effortIndex = header.indexOf('思考强度');
+    if (effortIndex < 0) throw new Error('CSV is missing the reasoning effort column: ' + lines[0]);
+    const rowFor = (model) => lines.find((line) => line.includes(model)).replace(/^"|"$/g, '').split('","');
+    if (rowFor('gemini-3.8-flash-high')[effortIndex] !== 'high*') throw new Error('CSV derived effort wrong: ' + rowFor('gemini-3.8-flash-high')[effortIndex]);
+    if (rowFor('gemini-3.8-flash-low')[effortIndex] !== 'medium') throw new Error('CSV host effort wrong: ' + rowFor('gemini-3.8-flash-low')[effortIndex]);
+    if (rowFor('qwen-max')[effortIndex] !== '') throw new Error('CSV qwen-max effort must stay empty: ' + rowFor('qwen-max')[effortIndex]);
+  }
+
   if (scenario === 'recent-open' || scenario === 'expired-open') {
     const initialURL = new URL(initialStatsURLs[0]);
     const expectedStart = scenario === 'expired-open'

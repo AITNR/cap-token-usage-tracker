@@ -165,6 +165,7 @@
   "requestTiming.streaming": "流式請求：生成時間與 TPS 以首字之後為分母；總耗時為宿主記錄的整次請求時長。",
   "requestTiming.nonStreaming": "非流式或未知：該記錄可能早於宿主提供 Stream 標記；總耗時為宿主記錄的整次請求時長，端到端 TPS 為可比較的速率。",
   "table.reasoningEffort": "思考強度",
+  "table.reasoningEffortDerived": "由模型名稱推導；宿主未上報思考強度",
   "table.input": "輸入",
   "table.output": "輸出",
   "table.reasoning": "思考",

@@ -257,6 +257,8 @@ X-Full-Mode-Session: <session-token>
 
 逐请求明细另提供两列派生指标。**总耗时**直接复用宿主记录的 `latency_ns`，即从宿主创建用量记录到请求结束的整次时长；宿主在重试或切换凭据时按每次尝试分别计时，因此该值不包含同一次客户端请求的多次上游尝试。**端到端 TPS** = 有效输出 ÷ `latency_ns`（秒），分子与上述流式 TPS 完全一致，因此独立思考协议的 reasoning 口径相同；它包含首字等待，可用于在缓冲流式下与流式 TPS 对照。当 `latency_ns` 为 0 或缺少有效输出时该列为 0，前端显示为 0.00。响应或 CSV 中的 `stream` 字段来自宿主 UsageRecord 的 `Stream` 标志，用于标注流式/非流式；早于该字段的宿主或历史记录为 `false`，表示未知而非非流式。
 
+**思考强度的模型名兜底**：宿主只从上游请求体推导 `reasoning_effort`，不识别把等级写在模型名里的破折号写法（例如 `gemini-3.8-flash-high`）。因此当宿主未上报该字段时，仪表盘会从模型名尾部推导 `-minimal`、`-low`、`-medium`、`-high`、`-xhigh` 作为兜底值，并在单元格与 CSV 中以 `*` 标记（tooltip 说明来源）。宿主上报的值始终优先且原样显示。`-max` 刻意不参与推导，因为 `qwen-max`、`qvq-max`、`qwen-image-max` 等真实模型名会因此被误判。该兜底只影响展示，不改动持久化的 `reasoning_effort` 取值与维度分组。
+
 重置请求正文：
 
 ```json
@@ -550,6 +552,8 @@ Statistics, request, and cost resources accept `range`, or `start` and `end`, pl
 TPS in per-request details uses generation time (`latency_ns - ttft_ns`) as its denominator. For separate-reasoning protocols such as Gemini, Vertex, AI Studio, Antigravity, and Interactions, the numerator is `output_tokens + reasoning_tokens`; for protocols that already include reasoning in output, including OpenAI-compatible APIs and Anthropic, the numerator remains `output_tokens`.
 
 Per-request details expose two additional derived columns. **Total duration** reuses the host-recorded `latency_ns`: the full time from when the host created the usage record until the request finished. The host times each retry or credential switch as a separate attempt, so the value does not cover multiple upstream attempts of a single client request. **End-to-end TPS** = effective output ÷ `latency_ns` (seconds), using exactly the same numerator as the streaming TPS above, so separate-reasoning accounting is identical; it includes first-token wait and is the comparable rate to read alongside the streaming TPS under buffered streaming. When `latency_ns` is 0 or there is no effective output, the column is 0 and the dashboard renders 0.00. The `stream` field in responses and CSV comes from the host UsageRecord `Stream` flag and annotates streaming versus non-streaming; hosts that predate the field, and historical records, report `false`, meaning unknown rather than non-streaming.
+
+**Reasoning-effort fallback from the model name**: the host derives `reasoning_effort` only from the upstream request body and does not read dash-style levels encoded in the model name (for example `gemini-3.8-flash-high`). When the host reports nothing, the dashboard recovers `-minimal`, `-low`, `-medium`, `-high`, or `-xhigh` from the trailing model-name token and marks the value with `*` in both the table and the CSV (the tooltip explains the source). A host-reported value always wins and is shown verbatim. `-max` is deliberately excluded because real product names such as `qwen-max`, `qvq-max`, and `qwen-image-max` would otherwise be misread. The fallback is display-only: it does not change the persisted `reasoning_effort` value or dimension grouping.
 
 Reset body:
 

@@ -165,6 +165,7 @@
   "requestTiming.streaming": "Streaming request: generation time and streaming TPS are measured after the first token; total duration is the full host-recorded request time.",
   "requestTiming.nonStreaming": "Non-streaming or unknown: this record may predate the host Stream flag; total duration is the full host-recorded request time and end-to-end TPS is the comparable rate.",
   "table.reasoningEffort": "Reasoning effort",
+  "table.reasoningEffortDerived": "Derived from the model name; the host did not report a reasoning effort",
   "table.input": "Input",
   "table.output": "Output",
   "table.reasoning": "Reasoning",
