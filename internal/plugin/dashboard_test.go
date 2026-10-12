@@ -165,7 +165,11 @@ func TestDashboardIncludesInteractiveAnalyticsFeatures(t *testing.T) {
 		`bar-output`,
 		`bar-cache-read`,
 		`cache-hit-line`,
-		`stroke-dasharray:7 5`,
+		`.cache-hit-line{fill:none;stroke:var(--cache-hit-color);stroke-width:2;stroke-linecap:round;stroke-linejoin:round;pointer-events:none;vector-effect:non-scaling-stroke}`,
+		`function smoothPath(points,minY,maxY)`,
+		`line=smoothPath(points,top,top+plotH)`,
+		`.line-area{fill:url(#costAreaGradient)}`,
+		`id:'costAreaGradient'`,
 		`function trendCacheReadTokens(point)`,
 		`function trendCacheHitRate(input,cacheRead)`,
 		`bucket.cacheRead+=trendCacheReadTokens(point)`,
@@ -337,7 +341,8 @@ func TestDashboardTrendKeepsContinuousTimeBuckets(t *testing.T) {
 		`function emptyCostBucket(info){return {key:info.key,label:info.label,stamp:info.stamp,hasData:false`,
 		`item.cacheHitRate=item.hasData?trendCacheHitRate(item.input,item.cacheRead):null;`,
 		`if(showCacheHit&&point.hasData&&point.cacheHitRate!==null)`,
-		`item.index===previousIndex+1?'L':'M'`,
+		`if(cacheCurrent.length&&item.index!==cacheCurrent[cacheCurrent.length-1].index+1){cacheSegments.push(cacheCurrent);cacheCurrent=[];}`,
+		`cacheSegments.forEach(function(segment){fragment.appendChild(svgNode('path',{d:smoothPath(segment,top,top+plotH),class:'cache-hit-line'}));});`,
 		`if(!point.hasData){tooltipRow(t('chart.noRequests'),t('locale.unavailable'));`,
 	} {
 		if !strings.Contains(html, required) {
