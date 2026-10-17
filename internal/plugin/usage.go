@@ -17,6 +17,7 @@ type normalizedUsage struct {
 	LatencyNS   uint64
 	TTFTNS      uint64
 	Counters    Counters
+	Stream      bool
 	authIndex   string
 	baseURL     string
 
@@ -60,6 +61,7 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 		}
 	}
 
+	stream, _ := firstBoolPresent(root, "Stream", "stream")
 	failed := firstBool(root, "Failed", "failed")
 	provider := normalizeDimension(firstString(root, "Provider", "provider"))
 	executorType := normalizeDimension(firstString(root, "ExecutorType", "executor_type"))
@@ -80,6 +82,7 @@ func decodeUsage(raw []byte, now time.Time) (normalizedUsage, error) {
 			Failed:          failed,
 			FailureStatus:   clampStatus(firstInt64(failure, "StatusCode", "status_code")),
 		},
+		Stream:              stream,
 		RequestedAt:         requestedAt,
 		LatencyNS:           positiveDurationNS(root, "Latency", "latency", "latency_ns"),
 		TTFTNS:              positiveDurationNS(root, "TTFT", "ttft", "ttft_ns"),
@@ -286,6 +289,22 @@ func firstBool(root map[string]json.RawMessage, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+// firstBoolPresent mirrors firstInt64Present so callers can distinguish an
+// explicit false from an absent field, such as hosts that predate Stream.
+func firstBoolPresent(root map[string]json.RawMessage, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value, ok := root[key]
+		if !ok {
+			continue
+		}
+		var result bool
+		if json.Unmarshal(value, &result) == nil {
+			return result, true
+		}
+	}
+	return false, false
 }
 
 func firstInt64(root map[string]json.RawMessage, keys ...string) int64 {

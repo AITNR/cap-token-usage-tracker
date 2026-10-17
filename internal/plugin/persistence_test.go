@@ -1820,6 +1820,8 @@ func TestQueryRequestsRecalculatesStoredSeparateReasoningTPS(t *testing.T) {
 				return nil
 			}
 			item.TPS = 25
+			item.EndToEndTPS = 0
+			item.Stream = false
 			encoded, err := json.Marshal(item)
 			if err != nil {
 				return err
@@ -1864,5 +1866,12 @@ func TestQueryRequestsRecalculatesStoredSeparateReasoningTPS(t *testing.T) {
 	item := page.Items[0]
 	if item.GenerationNS != uint64(2*time.Second) || item.TPS != 325 {
 		t.Fatalf("stored request TPS was not recalculated: %+v", item)
+	}
+	const wantEndToEnd = 650.0 / 2.25
+	if diff := item.EndToEndTPS - wantEndToEnd; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("stored end-to-end TPS was not recalculated: %+v", item)
+	}
+	if item.Stream {
+		t.Fatalf("historical record must not gain a stream flag: %+v", item)
 	}
 }

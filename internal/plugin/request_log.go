@@ -23,6 +23,8 @@ type RequestDetail struct {
 	TTFTNS        uint64         `json:"ttft_ns"`
 	GenerationNS  uint64         `json:"generation_ns"`
 	TPS           float64        `json:"tps"`
+	EndToEndTPS   float64        `json:"end_to_end_tps"`
+	Stream        bool           `json:"stream"`
 	CacheHit      bool           `json:"cache_hit"`
 	EstimatedCost *EstimatedCost `json:"estimated_cost,omitempty"`
 }
@@ -125,6 +127,18 @@ func requestTPS(item RequestDetail, explicitTotal bool) float64 {
 	return float64(outputTokens) / (float64(item.GenerationNS) / float64(time.Second))
 }
 
+// requestEndToEndTPS computes the average output rate across the whole request,
+// including first-token wait. It reuses the same numerator as requestTPS so
+// separate-reasoning protocols stay consistent, and derives its denominator from
+// the host-recorded total latency instead of the post-first-token window.
+func requestEndToEndTPS(item RequestDetail, explicitTotal bool) float64 {
+	if item.LatencyNS == 0 {
+		return 0
+	}
+	outputTokens := effectiveOutputTokensForTPS(item.Dimensions, item.Counters, explicitTotal)
+	return float64(outputTokens) / (float64(item.LatencyNS) / float64(time.Second))
+}
+
 func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail {
 	generationNS := usage.LatencyNS
 	if usage.TTFTNS > 0 && usage.LatencyNS >= usage.TTFTNS {
@@ -146,8 +160,10 @@ func requestDetailForUsage(usage normalizedUsage, sequence uint64) RequestDetail
 		LatencyNS:    usage.LatencyNS,
 		TTFTNS:       usage.TTFTNS,
 		GenerationNS: generationNS,
+		Stream:       usage.Stream,
 		CacheHit:     usage.Counters.CacheReadTokens > 0,
 	}
 	item.TPS = requestTPS(item, usage.explicitTotalTokens)
+	item.EndToEndTPS = requestEndToEndTPS(item, usage.explicitTotalTokens)
 	return item
 }
