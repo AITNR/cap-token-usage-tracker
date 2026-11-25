@@ -564,7 +564,13 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`manualDraftModels.has(name)||input>0`,
 		`if(base.updated_at)value.updated_at=base.updated_at`,
 		`manualDraftModels.clear()`,
-		`var modelsURL=resourceBase+'/full-mode/models'`,
+		`var hostModelsURL=publicPathPrefix+'/v1/models'`,
+		`id="hostModelsKeyInput"`,
+		`id="loadHostModels"`,
+		`id="hostModelsStatus"`,
+		`async function fetchHostModels()`,
+		`'Authorization':'Bearer '+apiKey`,
+		`hostModelSet[name]`,
 		`function normalizeCLIModels(payload)`,
 		`async function fetchCLIModels(renderEditor)`,
 		`cliModelsPromise=api(modelsURL)`,
@@ -642,7 +648,6 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`sessionStorage`,
 		`id="cliModelsKeyInput"`,
 		`cliModelsKeyInput`,
-		`'/v1/models'`,
 		`error.missingAPIKey`,
 		`button.loadModels`,
 		`fetch('https://models.dev`,
@@ -653,6 +658,15 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains forbidden pricing pattern %q", forbidden)
 		}
+	}
+	// Saving and synchronization stay session-only: credentials appear only in
+	// the full-mode session handshake (management key) and in the optional host
+	// model import (client API key).
+	if count := strings.Count(html, "Authorization"); count != 2 {
+		t.Fatalf("full dashboard must authorize only the session handshake and the host model import, found %d Authorization references", count)
+	}
+	if count := strings.Count(html, "'Authorization':'Bearer '+managementKey"); count != 0 {
+		t.Fatalf("full dashboard must not authorize with the management key, found %d", count)
 	}
 }
 
