@@ -131,6 +131,7 @@ plugins:
       response_compression: true
       response_compression_min_bytes: 1024
       full_mode_session_ttl_minutes: 15
+      exchange_rate_provider: auto
 ```
 
 | 字段 | 默认值 | 说明 |
@@ -144,6 +145,7 @@ plugins:
 | `response_compression` | `true` | 客户端支持 gzip 时压缩公共仪表盘 HTML 和 JSON 响应；管理接口保持未压缩 |
 | `response_compression_min_bytes` | `1024` | 启用 gzip 的最小响应字节数，范围 0-16777216 |
 | `full_mode_session_ttl_minutes` | `15` | 完整模式会话有效期（分钟），范围 1-1440；令牌只保存在页面内存，刷新、关闭页面或重启插件后需要重新鉴权 |
+| `exchange_rate_provider` | `auto` | USD/CNY 汇率来源：`auto` 自动选源（能访问 CFETS 视为国内，用人民币中间价；否则用 open.er-api.com），也可固定为 `cfets`、`open-er-api`、`allratestoday`；首选源失败时按 CFETS → open.er-api → AllRatesToday 顺序回退，回退结果缓存 10 分钟后重试首选源 |
 
 示例中的 `api_key_secret` 只是占位符，部署时必须替换。含 `#`、`:`、`{}` 等特殊字符的值应使用 YAML 引号包裹；长度按 UTF-8 字节计算。该密钥会保存在 CLIProxyAPI 配置中，因此应限制配置文件权限，避免提交到公开仓库，也不要与数据库备份一起分发。
 
@@ -445,6 +447,7 @@ plugins:
       response_compression: true
       response_compression_min_bytes: 1024
       full_mode_session_ttl_minutes: 15
+      exchange_rate_provider: auto
 ```
 
 | Field | Default | Description |
@@ -458,6 +461,7 @@ plugins:
 | `response_compression` | `true` | Compress public dashboard HTML and JSON responses when the client supports gzip; management endpoints remain uncompressed |
 | `response_compression_min_bytes` | `1024` | Minimum response size in bytes before gzip is used, from 0 to 16777216 |
 | `full_mode_session_ttl_minutes` | `15` | Full-mode session lifetime in minutes, from 1 to 1440. The token stays only in page memory; refreshing, closing the page, or restarting the plugin requires authentication again |
+| `exchange_rate_provider` | `auto` | USD/CNY rate source. `auto` picks by reachability (CFETS reachable means a mainland-China host and the official central-parity rate, otherwise open.er-api.com); `cfets`, `open-er-api`, or `allratestoday` pin a source. A failing preferred source falls back in the order CFETS → open.er-api → AllRatesToday, and the fallback result is cached for 10 minutes before the preferred source is retried. |
 
 The `api_key_secret` in the example is a placeholder and must be replaced for deployment. Quote YAML values containing special characters such as `#`, `:`, or `{}`; the minimum length is measured in UTF-8 bytes. The secret is stored in CLIProxyAPI configuration, so restrict access to that file, do not commit it to a public repository, and do not distribute it with database backups.
 

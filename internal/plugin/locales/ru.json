@@ -107,6 +107,8 @@
   "currency.switch": "Переключить на {value}",
   "currency.rate": " · 1 USD = {rate} CNY",
   "currency.stale": " · кэшированный курс",
+  "currency.source": " · {source}",
+  "currency.fallback": " · резервный источник",
   "trend.title": "Тренд использования токенов",
   "trend.subtitle": "Стек Input / Output / чтения кэша · пунктирная линия доли попаданий",
   "trend.cacheHitRate": "Доля попаданий в кэш",

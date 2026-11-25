@@ -696,7 +696,7 @@ func (r *pluginRuntime) exchangeRateResponse() (pluginapi.ManagementResponse, er
 	r.mu.Lock()
 	service := r.exchangeRates
 	if service == nil {
-		service = newExchangeRateService()
+		service = newExchangeRateService(r.config.ExchangeRateProvider)
 		r.exchangeRates = service
 	}
 	r.mu.Unlock()

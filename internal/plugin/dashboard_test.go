@@ -600,6 +600,8 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`fullModePayloadRequest(savePricesURL,{prices:next,sync_settings:settings})`,
 		`fullModePayloadRequest(syncPricesURL,{source:'models.dev',models:models,sync_settings:settings},25000)`,
 		`displayCurrency==='CNY'`,
+		`exchangeRate.source`,
+		`exchangeRate.fallback?t('currency.fallback')`,
 		`value*Number(exchangeRate.rate||0)`,
 		`label.textContent=money(value)`,
 		`formatTokenTotal(summary.total_tokens)`,

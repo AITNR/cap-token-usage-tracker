@@ -107,6 +107,8 @@
   "currency.switch": "切換為{value}",
   "currency.rate": " · 1 USD = {rate} CNY",
   "currency.stale": " · 快取匯率",
+  "currency.source": " · {source}",
+  "currency.fallback": " · 已回退",
   "trend.title": "Token 消耗趨勢",
   "trend.subtitle": "輸入 / 輸出 / 快取讀取 Token 堆疊 · 快取命中率虛線",
   "trend.cacheHitRate": "快取命中率",

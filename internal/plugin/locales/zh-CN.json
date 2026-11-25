@@ -107,6 +107,8 @@
   "currency.switch": "切换为{value}",
   "currency.rate": " · 1 USD = {rate} CNY",
   "currency.stale": " · 缓存汇率",
+  "currency.source": " · {source}",
+  "currency.fallback": " · 已回退",
   "trend.title": "Token 消耗趋势",
   "trend.subtitle": "输入 / 输出 / 缓存读取 Token 堆叠 · 缓存命中率虚线",
   "trend.cacheHitRate": "缓存命中率",

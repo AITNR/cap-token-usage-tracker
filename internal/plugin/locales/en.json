@@ -107,6 +107,8 @@
   "currency.switch": "Switch to {value}",
   "currency.rate": " · 1 USD = {rate} CNY",
   "currency.stale": " · cached rate",
+  "currency.source": " · {source}",
+  "currency.fallback": " · fallback source",
   "trend.title": "Token usage trend",
   "trend.subtitle": "Input / Output / Cache Read Token stack · dashed cache hit rate",
   "trend.cacheHitRate": "Cache hit rate",

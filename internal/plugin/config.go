@@ -31,6 +31,7 @@ type Config struct {
 	ResponseCompression         bool
 	ResponseCompressionMinBytes int
 	FullModeSessionTTLMinutes   int
+	ExchangeRateProvider        string
 }
 
 type configYAML struct {
@@ -43,6 +44,7 @@ type configYAML struct {
 	ResponseCompression         *bool   `yaml:"response_compression"`
 	ResponseCompressionMinBytes *int    `yaml:"response_compression_min_bytes"`
 	FullModeSessionTTLMinutes   *int    `yaml:"full_mode_session_ttl_minutes"`
+	ExchangeRateProvider        *string `yaml:"exchange_rate_provider"`
 }
 
 func defaultConfig() Config {
@@ -56,6 +58,7 @@ func defaultConfig() Config {
 		ResponseCompression:         defaultResponseCompression,
 		ResponseCompressionMinBytes: defaultResponseCompressionMinBytes,
 		FullModeSessionTTLMinutes:   defaultFullModeSessionTTLMinutes,
+		ExchangeRateProvider:        exchangeRateProviderAuto,
 	}
 }
 
@@ -100,6 +103,13 @@ func parseConfig(raw []byte) (Config, error) {
 	if input.FullModeSessionTTLMinutes != nil {
 		cfg.FullModeSessionTTLMinutes = *input.FullModeSessionTTLMinutes
 	}
+	if input.ExchangeRateProvider != nil {
+		if trimmed := strings.TrimSpace(*input.ExchangeRateProvider); trimmed != "" {
+			cfg.ExchangeRateProvider = trimmed
+		} else {
+			cfg.ExchangeRateProvider = exchangeRateProviderAuto
+		}
+	}
 	return normalizeConfig(cfg)
 }
 
@@ -124,6 +134,9 @@ func normalizeConfig(cfg Config) (Config, error) {
 	}
 	if cfg.FullModeSessionTTLMinutes < minFullModeSessionTTLMinutes || cfg.FullModeSessionTTLMinutes > maxFullModeSessionTTLMinutes {
 		return Config{}, fmt.Errorf("full_mode_session_ttl_minutes must be between %d and %d", minFullModeSessionTTLMinutes, maxFullModeSessionTTLMinutes)
+	}
+	if !isKnownExchangeRateProvider(cfg.ExchangeRateProvider) {
+		return Config{}, fmt.Errorf("exchange_rate_provider must be one of %s, %s, %s, %s", exchangeRateProviderAuto, exchangeRateProviderCFETS, exchangeRateProviderOpenERAPI, exchangeRateProviderAllRates)
 	}
 	absolute, err := filepath.Abs(filepath.Clean(cfg.DataPath))
 	if err != nil {
