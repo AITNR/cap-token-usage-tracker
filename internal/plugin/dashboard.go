@@ -249,7 +249,8 @@ html:not([data-theme]){background:#faf9f5;color-scheme:light}
 html[data-theme='white']{background:#fff;color-scheme:light}
 html[data-theme='dark']{background:#151412;color-scheme:dark}
 .time-pricing{grid-column:1/-1;padding:10px;border-top:1px solid var(--border-color)}.time-pricing summary{cursor:pointer}.time-pricing label{display:flex;flex-direction:column;gap:4px;min-width:0}.time-tier-row{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px;padding:12px 0;border-bottom:1px solid var(--border-color)}.time-pricing input{width:100%;box-sizing:border-box}.time-pricing p{margin:8px 0}.time-pricing>.mini-button{margin-top:8px}@media(max-width:650px){.time-tier-row{grid-template-columns:repeat(2,minmax(100px,1fr))}}</style>
-<script>
+<!-- data-cfasync="false" opts both inline scripts out of Cloudflare Rocket Loader: the rewriter would defer them behind /cdn-cgi/rocketscript.js, which our CSP blocks, leaving the dashboard permanently empty (issue #89). Keep it on every script tag. -->
+<script data-cfasync="false">
 (function(){
 'use strict';
 var theme='dark',background='#151412';
@@ -311,7 +312,7 @@ try{if(window.frameElement){window.frameElement.style.backgroundColor=background
 <dialog id="resetDialog"><form method="dialog"><h2 data-i18n="reset.title">Management Key Confirmation</h2><p data-i18n="reset.description">Clearing statistics requires a CLIProxyAPI management key. The key is only used for this request.</p><input id="resetKeyInput" class="key-input" type="password" autocomplete="off" placeholder="Management key"><div class="dialog-actions"><button class="control" value="cancel" data-i18n="reset.cancel">Cancel</button><button class="control danger" value="confirm" data-i18n="reset.confirm">Confirm Clear</button></div></form></dialog>
 <dialog id="backupDialog"><form method="dialog"><h2 data-i18n="reset.title">Management Key Confirmation</h2><p data-i18n="backup.keyPrompt">Enter the CLIProxyAPI management key to download a full database backup.</p><input id="backupKeyInput" class="key-input" type="password" autocomplete="off" placeholder="Management key"><div class="dialog-actions"><button class="control" value="cancel" data-i18n="reset.cancel">Cancel</button><button class="control primary" value="confirm" data-i18n="button.downloadBackup">Download Backup</button></div></form></dialog>
 <dialog id="fullModeDialog"><form method="dialog"><h2 data-i18n="fullMode.title">Full mode</h2><p data-i18n="fullMode.description">Enter the CLIProxyAPI management key to unlock full mode for this page session.</p><input id="fullModeKeyInput" class="key-input" type="password" autocomplete="off" data-i18n-placeholder="fullMode.managementKey" placeholder="Management key"><div id="fullModeError" class="error" role="alert"></div><div class="dialog-actions"><button class="control" value="cancel" data-i18n="reset.cancel">Cancel</button><button id="fullModeUnlockButton" class="control primary" type="button" data-i18n="button.unlockFullMode">Unlock</button></div></form></dialog>
-<script>
+<script data-cfasync="false">
 (function(){
 'use strict';
 var locales=/*LOCALE_PLACEHOLDER*/;

@@ -762,9 +762,35 @@ func TestDashboardPaintsDarkBeforeRunningThemeSync(t *testing.T) {
 	html := dashboardHTML
 	rootStart := strings.Index(html, `<html lang="zh-CN" data-theme="dark" style="background:#151412;color-scheme:dark">`)
 	initialStyle := strings.Index(html, `<style id="initial-theme">`)
-	initialScript := strings.Index(html, `<script>`)
+	initialScript := strings.Index(html, `<script data-cfasync="false">`)
 	if rootStart < 0 || initialStyle < 0 || initialScript < 0 || rootStart > initialStyle || initialStyle > initialScript {
 		t.Fatal("dark root background and initial stylesheet must be available before theme sync script runs")
+	}
+}
+
+func TestDashboardScriptsOptOutOfRocketLoader(t *testing.T) {
+	for name, html := range map[string]string{"ordinary": dashboardHTML, "full": fullDashboardHTML} {
+		count := 0
+		remaining := html
+		for {
+			start := strings.Index(remaining, "<script")
+			if start < 0 {
+				break
+			}
+			tagEnd := strings.Index(remaining[start:], ">")
+			if tagEnd < 0 {
+				t.Fatalf("%s: unterminated script tag", name)
+			}
+			tag := remaining[start : start+tagEnd]
+			if !strings.Contains(tag, `data-cfasync="false"`) {
+				t.Fatalf("%s: script tag %q is exposed to Cloudflare Rocket Loader, which defers it behind a CSP-blocked loader", name, tag)
+			}
+			count++
+			remaining = remaining[start+tagEnd+1:]
+		}
+		if count == 0 {
+			t.Fatalf("%s: dashboard has no inline script to verify", name)
+		}
 	}
 }
 
