@@ -34,6 +34,7 @@ type registeredRoutes struct {
 	fullModeSessionPath       string
 	fullModeSessionRevokePath string
 	fullModeDataPath          string
+	fullModeModelsPath        string
 	fullModeAPIKeyLabelsPath  string
 	fullModePricesPath        string
 	fullModePricesSavePath    string
@@ -76,6 +77,7 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 		fullModeSessionPath:       "/v0/management/plugins/" + pluginID + "/full-mode/session",
 		fullModeSessionRevokePath: "/v0/resource/plugins/" + pluginID + "/full-mode/session/revoke",
 		fullModeDataPath:          "/v0/resource/plugins/" + pluginID + "/full-mode/data",
+		fullModeModelsPath:        "/v0/resource/plugins/" + pluginID + "/full-mode/models",
 		fullModeAPIKeyLabelsPath:  "/v0/resource/plugins/" + pluginID + "/full-mode/api-key-labels",
 		fullModePricesPath:        "/v0/resource/plugins/" + pluginID + "/full-mode/prices",
 		fullModePricesSavePath:    "/v0/resource/plugins/" + pluginID + "/full-mode/prices/save",
@@ -151,6 +153,7 @@ func (r *pluginRuntime) registerManagement(raw []byte) (managementRegistrationRe
 			},
 			{Path: "/full-dashboard", Description: "Full-mode dashboard shell without protected data."},
 			{Path: "/full-mode/data", Description: "Capability-protected full-mode data."},
+			{Path: "/full-mode/models", Description: "Capability-protected model catalog derived from recorded usage and the price book."},
 			{Path: "/full-mode/api-key-labels", Description: "Capability-protected API key label management. Send JSON in the X-API-Key-Label header with GET requests."},
 			{Path: "/full-mode/session/revoke", Description: "Revoke a full-mode capability."},
 			{Path: "/full-mode/prices", Description: "Capability-protected model prices."},
@@ -230,6 +233,14 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 			return methodNotAllowed(http.MethodGet), nil
 		}
 		return r.fullModeDataResponse(request)
+	case routes.fullModeModelsPath:
+		if !strings.EqualFold(request.Method, http.MethodGet) {
+			return methodNotAllowed(http.MethodGet), nil
+		}
+		if !r.validFullModeSession(fullModeSessionFromRequest(request)) {
+			return jsonResponse(http.StatusUnauthorized, map[string]string{"error": "full-mode session is missing or expired"}), nil
+		}
+		return r.fullModeModelCatalogResponse()
 	case routes.fullModeAPIKeyLabelsPath:
 		// Resource routes are dispatched by the host as GET. Keep PUT support
 		// for direct/plugin-level callers and newer hosts.
@@ -259,7 +270,7 @@ func (r *pluginRuntime) dispatchManagement(request pluginapi.ManagementRequest, 
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
 		}
-		return r.fullModeStagedPayloadResponse(request, 2<<20, "application/json", r.syncPricesResponse)
+		return r.fullModeStagedPayloadResponse(request, 2<<20, "application/json", r.fullModeSyncPricesResponse)
 	case routes.fullModeBackupPath:
 		if !strings.EqualFold(request.Method, http.MethodGet) {
 			return methodNotAllowed(http.MethodGet), nil
@@ -889,6 +900,18 @@ func (r *pluginRuntime) savePricesResponse(request pluginapi.ManagementRequest) 
 }
 
 func (r *pluginRuntime) syncPricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	return r.syncPrices(request, false)
+}
+
+// fullModeSyncPricesResponse serves the capability-protected sync route. Unlike
+// the management route it does not require the caller to name the models: full
+// mode only proves the session, and the catalog comes from the plugin's own
+// records, so no CLIProxyAPI API Key is involved.
+func (r *pluginRuntime) fullModeSyncPricesResponse(request pluginapi.ManagementRequest) (pluginapi.ManagementResponse, error) {
+	return r.syncPrices(request, true)
+}
+
+func (r *pluginRuntime) syncPrices(request pluginapi.ManagementRequest, allowCatalogFallback bool) (pluginapi.ManagementResponse, error) {
 	contentType, _, err := mime.ParseMediaType(request.Headers.Get("Content-Type"))
 	if err != nil || !strings.EqualFold(contentType, "application/json") {
 		return jsonResponse(http.StatusUnsupportedMediaType, map[string]any{"error": "Content-Type must be application/json"}), nil
@@ -907,7 +930,18 @@ func (r *pluginRuntime) syncPricesResponse(request pluginapi.ManagementRequest) 
 	if input.Source != "" && input.Source != priceSourceModelsDev {
 		return jsonResponse(http.StatusBadRequest, map[string]any{"error": `source must be "models.dev"`}), nil
 	}
-	priceBook, err := r.syncModelsDev(input.SyncSettings, input.Models)
+	sourceModels := input.Models
+	if len(sourceModels) == 0 && allowCatalogFallback {
+		catalog, catalogErr := r.modelCatalog()
+		if catalogErr != nil {
+			return jsonResponse(errorHTTPStatus(catalogErr), map[string]any{"error": catalogErr.Error()}), nil
+		}
+		if len(catalog.Models) == 0 {
+			return jsonResponse(http.StatusBadRequest, map[string]any{"error": "no models to synchronize yet; record usage or add a model manually first"}), nil
+		}
+		sourceModels = catalog.Models
+	}
+	priceBook, err := r.syncModelsDev(input.SyncSettings, sourceModels)
 	if err != nil {
 		return jsonResponse(errorHTTPStatus(err), map[string]any{"error": err.Error()}), nil
 	}

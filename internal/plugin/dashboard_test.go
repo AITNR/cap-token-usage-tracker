@@ -528,7 +528,7 @@ func TestDashboardPreservesReverseProxyPathPrefix(t *testing.T) {
 		`var publicPathPrefix=dashboardRoute.publicPathPrefix`,
 		`var resourceBase=publicPathPrefix+'/v0/resource/plugins/'`,
 		`var managementBase=publicPathPrefix+'/v0/management/plugins/'`,
-		`var modelsURL=publicPathPrefix+'/v1/models'`,
+		`var modelsURL=resourceBase+'/full-mode/models'`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard missing reverse-proxy path-prefix contract %q", required)
@@ -538,6 +538,7 @@ func TestDashboardPreservesReverseProxyPathPrefix(t *testing.T) {
 		`var resourceBase='/v0/resource/plugins/'`,
 		`var managementBase='/v0/management/plugins/'`,
 		`var modelsURL='/v1/models'`,
+		`var modelsURL=publicPathPrefix+'/v1/models'`,
 		`parts.indexOf('plugins')`,
 	} {
 		if strings.Contains(html, forbidden) {
@@ -554,7 +555,6 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`var savePricesURL=resourceBase+'/full-mode/prices/save'`,
 		`var syncPricesURL=resourceBase+'/full-mode/prices/sync'`,
 		`id="pricingDialog"`,
-		`id="cliModelsKeyInput"`,
 		`id="loadCLIModels"`,
 		`id="manualModelInput"`,
 		`id="addManualModel"`,
@@ -564,10 +564,12 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`manualDraftModels.has(name)||input>0`,
 		`if(base.updated_at)value.updated_at=base.updated_at`,
 		`manualDraftModels.clear()`,
-		`var modelsURL=publicPathPrefix+'/v1/models'`,
+		`var modelsURL=resourceBase+'/full-mode/models'`,
 		`function normalizeCLIModels(payload)`,
 		`async function fetchCLIModels(renderEditor)`,
-		`cliModelsPromise=api(modelsURL`,
+		`cliModelsPromise=api(modelsURL)`,
+		`fetchCLIModels(true).catch(function(){})`,
+		`pricing.catalogEmpty`,
 		`api(costsURL+'?'+query)`,
 		`currentCosts.models`,
 		`currentCosts.series`,
@@ -638,6 +640,11 @@ func TestDashboardUsesExactBackendCostsAndPricingSync(t *testing.T) {
 		`costFor(`,
 		`localStorage`,
 		`sessionStorage`,
+		`id="cliModelsKeyInput"`,
+		`cliModelsKeyInput`,
+		`'/v1/models'`,
+		`error.missingAPIKey`,
+		`button.loadModels`,
 		`fetch('https://models.dev`,
 		`fetch("https://models.dev`,
 		`fetch('https://open.er-api.com`,

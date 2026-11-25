@@ -9,7 +9,7 @@ if (!htmlPath || !chromePath) {
 
 const dashboardHTML = await readFile(htmlPath, 'utf8');
 let savedPrices = {m:{input:4,output:8}};
-let revision = 1, saves = 0;
+let revision = 1, saves = 0, syncs = 0, syncPayload = null, syncAuthorization = null;
 let chunks = [];
 const resourceBase = '/v0/resource/plugins/api-key-layout-browser-test';
 const server = createServer((request, response) => {
@@ -26,6 +26,19 @@ const server = createServer((request, response) => {
       savedPrices = JSON.parse(Buffer.from(chunks.join(''), 'base64url').toString('utf8')).prices;
       revision++; saves++; sendJSON({prices:savedPrices, revision}); return;
     }
+  }
+  if (url.pathname === `${resourceBase}/full-mode/prices/sync`) {
+    if (url.searchParams.get('stage') === 'begin') { chunks = []; sendJSON({upload:'sync-upload'}); return; }
+    if (url.searchParams.get('stage') === 'chunk') { chunks[Number(url.searchParams.get('index'))] = request.headers['x-full-mode-payload']; sendJSON({}); return; }
+    if (url.searchParams.get('stage') === 'commit') {
+      syncPayload = JSON.parse(Buffer.from(chunks.join(''), 'base64url').toString('utf8'));
+      syncAuthorization = request.headers['authorization'] || null;
+      syncs++; revision++; sendJSON({prices:savedPrices, revision}); return;
+    }
+  }
+  if (url.pathname === `${resourceBase}/full-mode/models`) {
+    sendJSON({models:Object.keys(savedPrices).sort(), observed:Object.keys(savedPrices).length, priced:Object.keys(savedPrices).length, generated_at:'2026-11-25T00:00:00Z'});
+    return;
   }
   if (url.pathname === `${resourceBase}/dashboard`) {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
@@ -89,6 +102,8 @@ try {
  const context=await browser.newContext({locale:'en-US',viewport:{width:1300,height:900}});
  const page=await context.newPage();const errors=[];page.on('pageerror',e=>errors.push(String(e)));
  await page.goto(dashboardURL);await page.locator('#pricingButton').click();
+ if (await page.locator('#cliModelsKeyInput').count() !== 0) throw Error('Pricing dialog must not ask for a CLIProxyAPI API Key');
+ await page.waitForFunction(()=>/Model list: \d+/.test(document.getElementById('modelCatalogStatus').textContent));
  const panel=page.locator('.time-pricing');await panel.locator('summary').click();
  await panel.locator('.time-zone').fill('Asia/Shanghai');await panel.locator('.add-time-tier').click();
  const row=panel.locator('.time-tier-row');await row.locator('.time-name').fill('night');await row.locator('.time-days').fill('1,7');await row.locator('.time-input').fill('1');
@@ -116,6 +131,14 @@ try {
  await panel.locator('.time-tier-row').locator('button').click();
  await saveAndReopen();
  if(await panel.locator('.time-tier-row').count()!==0||savedPrices.m.time_tiers.length!==0)throw Error('Deletion not saved');
+ // Synchronizing models.dev must rely on the full-mode session and the server's
+ // model catalog only: no CLIProxyAPI API Key is entered or transmitted.
+ const syncResponse = page.waitForResponse(r=>r.url().includes('/full-mode/prices/sync?stage=commit'));
+ await page.locator('#syncPrices').click();
+ await syncResponse;
+ if(syncs!==1)throw Error('Sync request missing');
+ if(syncAuthorization!==null)throw Error('Sync must not send an API key');
+ if(!syncPayload||syncPayload.source!=='models.dev'||(syncPayload.models||[]).join(',')!=='m')throw Error('Sync must use the server model catalog: '+JSON.stringify(syncPayload));
  if(errors.length)throw Error(errors.join('\n'));
  await page.screenshot({path:htmlPath+'.png',fullPage:true});
  console.log('Time pricing browser round trip, overlap validation and deletion passed');

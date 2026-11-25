@@ -57,7 +57,7 @@ CAP Token Usage Tracker 是 CLIProxyAPI 的持久化 Token 用量统计插件。
 完整模式与普通模式保持相同的主体布局和统计功能，并额外显示：
 
 - 模型价格配置与保存
-- CLIProxyAPI `/v1/models` 模型加载
+- 价格编辑器与 models.dev 同步使用的模型清单（已记录用量的模型 ∪ 现有价格表，无需 CLIProxyAPI API Key）
 - models.dev 价格同步
 - 当前筛选数据 CSV 导出
 - Dashboard PNG 导出
@@ -180,7 +180,7 @@ plugins:
 
 支持在模型的“峰谷定价”折叠区配置时区、星期和时间段（最多 32 个），按请求原始时间选价。未命中时使用基础或 Service Tier 价格；Context Tier 优先于时间价格。跨午夜归属起始日，时间区间包含开始、不包含结束。修改配置会重新估算历史费用。详见 [峰谷定价说明](docs/issue-78-time-of-use-pricing-plan.md)。
 
-价格可手工维护，也可从 models.dev 同步。同步先读取 CLIProxyAPI `/v1/models` 当前返回的模型，再根据提供商优先级、忽略后缀和显式模型映射匹配 models.dev。
+价格可手工维护，也可从 models.dev 同步。模型清单由插件自身推导：已记录用量的模型与现有价格表模型取并集，不再要求填写 CLIProxyAPI API Key；同步再根据提供商优先级、忽略后缀和显式模型映射匹配 models.dev。清单之外的模型可手动添加后单独定价。
 
 手工价格优先，不会被同步覆盖。价格簿使用 revision 防止并发覆盖。费用根据逐请求记录和匹配的价格规则计算；缺价请求会显示在价格覆盖率和缺价提示中，不会作为零成本混入已知费用。
 
@@ -380,7 +380,7 @@ The management-key dialog appears only after the user clicks Full Mode. After CL
 Full mode keeps the same dashboard layout and statistics while adding:
 
 - Model-price editing and persistence
-- Model loading from CLIProxyAPI `/v1/models`
+- A model list for the editor and models.dev synchronization (recorded usage ∪ existing price book, no CLIProxyAPI API Key required)
 - models.dev synchronization
 - Filtered CSV and Dashboard PNG export
 - bbolt database backup and restore
@@ -482,7 +482,7 @@ Table preferences, the selected token display unit, and the selected range are s
 
 The model-price UI is available only in full mode. Prices are USD per one million tokens and support Input, Output, Cache Read, Cache Creation, context tiers, service-tier-specific pricing, and the `input_excludes_cache` and `input_includes_cache` accounting modes. Models with all rates set to zero are treated as free.
 
-Prices can be maintained manually or synchronized from models.dev. Synchronization first reads the model list currently returned by CLIProxyAPI `/v1/models`, then matches models.dev using provider priority, ignored suffixes, and explicit model mappings.
+Prices can be maintained manually or synchronized from models.dev. The model list is derived by the plugin itself — the union of models recorded in usage statistics and models that already carry a price — so no CLIProxyAPI API Key is requested; the synchronization then matches models.dev using provider priority, ignored suffixes, and explicit model mappings. Models outside the list can be added manually and priced individually.
 
 Manual entries take precedence and are not overwritten by synchronization. The price book uses a revision to prevent concurrent overwrite. Costs are calculated from individual request records and the matching pricing rule. Requests without a matching price are reported as missing-price coverage rather than silently treated as free.
 
